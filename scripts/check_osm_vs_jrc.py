@@ -77,6 +77,21 @@ def fetch_provinces(ee):
     return gdf[["ADM1_NAME", "geometry"]].rename(columns={"ADM1_NAME": "province"})
 
 
+def label_linear_water(water, px_km2, min_elong=8.0, min_km2=0.05):
+    """Tach mat nuoc thanh vung lien thong (8-lan can); `linear[k]` = vung k co dang dai (song/kenh).
+
+    Do dai = (duong cheo khung bao)^2 / dien tich: ~1-2 cho ao vuong, lon cho song/kenh.
+    """
+    lab, n = ndimage.label(water, structure=np.ones((3, 3)))
+    objs = ndimage.find_objects(lab)
+    area = np.bincount(lab.ravel(), minlength=n + 1)
+    diag_px = np.array([0] + [np.hypot(s[0].stop - s[0].start, s[1].stop - s[1].start) for s in objs])
+    elong = np.where(area > 0, diag_px ** 2 / np.maximum(area, 1), 0)
+    linear = (elong >= min_elong) & (area * px_km2 >= min_km2)
+    linear[0] = False
+    return lab, n, objs, area, linear
+
+
 def main(args):
     import ee
     ee.Initialize(project=args.project)
@@ -92,16 +107,8 @@ def main(args):
         transform, shape = src.transform, src.shape
     inside = features.rasterize(boundary.geometry, out_shape=shape, transform=transform, fill=0, default_value=1) > 0
     water &= inside
-    lab, n = ndimage.label(water, structure=np.ones((3, 3)))
     px_km2 = abs(transform.a * transform.e) / 1e6
-
-    # Hinh dang tung vung: dien tich va do dai (duong cheo khung bao) -> bo vung tron/ho.
-    objs = ndimage.find_objects(lab)
-    area = np.bincount(lab.ravel(), minlength=n + 1)
-    diag_px = np.array([0] + [np.hypot(s[0].stop - s[0].start, s[1].stop - s[1].start) for s in objs])
-    elong = np.where(area > 0, diag_px ** 2 / np.maximum(area, 1), 0)  # ~1-2 cho ao vuong, lon cho song/kenh
-    linear = (elong >= args.min_elong) & (area * px_km2 >= args.min_km2)
-    linear[0] = False
+    lab, n, objs, area, linear = label_linear_water(water, px_km2, args.min_elong, args.min_km2)
 
     osm = gpd.read_file(args.osm, layer="lines").to_crs(32648)
     osm = osm[osm["fclass"].isin(["river", "canal"])]
