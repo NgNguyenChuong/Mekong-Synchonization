@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Dac trung khoang cach toi song/bien cho 13 luoi (T3-V1) - 3 bien the de chon bang thi nghiem.
 
-  dist_main_river_km : toi cac song lon cua song (nhanh Mekong + Vam Co + Cai Lon/Cai Be), OSM
+  dist_main_river_km : toi cac song lon cua song (nhanh Mekong + Vam Co + Cai Lon/Cai Be + Ganh Hao/Ong Doc), OSM
   dist_any_water_km  : toi song/kenh gan nhat = OSM (river, canal) HOP mat nuoc dang dai JRC
   dist_coast_km      : toi bo bien (Global Shoreline Vector, Sayre et al. 2019)
 
@@ -36,9 +36,9 @@ from check_osm_vs_jrc import label_linear_water  # noqa: E402
 from preprocessing import CANONICAL_BOUNDARY  # noqa: E402
 from processing import area_weighted_means  # noqa: E402
 
-# Song lon cua song: duong nuoc man vao noi dong. Can An xem lai danh sach.
+# Song lon cua song: duong nuoc man vao noi dong (An duyet 2026-10-01, them Ganh Hao, Ong Doc).
 MAIN_RIVERS = re.compile(r"^Sông (Tiền|Hậu|Cổ Chiên|Hàm Luông|Mỹ Tho|Ba Lai|Cửa Đại|Cửa Tiểu|Cung Hầu|"
-                         r"Định An|Trần Đề|Vàm Cỏ Đông|Vàm Cỏ Tây|Vàm Cỏ|Cái Lớn|Cái Bé)\b")
+                         r"Định An|Trần Đề|Vàm Cỏ Đông|Vàm Cỏ Tây|Vàm Cỏ|Cái Lớn|Cái Bé|Gành Hào|Ông Đốc)\b")
 BANDS = ["dist_main_river_km", "dist_any_water_km", "dist_coast_km"]
 
 

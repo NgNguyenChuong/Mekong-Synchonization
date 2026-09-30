@@ -33,6 +33,8 @@ def test_linear_water_keeps_canal_drops_pond():
 
 
 @pytest.mark.parametrize("name,ok", [("Sông Tiền", True), ("Sông Hậu", True), ("Sông Cổ Chiên", True),
-                                     ("Rạch Tiền", False), ("Sông Vàm Cỏ Đông", True), ("Sông Cái Tàu", False)])
+                                     ("Rạch Tiền", False), ("Sông Vàm Cỏ Đông", True), ("Sông Cái Tàu", False),
+                                     ("Sông Gành Hào", True), ("Sông Ông Đốc", True),
+                                     ("Kênh Gành Hào - Hộ Phòng", False)])
 def test_main_river_names(name, ok):
     assert bool(MAIN_RIVERS.match(name)) == ok
