@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from config import (
     DATA_SPECS, STATIC_SPECS, PERIODIC_SPECS,
-    H3_GRID_GEOJSON, CRS_METRIC, CRS_WGS84, DATA_RAW
+    H3_GRID_GEOJSON, GRID_GEOJSON, CRS_METRIC, CRS_WGS84, DATA_RAW, DATA_PROCESSED
 )
 from utils_h3 import load_h3_multipoints
 from preprocessing import run_preprocessing
@@ -47,24 +47,29 @@ def main():
     print("=" * 60)
 
     # =========================================================
-    # STEP 0: PREPROCESSING
+    # STEP 0: PREPROCESSING (bo qua khi da chi dinh luoi qua GRID_GEOJSON)
     # =========================================================
-    try:
-        run_preprocessing()
-    except Exception as e:
-        print(f"Preprocessing failed: {e}")
+    if GRID_GEOJSON:
+        grid_path = GRID_GEOJSON
+        print(f"[STEP 0] Dung luoi co san: {grid_path} | ket qua -> {DATA_PROCESSED}")
+    else:
+        try:
+            run_preprocessing()
+        except Exception as e:
+            print(f"Preprocessing failed: {e}")
+            return
+        grid_path = H3_GRID_GEOJSON
+
+    # =========================================================
+    # STEP 1: LOAD GRID
+    # =========================================================
+    print("\n[STEP 1] Loading Grid Geometry...")
+
+    if not os.path.exists(grid_path):
+        print(f"Grid file missing: {grid_path}")
         return
 
-    # =========================================================
-    # STEP 1: LOAD H3 GRID
-    # =========================================================
-    print("\n[STEP 1] Loading H3 Grid Geometry...")
-
-    if not os.path.exists(H3_GRID_GEOJSON):
-        print("Grid file missing. Check preprocessing step.")
-        return
-
-    h3_data_bundle = load_h3_multipoints(H3_GRID_GEOJSON, CRS_METRIC, CRS_WGS84)
+    h3_data_bundle = load_h3_multipoints(grid_path, CRS_METRIC, CRS_WGS84)
     print(f"Loaded {len(h3_data_bundle[0])} cells.")
 
     # =========================================================

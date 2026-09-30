@@ -33,8 +33,11 @@ def _env_float(name, default):
 # ============================================================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
-DATA_RAW = os.path.join(DATA_DIR, "raw")
-DATA_PROCESSED = os.path.join(DATA_DIR, "processed")
+# Cac bien moi truong cho phep chay pipeline tren nhieu khung luoi, moi lan
+# mot thu muc ket qua rieng; khong dat thi giu duong dan mac dinh.
+DATA_RAW = os.getenv("RAW_DIR") or os.path.join(DATA_DIR, "raw")
+DATA_PROCESSED = os.getenv("OUTPUT_DIR") or os.path.join(DATA_DIR, "processed")
+GRID_GEOJSON = os.getenv("GRID_GEOJSON") or None
 
 # Create directories if they don't exist
 os.makedirs(DATA_RAW, exist_ok=True)

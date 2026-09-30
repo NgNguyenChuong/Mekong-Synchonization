@@ -75,14 +75,16 @@ Mọi phân tích khác **phải gắn nhãn "thăm dò"** và không được d
 Đánh dấu `[x]` chỉ khi có bằng chứng (nguyên văn lệnh và kết quả) trong `GIAO_TIEP/trao-doi.md`.
 
 ### M0 — Nền tảng · 29/09 – 05/10/2026 (T1-01, T1-02, T1-03)
-- [ ] Mốc phục hồi (commit hoặc bản sao) cho `src/`, `tests/`, `scripts/`
+- [x] Mốc phục hồi (commit hoặc bản sao) cho `src/`, `tests/`, `scripts/` — commit `4c68d945`, nhánh `feature/nckh-tuan1-multigrid`
 - [ ] Zenodo: 19 file tải xong, MD5 khớp; bảng khảo sát thật (min, max, mean, p1, p50, p99; NoData theo footprint; số pixel bằng 0; số pixel > 28,013; chế độ cảm biến suy ra theo năm); danh sách năm bị loại kèm lý do; báo cáo metadata (kể cả Comment/Reply hoặc ghi "chưa đọc")
-- [ ] Code: `cell_id`, `--target`, `--label-csv` tuỳ chọn; test dùng ID không phải H3; `pytest -q` toàn bộ trong 1 phiên pass; `tests/conftest.py` không rỗng
-- [ ] 13 lưới cùng schema (`cell_id`, `geometry`, `overlap_frac`); bảng đối chiếu diện tích; các kiểm thử lưới pass
+- [x] Code: `cell_id`, `--target`, `--label-csv` tuỳ chọn; test dùng ID không phải H3; `pytest -q` toàn bộ trong 1 phiên pass; `tests/conftest.py` không rỗng
+- [x] 13 lưới cùng schema (`cell_id`, `geometry`, `overlap_frac`); bảng đối chiếu diện tích; các kiểm thử lưới pass
 - [ ] **Cổng G1**
+> **Trạng thái 2026-09-30:** Zenodo tạm hoãn chờ mạng ổn định (đã tải năm 2000, MD5 đúng; dữ liệu lưu ở `A:\Dataset_NCKH\zenodo_15653696`). Cổng G1 chưa qua — An quyết định làm tiếp tuần 2 trước.
+
 
 ### M1 — Đặc trưng dạng lưới · → 12/10
-- [ ] `main.py` chạy được nhiều lưới bằng biến môi trường; hành vi cũ giữ nguyên
+- [x] `main.py` chạy được nhiều lưới bằng biến môi trường (`GRID_GEOJSON`, `OUTPUT_DIR`, `RAW_DIR`); hành vi cũ giữ nguyên
 - [ ] Raster 2000–2023 (ERA5-Land, Copernicus DEM, ESA WorldCover, MODIS NDVI, JRC mặt nước) đúng quy ước file và đã đổi đơn vị
 - [ ] Trích theo diện tích; kiểm tay ≥ 3 ô mỗi khung
 - [ ] 13 bộ đặc trưng cùng phạm vi ngày và cùng cột; báo cáo chất lượng
