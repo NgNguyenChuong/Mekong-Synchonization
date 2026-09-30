@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.request
 
 import geopandas as gpd
@@ -66,6 +67,18 @@ def _rh(ee, im):
     return ed.divide(es).multiply(100).min(100)
 
 
+def _retry(fn, what, tries=6, wait=10):
+    """Thu lai khi loi mang/server tam thoi (GEE 503, mat ket noi); cho tang dan 10, 20, 40... giay."""
+    for k in range(tries):
+        try:
+            return fn()
+        except Exception as exc:  # EEException, HTTPError, URLError, ConnectionError, TimeoutError
+            if k == tries - 1:
+                raise
+            print(f"[thu lai {k + 1}/{tries - 1}] {what}: {str(exc)[:120]} -> cho {wait * 2 ** k}s", flush=True)
+            time.sleep(wait * 2 ** k)
+
+
 def _download(url, path):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=300) as r, open(path + ".part", "wb") as f:
@@ -84,9 +97,9 @@ def cmd_era5(args):
     for p in months:
         start, end = p.start_time.strftime("%Y-%m-%d"), (p.end_time + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
         coll = ee.ImageCollection(ERA5_ID).filterDate(start, end).sort("system:time_start")
-        n = coll.size().getInfo()
+        n = _retry(lambda: coll.size().getInfo(), f"dem so ngay {p}")
         if n != p.days_in_month:
-            print(f"[bo qua] {p}: {n}/{p.days_in_month} ngay (du lieu chua du)")
+            print(f"[bo qua] {p}: {n}/{p.days_in_month} ngay (du lieu chua du)", flush=True)
             continue
         for var in variables:
             folder, fn = ERA5_VARS[var]
@@ -98,10 +111,9 @@ def cmd_era5(args):
             daily = coll.map(lambda im: (_rh(ee, im) if fn is None else fn(im))
                              .updateMask(im.select("temperature_2m").mask()).float())
             img = daily.toBands().rename([f"b{i + 1}" for i in range(n)])
-            url = img.getDownloadURL({"region": region, "scale": ERA5_SCALE_M, "crs": "EPSG:4326",
-                                      "format": "GEO_TIFF"})
-            _download(url, path)
-        print(f"[xong] {p}")
+            params = {"region": region, "scale": ERA5_SCALE_M, "crs": "EPSG:4326", "format": "GEO_TIFF"}
+            _retry(lambda: _download(img.getDownloadURL(params), path), f"{var} {p}")
+        print(f"[xong] {p}", flush=True)
 
 
 def _export(ee, image, name, region, scale, folder):
