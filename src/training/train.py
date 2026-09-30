@@ -13,6 +13,9 @@ import joblib
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import LinearRegression
+from sklearn.neural_network import MLPRegressor
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
@@ -24,6 +27,7 @@ from salinity.preprocessing import clean_salinity_observations  # noqa: E402
 from salinity.spatial_mapping import map_observations_to_h3  # noqa: E402
 from training.baselines import ClimatologyBaseline, PersistenceBaseline  # noqa: E402
 from training.evaluate import compute_metrics  # noqa: E402
+from training.features import prepare_matrices  # noqa: E402
 from training.split import SplitConfig, split_summary, time_based_split  # noqa: E402
 
 # Cot khong duoc dung lam feature (id/target/leakage/spatial grid artifacts).
@@ -36,6 +40,11 @@ MODEL_REGISTRY = {
     "linear": lambda seed: LinearRegression(),
     "random_forest": lambda seed: RandomForestRegressor(n_estimators=200, random_state=seed, n_jobs=-1),
     "hist_gb": lambda seed: HistGradientBoostingRegressor(random_state=seed),
+    # StandardScaler nam trong pipeline -> chi fit tren tap huan luyen.
+    "mlp": lambda seed: make_pipeline(
+        StandardScaler(),
+        MLPRegressor(hidden_layer_sizes=(64, 32), early_stopping=True, max_iter=500, random_state=seed),
+    ),
 }
 
 
@@ -111,6 +120,7 @@ def main():
     feature_cols = select_feature_columns(train_df, target_col=target_col, include_coords=args.include_coords)
     print(f"Features duoc dung ({len(feature_cols)}): {feature_cols}")
 
+    missing_handler = None
     if args.model == "climatology":
         model = ClimatologyBaseline().fit(train_df["date"], train_df[target_col])
         val_pred = model.predict(val_df["date"])
@@ -118,13 +128,19 @@ def main():
     elif args.model == "persistence":
         cell_col = "cell_id" if "cell_id" in train_df.columns else "h3_index"
         model = PersistenceBaseline().fit(train_df[cell_col], train_df["date"], train_df[target_col])
-        val_pred = model.predict(val_df[cell_col])
-        test_pred = model.predict(test_df[cell_col])
+        # Lich su = moi quan trac da biet; predict chi dung gia tri co ngay < ngay can du bao.
+        full = pd.concat([train_df, val_df, test_df], ignore_index=True)
+        history = PersistenceBaseline._frame(full[cell_col], full["date"], full[target_col])
+        val_pred = model.predict(val_df[cell_col], val_df["date"], history)
+        test_pred = model.predict(test_df[cell_col], test_df["date"], history)
     else:
+        train_X, val_X, test_X, missing_handler = prepare_matrices(
+            args.model, train_df[feature_cols], val_df[feature_cols], test_df[feature_cols]
+        )
         model = MODEL_REGISTRY[args.model](args.seed)
-        model.fit(train_df[feature_cols], train_df[target_col])
-        val_pred = model.predict(val_df[feature_cols])
-        test_pred = model.predict(test_df[feature_cols])
+        model.fit(train_X, train_df[target_col])
+        val_pred = model.predict(val_X)
+        test_pred = model.predict(test_X)
 
     val_metrics = compute_metrics(val_df[target_col], val_pred)
     test_metrics = compute_metrics(test_df[target_col], test_pred)
@@ -136,6 +152,8 @@ def main():
     out_dir = os.path.join("artifacts", "experiments", args.experiment_name)
     os.makedirs(out_dir, exist_ok=True)
     joblib.dump(model, os.path.join(out_dir, "model.joblib"))
+    if missing_handler is not None:
+        joblib.dump(missing_handler, os.path.join(out_dir, "missing_handler.joblib"))
 
     experiment_config = {
         "experiment_name": args.experiment_name,
