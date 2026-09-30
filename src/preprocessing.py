@@ -1,190 +1,219 @@
 import os
+
 import geopandas as gpd
 import h3
-from shapely.geometry import Polygon
-from shapely.strtree import STRtree
-from shapely.ops import unary_union
+import numpy as np
+import pyproj
+import s2sphere
+from shapely.geometry import Point, Polygon, box
+from shapely.ops import transform, unary_union
+from shapely.prepared import prep
+
 from config import (
-    DATA_RAW, SHAPEFILE_RAW, SHAPEFILE_CLEAN,
+    SHAPEFILE_RAW, SHAPEFILE_CLEAN,
     CRS_METRIC, CRS_WGS84, MIN_ISLAND_AREA_KM2,
-    H3_GRID_GEOJSON, H3_RESOLUTION, BUFFER_DIST
+    H3_GRID_GEOJSON, H3_RESOLUTION,
 )
 
-# -----------------------------------------------------------
-# 1. INPUT SHAPEFILE RESOLUTION
-# -----------------------------------------------------------
-# def _find_shapefiles_in_raw():
-#     if not os.path.exists(DATA_RAW):
-#         return []
-#     return sorted(
-#         os.path.join(DATA_RAW, f)
-#         for f in os.listdir(DATA_RAW)
-#         if f.lower().endswith(".shp")
-#     )
+CANONICAL_BOUNDARY = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "webapp", "backend", "data", "mekong_delta_boundary.geojson")
+)
 
 
-# def _resolve_input_shapefile():
-#     candidates = _find_shapefiles_in_raw()
-#     if len(candidates) == 1:
-#         selected = candidates[0]
-#         print(f"    Using input shapefile: {selected}")
-#         return selected
-#     if len(candidates) > 1:
-#         names = "\n      - " + "\n      - ".join(candidates)
-#         raise ValueError(
-#             "Multiple shapefiles found in data/raw. "
-#             "Keep exactly one .shp before running pipeline:" + names
-#         )
-
-#     # bỏ fallback 
-#     # if ENABLE_GEE_FALLBACK:
-#     #     return download_shapefile_gee()
-
-#     raise FileNotFoundError(
-#         "No input shapefile found. Add exactly one .shp to data/raw. "
-#     )
+def _resolve_boundary_path(boundary_path=None) -> str:
+    if boundary_path:
+        if not os.path.exists(boundary_path):
+            raise FileNotFoundError(f"Khong tim thay ranh gioi: {boundary_path}")
+        return boundary_path
+    if os.path.exists(SHAPEFILE_CLEAN):
+        return SHAPEFILE_CLEAN
+    if os.path.exists(CANONICAL_BOUNDARY):
+        return CANONICAL_BOUNDARY
+    raise FileNotFoundError(f"Khong tim thay ranh gioi chuan: {CANONICAL_BOUNDARY}")
 
 
-# # -----------------------------------------------------------
-# # 2. DOWNLOAD SHAPEFILE FROM GEE (OPTIONAL FALLBACK)
-# # -----------------------------------------------------------
-# def download_shapefile_gee():
-#     print("   🌍 Authenticating & Initializing GEE...")
-#     if GEE_PROJECT:
-#         try:
-#             ee.Initialize(project=GEE_PROJECT)
-#         except Exception:
-#             print("   ⚠️  GEE Init with project failed. Trying generic ee.Initialize()...")
-#             ee.Initialize()
-#     else:
-#         ee.Initialize()
+def _load_union(boundary_path, crs):
+    gdf = gpd.read_file(boundary_path).to_crs(crs)
+    return unary_union(gdf.geometry)
 
-#     print("   ⬇️  Downloading boundary from GEE...")
-#     if not GEE_TARGET_AREAS:
-#         raise ValueError("GEE fallback requires at least one name in GEE_TARGET_AREAS.")
 
-#     admin_fc = ee.FeatureCollection(GEE_ADMIN_COLLECTION)
-#     target_fc = admin_fc.filter(ee.Filter.inList(GEE_ADMIN_NAME_FIELD, GEE_TARGET_AREAS))
+def _overlap_fracs(cell_geoms, union_poly, cell_area=None):
+    """Ty le dien tich o nam trong ranh gioi. Chi tinh giao cho o cat duong bien."""
+    boundary_line = prep(union_poly.boundary)
+    fracs = []
+    for geom in cell_geoms:
+        if not boundary_line.intersects(geom):
+            fracs.append(1.0)
+            continue
+        inter = geom.intersection(union_poly)
+        area = cell_area if cell_area is not None else geom.area
+        fracs.append(round(inter.area / area, 4) if not inter.is_empty else 0.0)
+    return fracs
 
-#     geemap.ee_export_vector(target_fc, filename=SHAPEFILE_RAW)
-#     print(f"   ✅ Downloaded boundary to: {SHAPEFILE_RAW}")
-#     return SHAPEFILE_RAW
+
+def _write(gdf, output_path):
+    if output_path:
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        gdf.to_file(output_path, driver="GeoJSON")
+    return gdf
 
 
 # -----------------------------------------------------------
-# 3. CLEAN SHAPEFILE (REMOVE SMALL ISLANDS)
+# CLEAN SHAPEFILE (REMOVE SMALL ISLANDS)
 # -----------------------------------------------------------
 def clean_shapefile():
+    """Tra ve duong dan ranh gioi dung cho pipeline.
+
+    Neu khong co data/raw/boundary_input.shp thi dung ranh gioi chuan 13 tinh.
+    """
+    if not os.path.exists(SHAPEFILE_RAW):
+        if os.path.exists(CANONICAL_BOUNDARY):
+            print(f"    Input shapefile missing ({SHAPEFILE_RAW}). Dung ranh gioi chuan: {CANONICAL_BOUNDARY}")
+            return CANONICAL_BOUNDARY
+        raise FileNotFoundError(f"Input shapefile missing: {SHAPEFILE_RAW}")
+
     if os.path.exists(SHAPEFILE_CLEAN) and os.path.getmtime(SHAPEFILE_CLEAN) >= os.path.getmtime(SHAPEFILE_RAW):
         print(f"    Cleaned shapefile already exists: {SHAPEFILE_CLEAN}")
         return SHAPEFILE_CLEAN
 
-    print("    Cleaning shapefile (removing small islands as option)...")
-    if not os.path.exists(SHAPEFILE_RAW):
-        raise FileNotFoundError(f" Input shapefile missing: {SHAPEFILE_RAW}")
-
+    print("    Cleaning shapefile...")
     gdf = gpd.read_file(SHAPEFILE_RAW)
-    gdf_metric = gdf.to_crs(CRS_METRIC)
-
-    gdf_exploded = gdf_metric.explode(index_parts=True).reset_index(drop=True)
-    gdf_exploded['area_km2'] = gdf_exploded.geometry.area / 1e6
+    gdf_exploded = gdf.to_crs(CRS_METRIC).explode(index_parts=True).reset_index(drop=True)
+    gdf_exploded["area_km2"] = gdf_exploded.geometry.area / 1e6
 
     if MIN_ISLAND_AREA_KM2 > 0:
-        gdf_clean = gdf_exploded[gdf_exploded['area_km2'] > MIN_ISLAND_AREA_KM2].copy()
+        gdf_clean = gdf_exploded[gdf_exploded["area_km2"] > MIN_ISLAND_AREA_KM2].copy()
     else:
         gdf_clean = gdf_exploded.copy()
 
     gdf_final = gdf_clean.dissolve().to_crs(CRS_WGS84)
-    
+    os.makedirs(os.path.dirname(SHAPEFILE_CLEAN), exist_ok=True)
     gdf_final.to_file(SHAPEFILE_CLEAN)
     print(f"    Cleaned shapefile saved: {SHAPEFILE_CLEAN}")
     return SHAPEFILE_CLEAN
 
 
 # -----------------------------------------------------------
-# 4. GENERATE H3 GRID (Fixed API: h3.LatLngPoly)
+# 4 KHUNG LUOI - quy tac chung: o thuoc luoi neu tam nam trong ranh gioi,
+# giu nguyen hinh hoc o (khong cat), ghi overlap_frac.
 # -----------------------------------------------------------
-def generate_h3_grid():
-    if os.path.exists(H3_GRID_GEOJSON) and os.path.getmtime(H3_GRID_GEOJSON) >= os.path.getmtime(SHAPEFILE_CLEAN):
-        print(f"    H3 Grid already exists: {H3_GRID_GEOJSON}")
-        return
+def generate_h3_grid(boundary_path=None, resolution=None, output_path=None) -> gpd.GeoDataFrame:
+    boundary_path = _resolve_boundary_path(boundary_path)
+    resolution = H3_RESOLUTION if resolution is None else resolution
+    union_poly = _load_union(boundary_path, CRS_WGS84)
+    inside = prep(union_poly)
 
-    print("   HEX Generating H3 Grid (v4)...")
+    parts = union_poly.geoms if union_poly.geom_type == "MultiPolygon" else [union_poly]
+    candidates = set()
+    for part in parts:
+        if len(set(part.exterior.coords)) < 3:
+            continue
+        outer = [(lat, lon) for lon, lat in part.exterior.coords]
+        # H3 v4 nhan tung lo la mot doi so rieng: LatLngPoly(outer, *holes).
+        holes = [
+            [(lat, lon) for lon, lat in ring.coords]
+            for ring in part.interiors
+            if len(set(ring.coords)) >= 3
+        ]
+        candidates.update(h3.polygon_to_cells(h3.LatLngPoly(outer, *holes), resolution))
 
-    if not os.path.exists(SHAPEFILE_CLEAN):
-        raise FileNotFoundError(f" Cleaned shapefile missing: {SHAPEFILE_CLEAN}")
+    cell_ids, geoms = [], []
+    for cell in sorted(candidates):
+        lat, lon = h3.cell_to_latlng(cell)
+        if inside.contains(Point(lon, lat)):
+            cell_ids.append(cell)
+            geoms.append(Polygon([(p[1], p[0]) for p in h3.cell_to_boundary(cell)]))
 
-    gdf = gpd.read_file(SHAPEFILE_CLEAN).to_crs(CRS_WGS84)
-    
-    # Tạo buffer để bao phủ rìa biển
-    if BUFFER_DIST > 0:
-        gdf_metric = gdf.to_crs(CRS_METRIC)
-        buffered_geoms = gdf_metric.buffer(BUFFER_DIST).to_crs(CRS_WGS84)
-    else:
-        buffered_geoms = gdf.geometry
-
-    hex_set = set()
-
-    # Loop qua từng geometry
-    for geom in buffered_geoms:
-        geoms = geom.geoms if geom.geom_type == "MultiPolygon" else [geom]
-        
-        for g in geoms:
-            # --- [CORRECT H3 v4 LOGIC] ---
-            
-            # 1. Outer Ring: (Lon, Lat) -> (Lat, Lon)
-            outer = [(lat, lon) for lon, lat in g.exterior.coords]
-            
-            # 2. Holes: (Lon, Lat) -> (Lat, Lon)
-            holes = []
-            for interior in g.interiors:
-                holes.append([(lat, lon) for lon, lat in interior.coords])
-            
-            # 3. Sử dụng h3.LatLngPoly (API chuẩn)
-            try:
-                poly = h3.LatLngPoly(outer, holes) # Không dùng *holes
-                
-                # 4. Fill Cells
-                cells = h3.polygon_to_cells(poly, H3_RESOLUTION)
-                hex_set.update(cells)
-            except Exception as e:
-                print(f"⚠️ Error polyfilling: {e}")
-                continue
-
-    print(f"   --> Generated {len(hex_set)} candidate cells.")
-
-    # --- CLIPPING (OPTIMIZED với STRtree) ---
-    print("     Clipping to exact boundary...")
-    union_poly = unary_union(gdf.geometry)
-
-    # OPTIMIZED: Tạo tất cả hex polygons trước
-    hex_list = list(hex_set)
-    hex_geoms_all = []
-    for h in hex_list:
-        # H3 v4: cell_to_boundary trả về tuple ((lat, lon), ...)
-        boundary = h3.cell_to_boundary(h)
-        # Đảo ngược (Lat, Lon) -> (Lon, Lat) cho Shapely Polygon
-        poly_coords = [(p[1], p[0]) for p in boundary]
-        hex_geoms_all.append(Polygon(poly_coords))
-
-    # OPTIMIZED: Sử dụng STRtree để query nhanh
-    tree = STRtree(hex_geoms_all)
-
-    # Query tất cả hex intersects với boundary
-    valid_indices = tree.query(union_poly, predicate='intersects')
-
-    valid_hex = [hex_list[i] for i in valid_indices]
-    hex_geoms = [hex_geoms_all[i] for i in valid_indices]
-
-    # Save
-    gdf_hex = gpd.GeoDataFrame(
-        {"h3_index": valid_hex},
-        geometry=hex_geoms,
-        crs=CRS_WGS84
+    gdf = gpd.GeoDataFrame(
+        {"cell_id": cell_ids, "overlap_frac": _overlap_fracs(geoms, union_poly)},
+        geometry=geoms, crs=CRS_WGS84,
     )
-    
-    gdf_hex.to_file(H3_GRID_GEOJSON, driver="GeoJSON")
-    print(f"    H3 Grid saved: {H3_GRID_GEOJSON} ({len(gdf_hex)} cells)")
+    return _write(gdf, output_path)
+
+
+def generate_s2_grid(boundary_path=None, level=11, output_path=None) -> gpd.GeoDataFrame:
+    boundary_path = _resolve_boundary_path(boundary_path)
+    union_poly = _load_union(boundary_path, CRS_WGS84)
+    inside = prep(union_poly)
+    minx, miny, maxx, maxy = union_poly.bounds
+
+    # Liet ke moi o o dung level trong khung bao, roi loc theo tam
+    # (khong dung covering mac dinh vi no giu ca o chi cham ranh gioi).
+    coverer = s2sphere.RegionCoverer()
+    coverer.min_level = level
+    coverer.max_level = level
+    coverer.max_cells = 10_000_000
+    rect = s2sphere.LatLngRect(
+        s2sphere.LatLng.from_degrees(miny - 0.05, minx - 0.05),
+        s2sphere.LatLng.from_degrees(maxy + 0.05, maxx + 0.05),
+    )
+
+    cell_ids, geoms = [], []
+    for cid in coverer.get_covering(rect):
+        cell = s2sphere.Cell(cid)
+        centre = s2sphere.LatLng.from_point(cell.get_center())
+        if inside.contains(Point(centre.lng().degrees, centre.lat().degrees)):
+            cell_ids.append(f"s2_{cid.to_token()}")
+            corners = [s2sphere.LatLng.from_point(cell.get_vertex(i)) for i in range(4)]
+            geoms.append(Polygon([(v.lng().degrees, v.lat().degrees) for v in corners]))
+
+    gdf = gpd.GeoDataFrame(
+        {"cell_id": cell_ids, "overlap_frac": _overlap_fracs(geoms, union_poly)},
+        geometry=geoms, crs=CRS_WGS84,
+    )
+    return _write(gdf, output_path)
+
+
+def generate_square_grid(boundary_path=None, resolution_m=6458, output_path=None) -> gpd.GeoDataFrame:
+    """O vuong trong EPSG:32648, goc neo o boi so cua resolution_m theo toa do UTM."""
+    boundary_path = _resolve_boundary_path(boundary_path)
+    union_poly = _load_union(boundary_path, CRS_METRIC)
+    inside = prep(union_poly)
+
+    minx, miny, maxx, maxy = union_poly.bounds
+    size = float(resolution_m)
+    xs = np.arange(np.floor(minx / size) * size, maxx + size, size)
+    ys = np.arange(np.floor(miny / size) * size, maxy + size, size)
+
+    cell_ids, geoms_utm = [], []
+    for x in xs:
+        for y in ys:
+            if inside.contains(Point(x + size / 2.0, y + size / 2.0)):
+                cell_ids.append(f"sq_{resolution_m}m_{int(x)}_{int(y)}")
+                geoms_utm.append(box(x, y, x + size, y + size))
+
+    fracs = _overlap_fracs(geoms_utm, union_poly, cell_area=size * size)
+    to_wgs = pyproj.Transformer.from_crs(CRS_METRIC, CRS_WGS84, always_xy=True)
+    geoms = [transform(to_wgs.transform, g) for g in geoms_utm]
+
+    gdf = gpd.GeoDataFrame({"cell_id": cell_ids, "overlap_frac": fracs}, geometry=geoms, crs=CRS_WGS84)
+    return _write(gdf, output_path)
+
+
+def generate_latlon_grid(boundary_path=None, step_deg=0.0586, output_path=None) -> gpd.GeoDataFrame:
+    """O deu theo do, goc neo o boi so cua step_deg tinh tu (0, 0)."""
+    boundary_path = _resolve_boundary_path(boundary_path)
+    union_poly = _load_union(boundary_path, CRS_WGS84)
+    inside = prep(union_poly)
+
+    minx, miny, maxx, maxy = union_poly.bounds
+    step = float(step_deg)
+    ix0, ix1 = int(np.floor(minx / step)), int(np.ceil(maxx / step))
+    iy0, iy1 = int(np.floor(miny / step)), int(np.ceil(maxy / step))
+
+    cell_ids, geoms = [], []
+    for ix in range(ix0, ix1 + 1):
+        for iy in range(iy0, iy1 + 1):
+            x, y = ix * step, iy * step
+            if inside.contains(Point(x + step / 2.0, y + step / 2.0)):
+                cell_ids.append(f"ll_{int(round(step * 10000))}p_{iy}_{ix}")
+                geoms.append(box(x, y, x + step, y + step))
+
+    gdf = gpd.GeoDataFrame(
+        {"cell_id": cell_ids, "overlap_frac": _overlap_fracs(geoms, union_poly)},
+        geometry=geoms, crs=CRS_WGS84,
+    )
+    return _write(gdf, output_path)
 
 
 # -----------------------------------------------------------
@@ -192,6 +221,10 @@ def generate_h3_grid():
 # -----------------------------------------------------------
 def run_preprocessing():
     print("--- [PREPROCESSING] ---")
-    clean_shapefile()
-    generate_h3_grid()
+    boundary = clean_shapefile()
+    if os.path.exists(H3_GRID_GEOJSON) and os.path.getmtime(H3_GRID_GEOJSON) >= os.path.getmtime(boundary):
+        print(f"    H3 Grid already exists: {H3_GRID_GEOJSON}")
+    else:
+        gdf = generate_h3_grid(boundary, H3_RESOLUTION, H3_GRID_GEOJSON)
+        print(f"    H3 Grid saved: {H3_GRID_GEOJSON} ({len(gdf)} cells)")
     print("-----------------------")

@@ -40,7 +40,7 @@ def extract_generic(spec_name, spec_config, h3_data, raw_root_dir):
             
             for i, h3_id in enumerate(h3_ids):
                 records.append({
-                    "h3_index": h3_id,
+                    "cell_id": h3_id,
                     "date": date_str,
                     col_name: vals[i][d]
                 })
@@ -227,7 +227,7 @@ from config import DATA_SPECS, DATA_PROCESSED
 def merge_dynamic_datasets():
     """
     Gộp tất cả các file CSV thành phần (Mưa, Nhiệt, Ẩm...) thành 1 file tổng.
-    Join key: ['h3_index', 'date']
+    Join key: ['cell_id', 'date']
     """
     print("🔄 [MERGE] Bắt đầu gộp các file dữ liệu...")
     
@@ -244,13 +244,16 @@ def merge_dynamic_datasets():
             
         print(f"   📖 Reading {key}...")
         # Đọc file, ép kiểu h3_index về string để tránh lỗi merge
-        df = pd.read_csv(file_path, dtype={'h3_index': str})
+        df = pd.read_csv(file_path)
+        if 'h3_index' in df.columns and 'cell_id' not in df.columns:
+            df.rename(columns={'h3_index': 'cell_id'}, inplace=True)
+        df['cell_id'] = df['cell_id'].astype(str)
         
         # Đảm bảo cột date đúng định dạng
         # df['date'] = pd.to_datetime(df['date']) 
         
         # Set index là (h3_index, date) để chuẩn bị merge
-        df = df.set_index(['h3_index', 'date'])
+        df = df.set_index(['cell_id', 'date'])
         dfs.append(df)
     
     if not dfs:
@@ -293,7 +296,7 @@ def extract_static_generic(spec_name, spec_config, h3_data_bundle, raw_root_dir)
         print(f"Không tìm thấy file: {file_path}")
         return pd.DataFrame()
 
-    gdf = gpd.GeoDataFrame({"h3_index": h3_ids}, geometry=h3_geoms, crs="EPSG:4326")
+    gdf = gpd.GeoDataFrame({"cell_id": h3_ids}, geometry=h3_geoms, crs="EPSG:4326")
 
     # -------------------------------------------------------------
     # LOGIC 1: Lấy TẤT CẢ các lớp dưới dạng Tỷ lệ % (Fraction) VÀ GHI TÊN
@@ -324,9 +327,9 @@ def extract_static_generic(spec_name, spec_config, h3_data_bundle, raw_root_dir)
                 
         df_out = pd.DataFrame(records)
         df_out = df_out.fillna(0) 
-        df_out["h3_index"] = h3_ids
+        df_out["cell_id"] = h3_ids
         
-        cols = ["h3_index"] + [c for c in df_out.columns if c != "h3_index"]
+        cols = ["cell_id"] + [c for c in df_out.columns if c != "cell_id"]
         return df_out[cols]
 
 
@@ -376,7 +379,7 @@ def extract_static_generic(spec_name, spec_config, h3_data_bundle, raw_root_dir)
         
         # 4. LƯU CẢ 2 CỘT VÀO FILE H3_RIVER.CSV
         return pd.DataFrame({
-            "h3_index": h3_ids,
+            "cell_id": h3_ids,
             col_name: vals,                                # Cột 1: river_proximity (Khoảng cách - km)
             f"{col_name}_fraction": water_fractions        # Cột 2: river_proximity_fraction (Tỷ lệ % - từ 0 đến 1)
         })
@@ -389,7 +392,7 @@ def extract_static_generic(spec_name, spec_config, h3_data_bundle, raw_root_dir)
         vals = [s[method] if s[method] is not None else np.nan for s in stats]
 
     return pd.DataFrame({
-        "h3_index": h3_ids,
+        "cell_id": h3_ids,
         col_name: vals
     })
 
@@ -415,7 +418,7 @@ def process_single_static_dataset(args):
 
 def merge_static_datasets():
     """Gộp các file tĩnh riêng lẻ thành file STATIC_MERGED.csv.
-    JOIN key: h3_index"""
+    JOIN key: cell_id"""
     print("\n🔄 [MERGE-STATIC] Bắt đầu gộp các file dữ liệu tĩnh...")
     dfs = []
 
@@ -423,8 +426,11 @@ def merge_static_datasets():
         file_path = os.path.join(DATA_PROCESSED, spec["output_file"])
         if os.path.exists(file_path):
             print(f"   📖 Reading {key}...")
-            df = pd.read_csv(file_path, dtype={'h3_index': str})
-            df = df.set_index('h3_index')
+            df = pd.read_csv(file_path)
+        if 'h3_index' in df.columns and 'cell_id' not in df.columns:
+            df.rename(columns={'h3_index': 'cell_id'}, inplace=True)
+        df['cell_id'] = df['cell_id'].astype(str)
+            df = df.set_index('cell_id')
             dfs.append(df)
 
     if dfs:
@@ -528,7 +534,7 @@ def extract_periodic_generic(spec_name, spec_config, h3_data, raw_root_dir, from
     records = []
     sorted_items = sorted(file_map.items())
 
-    gdf = gpd.GeoDataFrame({"h3_index": h3_ids}, geometry=h3_geoms, crs="EPSG:4326")
+    gdf = gpd.GeoDataFrame({"cell_id": h3_ids}, geometry=h3_geoms, crs="EPSG:4326")
 
     for dt, tif_path in sorted_items:
         date_str = dt.strftime("%Y-%m-%d")
@@ -540,7 +546,7 @@ def extract_periodic_generic(spec_name, spec_config, h3_data, raw_root_dir, from
         for i, h3_id in enumerate(h3_ids):
             val = stats[i][method] if stats[i][method] is not None else np.nan
             records.append({
-                "h3_index": h3_id,
+                "cell_id": h3_id,
                 "date": date_str,
                 col_name: val
             })
@@ -633,8 +639,11 @@ def merge_periodic_datasets():
         file_path = os.path.join(DATA_PROCESSED, spec["output_file"])
         if os.path.exists(file_path):
             print(f"   📖 Reading {key}...")
-            df = pd.read_csv(file_path, dtype={'h3_index': str})
-            df = df.set_index(['h3_index', 'date'])
+            df = pd.read_csv(file_path)
+        if 'h3_index' in df.columns and 'cell_id' not in df.columns:
+            df.rename(columns={'h3_index': 'cell_id'}, inplace=True)
+        df['cell_id'] = df['cell_id'].astype(str)
+            df = df.set_index(['cell_id', 'date'])
             dfs.append(df)
 
     if dfs:
