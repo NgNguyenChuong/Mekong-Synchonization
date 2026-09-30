@@ -115,4 +115,25 @@ Chạy nền qua đêm. **Ghi lại thời gian chạy và dung lượng output 
 
 ## Nhật ký quyết định
 
--
+### Trạng thái (cập nhật 2026-09-30)
+
+| Việc | Trạng thái | Bằng chứng / còn thiếu |
+|---|---|---|
+| 1 — `main.py` nhiều lưới | **XONG** | Biến môi trường `GRID_GEOJSON`, `OUTPUT_DIR` (+ `RAW_DIR`, xem quyết định). Test chạy `main.py` đầu–cuối trên lưới và raster tổng hợp, kiểm tra thư mục mặc định `data/processed/` không bị ghi. **Chưa** chạy nhánh cũ (không đặt biến) với dữ liệu thật |
+| 2 — Dữ liệu dạng lưới | **CHƯA LÀM** | Cần mạng ổn định và tài khoản Google Earth Engine của An |
+| 3 — Trích theo diện tích | **XONG phần code** | `src/processing.py` dùng `exactextract` 0.3.0 cho mọi biến; 8 test trên raster tổng hợp giá trị biết trước (ô phủ nửa pixel 1 + nửa pixel 2 → 1,5; ô nhỏ hơn pixel → giá trị pixel; NaN/NoData bị bỏ; ô không có pixel hợp lệ → NaN). **Còn thiếu theo tiêu chí review:** kiểm tay 3–5 ô mỗi khung trên dữ liệu thật — cần Việc 2 |
+| 4 — Chạy 13 cấu hình | **CHƯA LÀM** | Cần Việc 2 |
+| Cổng kiểm tra | **Chưa** | — |
+
+### Quyết định
+
+- **2026-09-30 — Sửa hai lỗi có sẵn trong `src/processing.py`:** (1) file không import được (`IndentationError` dòng 433, do dòng bị chèn sai thụt lề); (2) hàm gộp dữ liệu tĩnh và định kỳ dùng lại `df` cũ khi thiếu file.
+- **2026-09-30 — Thêm biến `RAW_DIR`** (ngoài đặc tả, cùng loại với `GRID_GEOJSON`/`OUTPUT_DIR`) để đặt dữ liệu thô ngoài ổ D, vì ổ D không đủ chỗ cho raster 24 năm.
+- **2026-09-30 — Thay đổi hành vi đáng chú ý của tầng trích:**
+  - Lớp phủ đất: ô không có pixel hợp lệ nhận NaN; trước đây bị điền 0 cho mọi lớp.
+  - Khoảng cách tới sông tính trên UTM ước lượng theo vùng (`estimate_utm_crs`) thay cho EPSG:3857 — dùng được cho vùng đối chứng ở tuần 6; ở vĩ độ ~10° giá trị nhỏ hơn bản cũ khoảng 1–2%.
+  - `method` khác `mean` / `all_classes` / `min_distance` giờ báo lỗi rõ ràng, thay vì âm thầm tính thống kê khác.
+  - Lỗi trong worker dữ liệu tĩnh và định kỳ giờ được đưa ra ngoài, không còn bị nuốt.
+- **2026-09-30 — Bỏ mã fill dữ liệu đã bị comment** trong `processing.py`; khôi phục được từ commit `4c68d945`.
+- **2026-09-30 — Git:** commit `820ec7ac` trên `feature/nckh-tuan1-multigrid`; `exactextract==0.3.0` thêm vào `requirements.txt`.
+- Ghi chú: cảnh báo `PendingDeprecationWarning` khi chạy test phát sinh bên trong thư viện `rasterio`, không từ mã dự án.

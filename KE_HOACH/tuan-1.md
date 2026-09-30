@@ -145,4 +145,26 @@ Với cả 12 file, tính: số ô, diện tích trung bình, độ lệch chu�
 
 ## Nhật ký quyết định
 
--
+### Trạng thái (cập nhật 2026-09-30)
+
+| Việc | Trạng thái | Bằng chứng / còn thiếu |
+|---|---|---|
+| 1 — Zenodo | **ĐANG DỞ** (tạm hoãn chờ mạng) | Có: `scripts/survey_zenodo.py` (tải + MD5, đọc theo khối, footprint ≥ 50% số năm, suy chế độ cảm biến), chạy thử trên raster tổng hợp nhận đúng TM và OLI; danh sách MD5 chính thức 19 file (7,43 GB) lấy từ API Zenodo; năm 2000 đã tải, MD5 đúng. **Thiếu:** 18 năm còn lại, bảng khảo sát thật, chốt ngưỡng và năm bị loại, sửa `docs/reports/zenodo_dataset_metadata.md` (vẫn còn câu chưa có nguồn về lý do thiếu năm, dS/m ghi như sự thật, chưa có mục Comment/Reply) |
+| 2 — Gỡ gắn cứng | **XONG** | `cell_id`, `--target`, `--label-csv` (tuỳ chọn), `--grid-type`, `--include-coords`; `tests/test_generic_grid.py` dùng ID không phải H3 |
+| 3 — 13 lưới | **XONG** | `scripts/generate_all_grids.py` + 4 hàm trong `src/preprocessing.py`; `KE_HOACH/ket-qua/tuan1_doi_chieu_dien_tich.csv`; `tests/test_grid_validation.py` (19 test) |
+| Cổng kiểm tra | Câu 1 **chưa**; câu 2–4 **đạt** | 2: `pytest -q` một phiên — 42 passed (lúc đóng tuần 1), 50 passed (sau tuần 2). 3: 13 file. 4: ô vuông và kinh–vĩ độ lệch H3 0,05–0,31%; S2 lệch theo đặc tính hệ (L9 +35%, L10 +137%, L11 −41%, L12 +3,5%) |
+
+### Quyết định
+
+- **2026-09-29 — 13 lưới thay vì 12:** thêm S2 L10 làm lưới kẹp ở res 6 (T1-03). Kéo theo tuần 4 có 858 cấu hình thay vì 792.
+- **2026-09-29 — Khớp diện tích theo diện tích CỤC BỘ** của lưới H3 trên ranh giới chuẩn, không theo trung bình toàn cầu của `h3.average_hexagon_area` (tại ĐBSCL ô H3 lớn hơn trung bình toàn cầu ~15%). Mục tiêu: res 5 = 291,98 km², res 6 = 41,71, res 7 = 5,96 → cạnh ô vuông 17.087 / 6.458 / 2.441 m; bước kinh–vĩ độ 0,1552 / 0,0586 / 0,0222°.
+- **2026-09-29 — Ranh giới chuẩn duy nhất:** `webapp/backend/data/mekong_delta_boundary.geojson` (39.867,81 km²), giữ toàn bộ đảo, không dùng `MIN_ISLAND_AREA_KM2`.
+- **2026-09-29 — Quy tắc chọn ô chung cho 4 khung:** ô thuộc lưới khi tâm nằm trong ranh giới; không cắt hình học ô; ghi `overlap_frac`. Neo gốc ô vuông ở bội số cạnh (UTM 48N), kinh–vĩ độ ở bội số bước tính từ (0°, 0°).
+- **2026-09-29 — Bỏ NDWI khỏi đặc trưng khi mục tiêu là độ mặn** (và ngược lại): mã GEE của tác giả cho thấy cả hai cùng dựng từ một band NIR.
+- **2026-09-30 — Đổi vai trò:** Antigravity dừng; Claude thực hiện, An review.
+- **2026-09-30 — Sự cố ghi đè file:** 5 lần (29/09: 14:00:55, 14:49:53, 15:07:39, 15:56:08, 16:21:19) — nhiều file bị ghi về bản cũ hoặc 0 byte cùng lúc. Nghi do editor (Antigravity/VS Code) lưu bộ đệm cũ; **chưa chứng minh**. Khôi phục từ `artifacts/backup_baseline_code/`.
+- **2026-09-30 — Sửa khi khôi phục:** `LatLngPoly(outer, holes)` sai cách gọi H3 v4 → `LatLngPoly(outer, *holes)`; lọc vòng lỗ suy biến theo số điểm phân biệt; `generate_h3_grid()` không tự đọc cache; script sinh lưới gọi lại hàm trong `preprocessing.py` thay vì chép logic; ID lưới kinh–vĩ độ đổi sang chỉ số nguyên `(iy, ix)` để tránh sai số dấu phẩy động.
+- **2026-09-30 — Xung đột tên module `config`:** `tests/conftest.py` đăng ký một module `config` hợp nhất (gốc `src/config.py` + thuộc tính riêng của `webapp/backend/config.py`), chỉ có tác dụng khi chạy test.
+- **2026-09-30 — Đối chiếu lưới H3 res 7 cũ** (`data/reference/h3_grid_dbscl_old_res7.geojson`, 6.959 ô): 98,3% ô mới có trong lưới cũ; 382 ô chỉ có ở lưới cũ đều có tâm ngoài ranh giới chuẩn (lưới cũ dùng ranh giới rộng hơn).
+- **2026-09-30 — Lưu dữ liệu Zenodo ở `A:\Dataset_NCKH\zenodo_15653696`**: ổ D chỉ còn 4,1 GB trống.
+- **2026-09-30 — Git:** nhánh mới `feature/nckh-tuan1-multigrid` (nhánh `feature/create-Ui` trùng `main`, không có commit riêng); commit `4c68d945`; `.gitignore` thêm ngoại lệ cho `KE_HOACH/` và `GIAO_TIEP/`. Chưa push. `webapp/`, `tests/test_api.py`, `tests/test_predictor.py` **chưa commit** (phần demo giao diện — An quyết định nhánh).
