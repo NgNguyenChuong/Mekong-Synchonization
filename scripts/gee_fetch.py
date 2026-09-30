@@ -5,7 +5,7 @@ Lenh con:
   era5    ERA5-Land daily -> 1 file/thang/bien, band k = ngay k, ten `<bien>_YYYY_MM.tif`
           (dung quy uoc `utils_h3.parse_year_month` + `processing.extract_generic`).
           Tai truc tiep (anh nho, ~0.1 do).
-  static  Copernicus DEM GLO-30 + ESA WorldCover v200 (2021) -> Export len Google Drive.
+  static  Copernicus DEM GLO-30 (ban 2024_1) + ESA WorldCover v200 (2021) -> Export len Google Drive.
   labels  Tai tao nhan man mua kho theo DUNG script README Zenodo 15653696:
           Landsat 8 C2 L2, 01/11/(N-1)..30/04/N, mat na QA_PIXEL bit 0-4 + QA_RADSAT,
           median, Salinity = 28.013*exp(-13.39*SR_B5), NDWIchen = ND(SR_B5, SR_B7).
@@ -93,7 +93,10 @@ def cmd_era5(args):
             path = os.path.join(args.out, folder, f"{var}_{p.year}_{p.month:02d}.tif")
             if os.path.exists(path):
                 continue
-            daily = coll.map(lambda im: (_rh(ee, im) if fn is None else fn(im)).float())
+            # Bien: ERA5-Land ghi solar = 0 (khong phai NoData) o pixel bien -> keo trung binh o ven bien.
+            # Dung mat na dat cua temperature_2m cho moi bien.
+            daily = coll.map(lambda im: (_rh(ee, im) if fn is None else fn(im))
+                             .updateMask(im.select("temperature_2m").mask()).float())
             img = daily.toBands().rename([f"b{i + 1}" for i in range(n)])
             url = img.getDownloadURL({"region": region, "scale": ERA5_SCALE_M, "crs": "EPSG:4326",
                                       "format": "GEO_TIFF"})
@@ -111,7 +114,7 @@ def _export(ee, image, name, region, scale, folder):
 def cmd_static(args):
     ee = _init(args.project)
     region = _region(ee, args.boundary, args.buffer_km)
-    dem = ee.ImageCollection("COPERNICUS/DEM/GLO30").filterBounds(region).select("DEM").mosaic().float()
+    dem = ee.ImageCollection("COPERNICUS/DEM/GLO30_2024_1").filterBounds(region).select("DEM").mosaic().float()
     _export(ee, dem.clip(region), "DEM_DBSCL", region, 30, args.drive_folder)
     wc = ee.ImageCollection("ESA/WorldCover/v200").first().select("Map").uint8()
     _export(ee, wc.clip(region), "LandCover_DBSCL_2021", region, 10, args.drive_folder)
