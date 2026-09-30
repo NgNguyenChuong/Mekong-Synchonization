@@ -51,24 +51,29 @@ def get_h3_sample_points(hex_geom):
 
 def load_h3_multipoints(h3_path, crs_metric, crs_wgs84):
     """
-    Load H3 grid và trả về dữ liệu hình học cần thiết
+    Load grid (H3 hoac generic) và trả về dữ liệu hình học cần thiết
     """
     if not os.path.exists(h3_path):
         raise FileNotFoundError(f"Không tìm thấy file Grid: {h3_path}")
 
     print(f"loading grid: {h3_path}")
-    h3 = gpd.read_file(h3_path)
+    cells_df = gpd.read_file(h3_path)
     
     # Chuyển đổi CRS để tính toán hình học chính xác
-    h3_metric = h3.to_crs(crs_metric)
-    h3_wgs = h3_metric.to_crs(crs_wgs84)
+    cells_metric = cells_df.to_crs(crs_metric)
+    cells_wgs = cells_metric.to_crs(crs_wgs84)
     
-    h3_ids = h3["h3_index"].tolist()
+    if "cell_id" in cells_df.columns:
+        cell_ids = cells_df["cell_id"].astype(str).tolist()
+    elif "h3_index" in cells_df.columns:
+        cell_ids = cells_df["h3_index"].astype(str).tolist()
+    else:
+        raise KeyError(f"Khong tim thay cot cell_id hoac h3_index trong {h3_path}")
     
     # Tạo point groups cho sampling
-    point_groups = [get_h3_sample_points(geom) for geom in h3_wgs.geometry]
+    point_groups = [get_h3_sample_points(geom) for geom in cells_wgs.geometry]
     
-    return h3_ids, point_groups, list(h3_wgs.geometry)
+    return cell_ids, point_groups, list(cells_wgs.geometry)
 
 def random_points_in_polygon(poly, n):
     """Sinh n điểm ngẫu nhiên nằm trong polygon"""

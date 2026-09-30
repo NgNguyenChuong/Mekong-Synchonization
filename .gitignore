@@ -16,3 +16,31 @@ env/
 .DS_Store
 Thumbs.db
 
+# Training experiment outputs (output sinh ra, khong commit)
+artifacts/experiments/*/
+
+# pytest
+.pytest_cache/
+
+# Documentation and generated documents
+*.md
+*.docx
+*.pdf
+
+# Local editor and assistant settings
+.vscode/
+.claude/
+
+# Coverage, logs, and temporary files
+.coverage
+.coverage.*
+htmlcov/
+*.log
+*.tmp
+*.bak
+*.ipynb_checkpoints/
+
+
+# Tai lieu noi bo cua nhom (ke hoach, phoi hop) - khong dua len git
+KE_HOACH/
+GIAO_TIEP/
