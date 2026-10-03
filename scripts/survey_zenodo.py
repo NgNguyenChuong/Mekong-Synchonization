@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 import urllib.request
 
 import geopandas as gpd
@@ -51,6 +52,29 @@ def fetch_manifest():
     ]
 
 
+def fetch_resumable(url, tmp, size, tries=8, wait=10):
+    """Tai vao `tmp`, noi tiep tu cho dung (HTTP Range) va thu lai khi mat ket noi.
+
+    Khong gia User-Agent trinh duyet: Zenodo tra 403 "unusual traffic" voi "Mozilla/5.0" (2026-10-01).
+    """
+    for k in range(tries):
+        have = os.path.getsize(tmp) if os.path.exists(tmp) else 0
+        if have >= size:
+            return
+        req = urllib.request.Request(url, headers={"User-Agent": "NCKH-SGU-research-downloader/1.0 (python-urllib)", "Range": f"bytes={have}-"})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                mode = "ab" if r.status == 206 else "wb"  # server bo qua Range -> tai lai tu dau
+                with open(tmp, mode) as out:
+                    while chunk := r.read(1 << 20):
+                        out.write(chunk)
+        except Exception as exc:  # mat ket noi, 5xx, timeout
+            if k == tries - 1:
+                raise
+            print(f"    [thu lai {k + 1}/{tries - 1}] {str(exc)[:100]} -> cho {wait * 2 ** k}s", flush=True)
+            time.sleep(wait * 2 ** k)
+
+
 def download(manifest, data_dir):
     os.makedirs(data_dir, exist_ok=True)
     for f in sorted(manifest, key=lambda x: x["key"]):
@@ -60,7 +84,7 @@ def download(manifest, data_dir):
             continue
         print(f"  [tai] {f['key']} ({f['size'] / 1e6:.0f} MB)", flush=True)
         tmp = path + ".part"
-        urllib.request.urlretrieve(f["url"], tmp)
+        fetch_resumable(f["url"], tmp, f["size"])
         got = md5sum(tmp)
         if got != f["md5"]:
             os.remove(tmp)

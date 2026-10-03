@@ -211,25 +211,32 @@ STATIC_SPECS = load_static_specs()
 # Dùng cho dữ liệu thay đổi theo thời gian nhưng KHÔNG PHẢI hàng ngày
 # Ví dụ: NDVI mỗi 16 ngày, ảnh vệ tinh mỗi 5 ngày...
 
+# TAT CO Y (2026-10-03) — RO RI NHAN: nhan do man Zenodo = 28.013*exp(-13.39*NIR),
+# NIR la phan xa Landsat B5 trong mua kho (Nguyen et al. 2020; Wang et al. 2025).
+# NDVI (NIR+Red) va NDWI (NIR+SWIR) tu Sentinel-2/MODIS do CUNG dai luong phan xa NIR
+# be mat trong cung khoang thoi gian -> mo hinh hoc lai cong thuc nhan, sai so dep gia tao.
+# Khong dua dac trung quang hoc nao do cung dai luong voi band trong cong thuc nhan,
+# cung khoang thoi gian, vao bo dac trung chinh (ke ca qua periodic_specs.json).
+# Chi dung trong thi nghiem kiem ro ri co doi chung (oracle, NDVI lech mua) — xem NHAT_KY.
 DEFAULT_PERIODIC_SPECS = {
-    "sentinel_ndvi": {
-        "folder": "sentinel2_ndvi",
-        "file_pattern": "NDVI_{date}.tif",
-        "date_pattern": "%Y-%m-%d",
-        "col_name": "ndvi",
-        "output_file": "h3_sentinel_ndvi.csv",
-        "method": "mean",
-        "typical_interval_days": 30
-    },
-    "sentinel_ndwi": {
-        "folder": "sentinel2_ndvi",
-        "file_pattern": "NDWI_{date}.tif",
-        "date_pattern": "%Y-%m-%d",
-        "col_name": "ndwi",
-        "output_file": "h3_sentinel_ndwi.csv",
-        "method": "mean",
-        "typical_interval_days": 30
-    },
+    # "sentinel_ndvi": {
+    #     "folder": "sentinel2_ndvi",
+    #     "file_pattern": "NDVI_{date}.tif",
+    #     "date_pattern": "%Y-%m-%d",
+    #     "col_name": "ndvi",
+    #     "output_file": "h3_sentinel_ndvi.csv",
+    #     "method": "mean",
+    #     "typical_interval_days": 30
+    # },
+    # "sentinel_ndwi": {
+    #     "folder": "sentinel2_ndvi",
+    #     "file_pattern": "NDWI_{date}.tif",
+    #     "date_pattern": "%Y-%m-%d",
+    #     "col_name": "ndwi",
+    #     "output_file": "h3_sentinel_ndwi.csv",
+    #     "method": "mean",
+    #     "typical_interval_days": 30
+    # },
 }
 
 PERIODIC_SPECS_OVERRIDE_FILE = os.path.join(DATA_RAW, "periodic_specs.json")

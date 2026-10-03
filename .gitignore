@@ -44,3 +44,5 @@ htmlcov/
 # Tai lieu noi bo cua nhom (ke hoach, phoi hop) - khong dua len git
 KE_HOACH/
 GIAO_TIEP/
+
+_workspace/
