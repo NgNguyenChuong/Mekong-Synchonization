@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <title>Dự đoán độ mặn Đồng bằng sông Cửu Long</title>
+  <link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Widgets/widgets.css" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div id="cesiumContainer"></div>
+
+  <div id="panel">
+    <h1>Độ mặn ĐBSCL</h1>
+    <div id="predictionModeBadge" class="mode-badge mode-badge-mock">⚠ MOCK — dữ liệu mô phỏng</div>
+    <p class="note" id="predictionModeNote">Chưa phải mô hình dự đoán thật, không dùng để kết luận khoa học.</p>
+
+    <section class="control-group">
+      <label for="scopeSelect">Phạm vi hiển thị</label>
+      <select id="scopeSelect">
+        <option value="mekong">ĐBSCL (chi tiết)</option>
+        <option value="world">Toàn cầu (minh hoạ, thô)</option>
+      </select>
+      <p id="scopeNote" class="note scope-note hidden">
+        Chế độ toàn cầu chỉ mang tính minh hoạ pattern (không có ý nghĩa vật lý thật), độ phân giải thô hơn nhiều so với ĐBSCL.
+      </p>
+    </section>
+
+    <section class="control-group">
+      <label for="datePicker">Chọn ngày cụ thể</label>
+      <div class="row">
+        <input type="date" id="datePicker" />
+        <button id="predictBtn">Dự đoán</button>
+      </div>
+    </section>
+
+    <section class="control-group">
+      <div class="row space-between">
+        <label for="monthSlider">Xem theo tháng</label>
+        <span id="monthLabel" class="month-label">--</span>
+      </div>
+      <input type="range" id="monthSlider" min="1" max="12" step="1" value="1" />
+      <div class="row">
+        <button id="playBtn" class="secondary">▶ Tua nhanh</button>
+        <button id="stopBtn" class="secondary hidden">⏸ Dừng</button>
+      </div>
+    </section>
+
+    <div id="status"></div>
+
+    <div id="legend">
+      <div class="legend-title">Độ mặn (ppt)</div>
+      <div class="legend-gradient"></div>
+      <div class="legend-labels">
+        <span id="legendMin">0</span>
+        <span id="legendMax">--</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="chartPanel">
+    <div class="row space-between">
+      <span class="chart-title">Xu hướng độ mặn trung bình toàn vùng</span>
+      <button id="clearChartBtn" class="link-btn">Xoá</button>
+    </div>
+    <canvas id="salinityChart" height="90"></canvas>
+    <p class="chart-hint">Mỗi lần xem 1 mốc thời gian (kéo thanh trượt / tua nhanh / bấm Dự đoán) sẽ tự thêm 1 điểm vào biểu đồ.</p>
+  </div>
+
+  <div id="infoPopup" class="hidden">
+    <div id="infoPopupHeader">
+      <span id="infoPopupSwatch"></span>
+      <span id="infoPopupTitle">Thông tin ô lục giác</span>
+      <button id="infoPopupClose" aria-label="Đóng">✕</button>
+    </div>
+    <div id="infoPopupContent"></div>
+    <button id="viewHexStatsBtn" class="link-btn hex-stats-trigger">Xem xu hướng theo thời gian tại đây ▸</button>
+  </div>
+
+  <div id="hexStatsPanel" class="hidden">
+    <div class="row space-between">
+      <span class="chart-title">Thống kê theo địa điểm</span>
+      <button id="hideHexStatsBtn" class="link-btn">Ẩn</button>
+    </div>
+    <div id="hexStatsHexId" class="hex-stats-id">--</div>
+
+    <div class="row hex-stats-dates">
+      <div>
+        <label for="hexStatsFrom">Từ</label>
+        <input type="date" id="hexStatsFrom" />
+      </div>
+      <div>
+        <label for="hexStatsTo">Đến</label>
+        <input type="date" id="hexStatsTo" />
+      </div>
+    </div>
+    <div class="row">
+      <button id="hexStatsViewBtn" class="secondary">Xem</button>
+      <button id="hexStatsClearBtn" class="secondary">Xoá</button>
+    </div>
+
+    <div id="hexStatsStatus"></div>
+    <canvas id="hexTrendChart" height="90"></canvas>
+  </div>
+
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Cesium.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.1/chart.umd.min.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
