@@ -44,3 +44,6 @@ htmlcov/
 # Tai lieu noi bo cua nhom (ke hoach, phoi hop) - khong dua len git
 KE_HOACH/
 GIAO_TIEP/
+
+# Bao cao trung gian cua harness Claude Code
+_workspace/

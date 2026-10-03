@@ -156,6 +156,24 @@ def cmd_labels(args):
                 args.drive_folder)
 
 
+def cmd_watermask(args):
+    """Mask nuoc dong theo mua kho: cung bo canh, cung mat na may, cung khoang ngay voi nhan.
+    Moi canh: MNDWI = ND(SR_B3, SR_B6) > 0 la nuoc. Xuat 2 band uint8:
+      water_freq = % so lan quan sat khong may la nuoc (255 = khong co quan sat),
+      n_clear    = so lan quan sat khong may.
+    Chi dung de loai pixel nuoc khoi nhan, KHONG dung lam dac trung."""
+    ee = _init(args.project)
+    region = _region(ee, args.boundary, 0)
+    for year in args.years:
+        coll = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+                .filterDate(f"{year - 1}-11-01", f"{year}-04-30").filterBounds(region).map(_mask_oli))
+        print(f"{year}: {coll.size().getInfo()} canh (l8)")
+        water = coll.map(lambda im: im.normalizedDifference(["SR_B3", "SR_B6"]).gt(0).rename("water"))
+        freq = water.mean().multiply(100).round().unmask(255).uint8().rename("water_freq")
+        n = water.count().unmask(0).min(255).uint8().rename("n_clear")
+        _export(ee, freq.addBands(n).clip(region), f"{year}_MD_dry_watermask_l8", region, 30, args.drive_folder)
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--project", default=None, help="Cloud project co bat Earth Engine (hoac bien EE_PROJECT)")
@@ -174,5 +192,8 @@ if __name__ == "__main__":
     lb.add_argument("--years", nargs="+", type=int, default=[2020, 2021, 2022, 2023])
     lb.add_argument("--sensors", choices=["l8", "l8l9"], default="l8")
     lb.add_argument("--drive-folder", default="NCKH_GEE")
+    wm = sub.add_parser("watermask")
+    wm.add_argument("--years", nargs="+", type=int, default=list(range(2014, 2027)))
+    wm.add_argument("--drive-folder", default="NCKH_GEE")
     a = ap.parse_args()
-    {"era5": cmd_era5, "static": cmd_static, "labels": cmd_labels}[a.cmd](a)
+    {"era5": cmd_era5, "static": cmd_static, "labels": cmd_labels, "watermask": cmd_watermask}[a.cmd](a)
