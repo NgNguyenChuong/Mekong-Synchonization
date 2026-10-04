@@ -133,3 +133,41 @@ def test_features_tuong_minh_tien_to_ghi_ten_da_giai(season_data, tmp_path):
     assert cfg["features_requested"] == ["dem_mean", "rain_mm", "landcover_class_*"]
     assert cfg["features_source"] == "cli"
     assert cfg["features_missing"] == []
+
+
+def test_apply_train_filter_quy_tac():
+    """Bo loc tap huan luyen cua --mode (An duyet 2026-10-04): chi train_ok_scope = True, khong lang le."""
+    import numpy as np
+    from training.train import apply_train_filter
+
+    df = pd.DataFrame({"salinity": [1.0, 2.0, np.nan, 3.0], "train_ok_scope": [True, False, False, "True"]})
+    out, info = apply_train_filter(df, "salinity", "train_ok_scope")
+    assert out.index.tolist() == [0, 3] and info["n_rows_label_excluded"] == 1 and info["n_rows_train_col_true"] == 2
+    with pytest.raises(ValueError, match="khong co cot"):
+        apply_train_filter(df.drop(columns="train_ok_scope"), "salinity", "train_ok_scope")
+    with pytest.raises(ValueError, match="NaN"):
+        apply_train_filter(df.assign(train_ok_scope=[True, None, False, True]), "salinity", "train_ok_scope")
+    with pytest.raises(ValueError, match="khong co nhan"):
+        apply_train_filter(df.assign(train_ok_scope=[True, False, True, True]), "salinity", "train_ok_scope")
+    all_lab, info = apply_train_filter(df, "salinity", None)
+    assert len(all_lab) == 3 and "KHONG loc" in info["note"]
+
+
+def test_fit_predict_dien_thieu_cho_diem_bang_trung_vi_tap_huan_luyen():
+    """Kiem tra dot bien M15 (2026-10-04): diem (extra) phai duoc dien gia tri thieu bang trung vi CUA TAP HUAN
+    LUYEN (handler fit tren train), khong fit lai tren chinh tap diem."""
+    import numpy as np
+    from training.features import MissingValueHandler
+    from training.train import _fit_predict
+
+    rng = np.random.default_rng(0)
+    x = rng.uniform(0, 2, 200)
+    x[::5] = np.nan                                  # train: trung vi ~1
+    train = pd.DataFrame({"x": x, "salinity": np.nan_to_num(2 * x, nan=5.0), "season": 2019})
+    other = pd.DataFrame({"x": [0.5, 1.5], "season": 2019})
+    extra = pd.DataFrame({"x": [np.nan, 10.0, 10.0, 12.0], "season": 2019})  # trung vi tap diem = 10
+    _, model, handler, ppred = _fit_predict("linear", {}, 42, train, other, ["x"], "salinity", extra=extra)
+    ref = MissingValueHandler().fit(train[["x"]])
+    expected = model.predict(ref.transform(extra[["x"]]))
+    np.testing.assert_allclose(ppred, expected)
+    assert handler.medians_["x"] == ref.medians_["x"]

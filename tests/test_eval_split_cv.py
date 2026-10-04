@@ -395,12 +395,52 @@ def cli_data(tmp_path_factory, real):
     return env, lab_csv, folds_csv, table, test_keys
 
 
-def _run_mode(cli_data, cwd, name, mode, *extra):
+def _run_mode(cli_data, cwd, name, mode, *extra, no_filter=True):
+    # Nhan tong hop khong co train_ok_scope -> phai ghi ro --allow-no-train-filter (mac dinh bat loc).
     env, lab_csv, folds_csv, _, _ = cli_data
     cmd = [sys.executable, os.path.join(ROOT, "src", "training", "train.py"), "--label-csv", str(lab_csv),
            "--mode", mode, "--grid", GRID_H3_5, "--blocks", BLOCKS, "--cv-folds", str(folds_csv),
-           "--experiment-name", name, *extra]
+           "--experiment-name", name, *extra] + (["--allow-no-train-filter"] if no_filter else [])
     return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=600)
+
+
+@need_real
+def test_cli_mode_khong_co_cot_loc_bao_loi(cli_data, tmp_path):
+    proc = _run_mode(cli_data, tmp_path, "e0", "cv", "--model", "linear", no_filter=False)
+    assert proc.returncode == 2 and "train_ok_scope" in proc.stderr
+
+
+@need_real
+def test_cli_table_chi_huan_luyen_dong_train_ok_scope(cli_data, tmp_path):
+    """--table: moi dong vao CV co train_ok_scope = True; so dong huan luyen khop bang (An 2026-10-04)."""
+    env, lab_csv, folds_csv, table, _ = cli_data
+    lab = pd.read_csv(lab_csv, dtype={"cell_id": str})
+    rng = np.random.default_rng(11)
+    t = lab.copy()
+    t["dem_mean"] = rng.uniform(0, 3, len(t))
+    t["train_ok"] = t["salinity"].notna()
+    t["scope_frac"] = np.where(rng.uniform(size=len(t)) < 0.2, 0.0, 0.5)
+    t["train_ok_scope"] = t["train_ok"] & (t["scope_frac"] > 0)
+    tab = tmp_path / "unified.csv"
+    t.to_csv(tab, index=False)
+    cmd = [sys.executable, os.path.join(ROOT, "src", "training", "train.py"), "--table", str(tab), "--mode", "cv",
+           "--grid", GRID_H3_5, "--blocks", BLOCKS, "--cv-folds", str(folds_csv), "--model", "linear",
+           "--experiment-name", "et", "--no-point-eval"]
+    proc = subprocess.run(cmd, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=600)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = tmp_path / "artifacts" / "experiments" / "et" / "cv"
+    oof = pd.read_csv(out / "oof_predictions.csv", dtype={"cell_id": str})
+    ok = t.set_index(["cell_id", "season"])["train_ok_scope"]
+    assert ok.reindex(pd.MultiIndex.from_frame(oof[["cell_id", "season"]])).all()  # khong dong loai nao lot vao
+    cfg = json.loads((out / "config.json").read_text(encoding="utf-8"))
+    sp = assign_eval_split(t[t["train_ok_scope"]], table)
+    assert cfg["n_train_rows"] == int((sp["split"] == "train").sum())
+    assert cfg["train_filter"]["n_rows_train_col_true"] == int(t["train_ok_scope"].sum())
+    assert cfg["train_filter"]["n_rows_label_excluded"] == int((t["salinity"].notna() & ~t["train_ok_scope"]).sum())
+    assert cfg["features"] == ["dem_mean"] and cfg["table_sha256"]
+    # --table khong kem --mode -> tu choi
+    bad = subprocess.run(cmd[:4] + ["--experiment-name", "x"], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert bad.returncode == 2
 
 
 @need_real
@@ -731,3 +771,205 @@ def test_cli_v5_cell_table_doi_chieu_provenance(cli_data, tmp_path):
     pp.write_text(json.dumps(dict(prov, grid_sha256=file_sha256(GRID_S2_9))), encoding="utf-8")
     proc = _run_mode(cli_data, tmp_path, "e11", "cv", "--model", "linear", "--cell-table", str(ct))
     assert proc.returncode == 2 and "grid_sha256" in proc.stderr, proc.stdout + proc.stderr
+
+
+# ------------------------------------------------------------------ phuong an C (cham theo diem)
+POINTS = os.path.join(ROOT, "data", "eval", "eval_points.geojson")
+
+
+@pytest.fixture(scope="module")
+def c_data(cli_data, tmp_path_factory):
+    """Bang hop nhat TONG HOP tren luoi that h3_res_5 + dap an TONG HOP cho 10.801 diem that."""
+    import geopandas as gpd
+
+    env, lab_csv, folds_csv, table, _ = cli_data
+    d = tmp_path_factory.mktemp("c")
+    rng = np.random.default_rng(21)
+    t = pd.read_csv(lab_csv, dtype={"cell_id": str})
+    t["dem_mean"] = rng.uniform(0, 3, len(t))
+    t["train_ok"] = t["salinity"].notna()
+    t["scope_frac"] = np.where(rng.uniform(size=len(t)) < 0.15, 0.0, 0.5)  # ~15% (o, mua) khong huan luyen
+    t["train_ok_scope"] = t["train_ok"] & (t["scope_frac"] > 0)
+    # tam phan dat: tam hinh hoc + lech ngau nhien theo o (de chung minh IDW dung cot bang, khong dung tam hinh hoc)
+    g = gpd.read_file(GRID_H3_5).to_crs(32648)
+    off = pd.DataFrame({"cell_id": g["cell_id"].astype(str), "scope_cx": g.geometry.centroid.x + rng.uniform(-3e3, 3e3, len(g)),
+                        "scope_cy": g.geometry.centroid.y + rng.uniform(-3e3, 3e3, len(g))})
+    t = t.merge(off, on="cell_id", how="left")
+    tab = d / "unified.csv"
+    t.to_csv(tab, index=False)
+    pts = gpd.read_file(POINTS)
+    ref = pd.DataFrame([(p, s) for p in pts["point_id"] for s in range(2018, 2022)], columns=["point_id", "season"])
+    ref["n_valid_3x3"] = rng.choice([9, 7, 5, 3], size=len(ref), p=[0.6, 0.2, 0.1, 0.1])
+    ref["ref_salinity"] = np.where(ref["n_valid_3x3"] >= 5, rng.uniform(0, 4, len(ref)), np.nan)
+    ref_csv = d / "points_reference.csv"
+    ref.to_csv(ref_csv, index=False)
+    return env, tab, ref_csv, folds_csv, table, t
+
+
+def _run_c(c_data, cwd, name, mode, *extra):
+    env, tab, ref_csv, folds_csv, _, _ = c_data
+    cmd = [sys.executable, os.path.join(ROOT, "src", "training", "train.py"), "--table", str(tab), "--mode", mode,
+           "--grid", GRID_H3_5, "--blocks", BLOCKS, "--cv-folds", str(folds_csv), "--points", POINTS,
+           "--points-ref", str(ref_csv), "--experiment-name", name, *extra]
+    return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=900)
+
+
+@need_real
+def test_phuong_an_c_cv_va_final_moi_diem_mot_lan(c_data, tmp_path):
+    import geopandas as gpd
+
+    from training.evaluate import assign_points_to_cells
+    from training.point_eval import point_blocks
+
+    env, tab, ref_csv, folds_csv, table, t = c_data
+    proc = _run_c(c_data, tmp_path, "pc", "cv", "--model", "hist_gb", "--seeds", "1", "2")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = tmp_path / "artifacts" / "experiments" / "pc" / "cv"
+    op = pd.read_csv(out / "oof_points.csv", dtype={"point_id": str, "point_cell_id": str, "block_id": str})
+    pts = gpd.read_file(POINTS)
+    folds = pd.read_csv(folds_csv, dtype={"block_id": str})
+    blocks = gpd.read_file(BLOCKS)
+    pb = point_blocks(pts, blocks, folds).set_index("point_id")
+    ref = pd.read_csv(ref_csv, dtype={"point_id": str})
+    valid = ref[ref["n_valid_3x3"] >= 5]
+    # (1) moi (diem, mua) cv duoc du doan DUNG MOT LAN moi seed; tap = diem khoi khong giu rieng x mua != 2020
+    cv_keys = valid[~valid["point_id"].map(pb["is_holdout"]) & (valid["season"] != 2020)]
+    for sd in (1, 2):
+        got = op[op["seed"] == sd]
+        assert not got.duplicated(["point_id", "season"]).any()
+        assert set(zip(got["point_id"], got["season"])) == set(zip(cv_keys["point_id"], cv_keys["season"]))
+    # (2) bang mo hinh cua fold chua KHOI CUA DIEM (theo vi tri) - khoi lay lai doc lap tu hinh hoc
+    assert (op["fold"] == op["point_id"].map(pb["cv_fold"])).all()
+    assert (op["block_id"] == op["point_id"].map(pb["block_id"])).all()
+    # (3) khong diem nao du doan bang mo hinh da hoc o chua no: o chua diem khong la "train" cua fold do
+    mem = pd.read_csv(out / "cv_membership.csv", dtype={"cell_id": str})
+    trained = set(zip(mem.loc[mem["role"] == "train", "cell_id"], mem.loc[mem["role"] == "train", "fold"]))
+    assert not any((c, f) in trained for c, f in zip(op["point_cell_id"], op["fold"]))
+    # o chua diem theo luat co dinh (canh chung -> cell_id nho nhat)
+    cell = assign_points_to_cells(pts, gpd.read_file(GRID_H3_5).astype({"cell_id": str}))
+    assert (op["point_cell_id"] == op["point_id"].map(cell)).all()
+    # (4) diem o o KHONG huan luyen (train_ok_scope False) van duoc cham
+    ok = t.set_index(["cell_id", "season"])["train_ok_scope"]
+    in_excluded = ~ok.reindex(pd.MultiIndex.from_arrays([op["point_cell_id"], op["season"]])).to_numpy(dtype=bool)
+    assert in_excluded.any()
+    # (5) dap an = ref_salinity cua dong >= 5/9
+    r = valid.set_index(["point_id", "season"])["ref_salinity"]
+    assert np.allclose(op["y_ref"], r.reindex(pd.MultiIndex.from_frame(op[["point_id", "season"]])).to_numpy())
+    cfg = json.loads((out / "config.json").read_text(encoding="utf-8"))
+    assert cfg["point_eval"]["enabled"] and cfg["point_metrics_mean_over_seeds"]["n_seeds"] == 2
+    assert cfg["cv_metrics_mean_over_seeds"]["mae"] is not None  # sai so theo o van giu (ket qua phu)
+    assert not [k for k in cfg if "test" in k.lower()]
+
+    # final: phan con lai; hop cv + final = moi (diem, mua) co dap an hop le
+    proc = _run_c(c_data, tmp_path, "pc", "final", "--model", "hist_gb", "--seeds", "1")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    fp = pd.read_csv(tmp_path / "artifacts" / "experiments" / "pc" / "final" / "final_points.csv",
+                     dtype={"point_id": str})
+    assert not fp.duplicated(["point_id", "season"]).any()
+    all_keys = set(zip(valid["point_id"], valid["season"]))
+    cv1 = set(zip(op.loc[op["seed"] == 1, "point_id"], op.loc[op["seed"] == 1, "season"]))
+    fin = set(zip(fp["point_id"], fp["season"]))
+    assert not cv1 & fin and cv1 | fin == all_keys
+    hb = fp["point_id"].map(pb["is_holdout"])
+    exp_group = np.where(hb & (fp["season"] == 2020), "ca_hai", np.where(hb, "khong_gian", "thoi_gian"))
+    assert (fp["test_group"].to_numpy() == exp_group).all()
+
+
+@need_real
+def test_phuong_an_c_table_thieu_points_ref_bao_loi(c_data, tmp_path):
+    env, tab, ref_csv, folds_csv, _, _ = c_data
+    cmd = [sys.executable, os.path.join(ROOT, "src", "training", "train.py"), "--table", str(tab), "--mode", "cv",
+           "--grid", GRID_H3_5, "--blocks", BLOCKS, "--cv-folds", str(folds_csv), "--experiment-name", "nr"]
+    proc = subprocess.run(cmd, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=600)
+    assert proc.returncode == 2 and "--points-ref" in proc.stderr
+
+
+
+@need_real
+def test_phuong_an_c_centroid_bi_tu_choi_som_va_cot_cho_block_stats(c_data, tmp_path):
+    proc = _run_c(c_data, tmp_path, "ce", "cv", "--model", "linear", "--cv-rule", "centroid")
+    assert proc.returncode == 2 and "centroid" in proc.stderr and "seed" not in proc.stdout  # truoc khi fit
+    proc = _run_c(c_data, tmp_path, "cs", "cv", "--model", "linear")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    op = pd.read_csv(tmp_path / "artifacts" / "experiments" / "cs" / "cv" / "oof_points.csv", dtype={"point_id": str})
+    assert {"grid", "model", "seed", "point_id", "season", "err", "pred_source", "unit_id"} <= set(op.columns)
+    assert set(op["pred_source"]) == {"oof"} and set(op["grid"]) == {"h3_res_5"} and op["unit_id"].notna().all()
+    assert np.allclose(op["err"], op["y_pred"] - op["y_ref"])
+    folds = pd.read_csv(c_data[3], dtype={"block_id": str}).set_index("block_id")["unit_id"]
+    assert (op["unit_id"] == op["block_id"].map(folds)).all()
+
+
+@need_real
+def test_phuong_an_c_bien_the_dap_an_phai_khop(c_data, tmp_path):
+    env, tab, ref_csv, folds_csv, _, _ = c_data
+    prov = str(ref_csv) + ".provenance.json"
+    with open(prov, "w", encoding="utf-8") as f:
+        json.dump({"variant": "keepwater"}, f)
+    try:
+        proc = _run_c(c_data, tmp_path, "vr", "cv", "--model", "linear")
+        assert proc.returncode == 2 and "variant" in proc.stderr
+        proc = _run_c(c_data, tmp_path, "vr2", "cv", "--model", "linear", "--points-ref-variant", "keepwater")
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+    finally:
+        os.remove(prov)
+
+
+
+@need_real
+def test_idw_cv_chi_noi_suy_tu_o_train_cua_fold_cung_mua(c_data, tmp_path):
+    """IDW (p=2, k=8 co dinh): du doan diem = IDW tinh tay CHI tu o vai tro 'train' cua fold, CUNG mua, nhan tai
+    tam o UTM -> o thuoc fold dang cham va o chua diem khong bao gio duoc dung (chung khong phai 'train')."""
+    import geopandas as gpd
+
+    from training.baselines import IDWBaseline
+    from training.split import assign_eval_split
+
+    env, tab, ref_csv, folds_csv, table, t = c_data
+    proc = _run_c(c_data, tmp_path, "idw", "cv", "--model", "idw")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = tmp_path / "artifacts" / "experiments" / "idw" / "cv"
+    cfg = json.loads((out / "config.json").read_text(encoding="utf-8"))
+    assert cfg["model_params"] == {"p": 2.0, "k": 8}
+    op = pd.read_csv(out / "oof_points.csv", dtype={"point_id": str, "point_cell_id": str})
+    mem = pd.read_csv(out / "cv_membership.csv", dtype={"cell_id": str})
+    cxy = t.drop_duplicates("cell_id").set_index("cell_id")[["scope_cx", "scope_cy"]].rename(
+        columns={"scope_cx": "x", "scope_cy": "y"})
+    tr_all = assign_eval_split(t[t["train_ok_scope"]], table)
+    tr_all = tr_all[tr_all["split"] == "train"]
+    rng = np.random.default_rng(0)
+    sample = op.iloc[rng.choice(len(op), 60, replace=False)]
+    for row in sample.itertuples():
+        cells = set(mem.loc[(mem["fold"] == row.fold) & (mem["role"] == "train"), "cell_id"])
+        assert row.point_cell_id not in cells
+        d = tr_all[tr_all["cell_id"].isin(cells) & (tr_all["season"] == row.season)]
+        m = IDWBaseline(2.0, 8).fit(cxy.loc[d["cell_id"], ["x", "y"]].to_numpy(), d["salinity"].to_numpy())
+        exp = m.predict(cxy.loc[[row.point_cell_id], ["x", "y"]].to_numpy())[0]
+        assert np.isclose(row.y_pred, exp), (row.point_id, row.season)
+    # O val (ket qua phu theo o) cung chi tu o train cua fold
+    oof = pd.read_csv(out / "oof_predictions.csv", dtype={"cell_id": str})
+    assert np.isfinite(oof["y_pred"]).all()
+
+
+@need_real
+def test_idw_final_mua_giu_rieng_nan_va_ngoai_mode_bi_tu_choi(c_data, tmp_path):
+    proc = _run_c(c_data, tmp_path, "idwf", "final", "--model", "idw")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    fp = pd.read_csv(tmp_path / "artifacts" / "experiments" / "idwf" / "final" / "final_points.csv")
+    assert fp.loc[fp["test_group"].isin(["thoi_gian", "ca_hai"]), "y_pred"].isna().all()
+    assert np.isfinite(fp.loc[fp["test_group"] == "khong_gian", "y_pred"]).all()
+    env, lab_csv, *_ = c_data
+    bad = subprocess.run([sys.executable, os.path.join(ROOT, "src", "training", "train.py"), "--model", "idw",
+                          "--label-csv", str(lab_csv), "--provisional-split", "--train-end", "2019", "--val-end",
+                          "2020", "--experiment-name", "x"], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert bad.returncode == 2 and "--mode" in bad.stderr
+
+
+def test_touched_folds_kieu_chuoi_bi_tu_choi():
+    """Bay kieu (An 2026-10-04): touched chua chuoi "0" thi `0 not in {"0"}` luon dung -> moi o vao train."""
+    from training.split import _membership_arrays
+
+    fold = np.array([0, 1])
+    with pytest.raises(TypeError):
+        _membership_arrays(fold, [{0}, {1}], "touch", "0")
+    tr, val = _membership_arrays(fold, [{0}, {0, 1}], "touch", 0)
+    assert tr.tolist() == [False, False] and val.tolist() == [True, False]  # o 2 cham fold 0 -> khong train

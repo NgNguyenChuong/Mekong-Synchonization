@@ -195,6 +195,8 @@ def _check_holdout_seasons(df: pd.DataFrame, holdout_seasons, season_col: str) -
 
 def _membership_arrays(fold: np.ndarray, touched: list, rule: str, k: int) -> tuple[np.ndarray, np.ndarray]:
     """(mask train, mask val) cua fold k theo quy tac."""
+    if not isinstance(k, (int, np.integer)) or isinstance(k, bool):
+        raise TypeError(f"fold k phai la so nguyen, nhan {type(k).__name__}")
     val = fold == k
     tr = np.array([k not in t for t in touched], dtype=bool) if rule == "touch" else ~val
     return tr, val
@@ -218,6 +220,11 @@ def _fold_membership(train_df: pd.DataFrame, cell_table: pd.DataFrame, rule: str
     if (fold < 0).any():
         raise ValueError(f"{int((fold < 0).sum())} dong train co cv_fold < 0.")
     touched = parse_touched_folds(info["touched_folds"].tolist())
+    # Bay kieu (An 2026-10-04): neu phan tu la chuoi "3" con k la so 3 thi `k not in t` LUON dung -> moi o vao
+    # train moi fold (ro ri am tham). Ep moi phan tu la so nguyen Python/numpy.
+    bad = [t for t in touched if any(not isinstance(x, (int, np.integer)) or isinstance(x, bool) for x in t)]
+    if bad:
+        raise TypeError(f"touched_folds phai la tap so nguyen, gap {bad[:3]}")
     for f, t in zip(fold, touched):  # fold theo tam phai nam trong cac fold cham
         if f not in t:
             raise ValueError("cell_table khong nhat quan: cv_fold khong nam trong touched_folds.")
