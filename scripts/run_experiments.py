@@ -1,0 +1,205 @@
+#!/usr/bin/env python
+"""Chay hang loat train.py --mode cv (hoac final) cho luoi x mo hinh x cach chia fold (tuan 4).
+
+Moi lan chay = mot thu muc artifacts/experiments/<ten>/<mode>/ (do train.py ghi) + run_meta.json:
+  git commit, tag tren HEAD (git describe --exact-match), trang thai cay lam viec, sha256 bang hop nhat,
+  sha256 dap an diem, sha256 file fold, lenh day du, thoi gian, ma thoat.
+Chay TIEP DUOC: lan chay da xong (run_meta.json returncode 0 + config.json) VA trung MOI khoa: commit, cay
+lam viec sach/ban, co thu nghiem (allow_*), seeds, sha256 bang / fold / dap an / luoi / khoi / diem, mode -> bo
+qua; khac bat ky khoa nao hoac chua xong -> chay lai (thu muc cu chuyen sang artifacts/experiments/_cu/, khong
+xoa, khong nam canh thu muc ket qua). Lan chay co --allow-dirty/--allow-untagged KHONG BAO GIO duoc tinh la
+xong cho lan chay chinh thuc (soat 2026-10-04 muc 1).
+Sau moi lan chay: danh sach dac trung (config.features) phai GIONG NHAU giua moi luoi cua cung mo hinh va
+khong thieu muc nao (features_missing rong) - khac -> danh dau LOI.
+Bat buoc truoc khi chay that: HEAD co tag va cay lam viec sach o src/ scripts/ (tru --allow-untagged /
+--allow-dirty, chi de thu nghiem; ghi vao run_meta).
+Tong hop -> artifacts/experiments/<prefix>_manifest.csv (gop don theo ten lan chay + mode, khong ghi de dong
+cu; KHONG in chi so sai so). run_meta ghi phien ban python/numpy/pandas/sklearn.
+
+Chay:  venv/Scripts/python.exe scripts/run_experiments.py --prefix cv1 [--grids h3_res_5 ...]
+           [--models hist_gb linear idw] [--schemes 42 43 44] [--mode cv]
+"""
+import argparse
+import glob
+import hashlib
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime
+
+import pandas as pd
+
+KEY_FIELDS = ("run", "grid", "model", "scheme", "label_set", "mode",
+              "git_commit", "git_dirty_src_scripts", "allow_dirty", "allow_untagged", "seeds", "table_sha256",
+              "cv_folds_sha256", "points_ref_sha256", "grid_sha256", "blocks_sha256", "points_sha256")
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA = "A:/Dataset_NCKH"
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def git(*args):
+    r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+    return r.returncode, r.stdout.strip()
+
+
+def git_state():
+    _, commit = git("rev-parse", "HEAD")
+    rc, tag = git("describe", "--tags", "--exact-match", "HEAD")
+    _, dirty = git("status", "--porcelain", "--", "src", "scripts")
+    return {"git_commit": commit, "git_tag": tag if rc == 0 else None, "git_dirty_src_scripts": bool(dirty)}
+
+
+def run_name(prefix, grid, model, scheme, label_set):
+    return f"{prefix}__{grid}__{model}__s{scheme}" + (f"__{label_set}" if label_set else "")
+
+
+def versions():
+    import numpy
+    import sklearn
+
+    return {"python": sys.version.split()[0], "numpy": numpy.__version__, "pandas": pd.__version__,
+            "sklearn": sklearn.__version__}
+
+
+def check_features(out_dir, model, ref_features: dict):
+    """Loi (chuoi) neu config.features thieu muc hoac khac luoi truoc cua cung mo hinh; None neu dat."""
+    with open(os.path.join(out_dir, "config.json"), encoding="utf-8") as f:
+        cfg = json.load(f)
+    if cfg.get("features_missing"):
+        return f"thieu dac trung {cfg['features_missing']}"
+    feats = cfg.get("features")
+    if model in ref_features and ref_features[model] != feats:
+        return f"danh sach dac trung khac luoi truoc ({len(feats)} vs {len(ref_features[model])})"
+    ref_features.setdefault(model, feats)
+    return None
+
+
+def is_done(meta_path, cfg_path, want: dict) -> bool:
+    if not (os.path.exists(meta_path) and os.path.exists(cfg_path)):
+        return False
+    with open(meta_path, encoding="utf-8") as f:
+        meta = json.load(f)
+    if meta.get("allow_dirty") or meta.get("allow_untagged") or meta.get("git_dirty_src_scripts"):
+        if not (want["allow_dirty"] or want["allow_untagged"]):
+            return False  # ket qua thu nghiem khong thay cho lan chay chinh thuc
+    return meta.get("returncode") == 0 and all(meta.get(k) == want.get(k) for k in KEY_FIELDS)
+
+
+def main(a):
+    state = git_state()
+    if not state["git_tag"] and not a.allow_untagged:
+        sys.exit("HEAD chua co tag git - gan tag truoc lan chay that (hoac --allow-untagged de thu nghiem).")
+    if state["git_dirty_src_scripts"] and not a.allow_dirty:
+        sys.exit("Cay lam viec co thay doi chua commit trong src/ scripts/ (hoac --allow-dirty de thu nghiem).")
+    grids = sorted(os.path.basename(p)[:-8] for p in glob.glob(os.path.join(a.grids_dir, "*.geojson")))
+    if a.grids:
+        miss = sorted(set(a.grids) - set(grids))
+        if miss:
+            sys.exit(f"Khong co luoi {miss} trong {a.grids_dir}")
+        grids = [g for g in grids if g in a.grids]
+    if not a.points_ref and not a.no_point_eval:
+        sys.exit("Thieu --points-ref: cham theo diem la ket qua chinh; bo phai ghi ro --no-point-eval.")
+    for k in ("tables_dir", "points", "points_ref", "grids_dir", "folds_dir", "blocks", "cwd"):
+        if getattr(a, k):
+            setattr(a, k, os.path.abspath(getattr(a, k)))
+    suffix = f"_{a.label_set}" if a.label_set else ""
+    ref_sha = sha256(a.points_ref) if (a.points_ref and not a.no_point_eval) else None
+    blocks_sha, points_sha = sha256(a.blocks), sha256(a.points)
+    exp_root = os.path.join(a.cwd, "artifacts", "experiments")
+    rows, ref_features, vers = [], {}, versions()
+    for grid in grids:
+        table = os.path.join(a.tables_dir, f"{grid}_unified{suffix}.csv")
+        grid_path = os.path.join(a.grids_dir, f"{grid}.geojson")
+        if not os.path.exists(table):
+            sys.exit(f"Khong co bang {table}")
+        table_sha, grid_sha = sha256(table), sha256(grid_path)
+        for scheme in a.schemes:
+            folds = os.path.join(a.folds_dir, f"cv_folds_s{scheme}.csv")
+            folds_sha = sha256(folds)
+            for model in a.models:
+                name = run_name(a.prefix, grid, model, scheme, a.label_set)
+                out = os.path.join(exp_root, name, a.mode)
+                meta_path = os.path.join(out, "run_meta.json")
+                want = {"run": name, "grid": grid, "model": model, "scheme": scheme, "label_set": a.label_set or "chinh",
+                        "git_commit": state["git_commit"], "git_dirty_src_scripts": state["git_dirty_src_scripts"],
+                        "allow_dirty": a.allow_dirty, "allow_untagged": a.allow_untagged, "seeds": list(a.seeds),
+                        "mode": a.mode, "table_sha256": table_sha, "cv_folds_sha256": folds_sha,
+                        "points_ref_sha256": ref_sha, "grid_sha256": grid_sha, "blocks_sha256": blocks_sha,
+                        "points_sha256": points_sha}
+                row = {"run": name, "grid": grid, "model": model, "scheme": scheme, "label_set": a.label_set or "chinh",
+                       **want, "seeds": " ".join(map(str, a.seeds)), "git_tag": state["git_tag"]}
+                if is_done(meta_path, os.path.join(out, "config.json"), want):
+                    err = check_features(out, model, ref_features)
+                    rows.append({**row, "status": "bo_qua_da_xong" if not err else f"LOI: {err}",
+                                 "returncode": 0 if not err else 3})
+                    print(f"[bo qua] {name}", flush=True)
+                    continue
+                if os.path.exists(out):
+                    old = os.path.join(exp_root, "_cu", f"{name}__{a.mode}__{datetime.now():%Y%m%d_%H%M%S}")
+                    os.makedirs(os.path.dirname(old), exist_ok=True)
+                    os.rename(out, old)
+                cmd = [sys.executable, os.path.join(ROOT, "src", "training", "train.py"), "--table", table,
+                       "--mode", a.mode, "--grid", grid_path, "--blocks", a.blocks, "--cv-folds", folds,
+                       "--model", model, "--seeds", *map(str, a.seeds), "--experiment-name", name]
+                cmd += ["--no-point-eval"] if a.no_point_eval else ["--points", a.points, "--points-ref", a.points_ref]
+                started = datetime.now().isoformat(timespec="seconds")
+                print(f"[chay] {name}", flush=True)
+                os.makedirs(out, exist_ok=True)
+                with open(os.path.join(out, "train_stdout.log"), "w", encoding="utf-8") as log:
+                    rc = subprocess.run(cmd, cwd=a.cwd, stdout=log, stderr=subprocess.STDOUT,
+                                        env=dict(os.environ, PYTHONIOENCODING="utf-8")).returncode
+                meta = {**row, **state, **want, "returncode": rc, "cmd": cmd, "started": started,
+                        "finished": datetime.now().isoformat(timespec="seconds"), "versions": vers}
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, indent=2, ensure_ascii=False)
+                err = check_features(out, model, ref_features) if rc == 0 else None
+                if err:
+                    rc = 3
+                rows.append({**row, "status": "xong" if rc == 0 else f"LOI{': ' + err if err else ''}", "returncode": rc})
+                print(f"  -> ma thoat {rc}", flush=True)
+    man = pd.DataFrame(rows)
+    os.makedirs(exp_root, exist_ok=True)
+    man_path = os.path.join(exp_root, f"{a.prefix}_manifest.csv")
+    if os.path.exists(man_path):  # gop don: dong moi thay dong cu cung (run, mode), giu dong khac
+        old = pd.read_csv(man_path, dtype=str)
+        keep = ~old.set_index(["run", "mode"]).index.isin(man.set_index(["run", "mode"]).index)
+        man = pd.concat([old[keep], man.astype(str)], ignore_index=True)
+    man.to_csv(man_path, index=False)
+    man["returncode"] = man["returncode"].astype(int)
+    n_err = int((man["returncode"] != 0).sum())
+    print(f"Manifest: {man_path} | {len(man)} lan chay, {n_err} loi")
+    sys.exit(1 if n_err else 0)
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--prefix", required=True, help="Tien to ten thi nghiem, vd cv1")
+    ap.add_argument("--grids", nargs="*")
+    ap.add_argument("--models", nargs="+", default=["hist_gb", "linear", "idw"])
+    ap.add_argument("--schemes", nargs="+", type=int, default=[42, 43, 44], help="cv_folds_s<n>.csv")
+    ap.add_argument("--seeds", nargs="+", type=int, default=[42], help="seed mo hinh (HistGB tat dinh)")
+    ap.add_argument("--mode", choices=["cv", "final"], default="cv")
+    ap.add_argument("--label-set", default="", help='"" = bo chinh; keepwater / keepmangrove / keep6090')
+    ap.add_argument("--tables-dir", default=f"{DATA}/features/unified")
+    ap.add_argument("--points", default=os.path.join(ROOT, "data", "eval", "eval_points.geojson"))
+    ap.add_argument("--points-ref", default=f"{DATA}/labels/points_reference.csv",
+                    help="Dap an bo chinh cho MOI bo nhan (An chot 2026-10-04)")
+    ap.add_argument("--no-point-eval", action="store_true", help="Bo cham theo diem - KHONG dung cho ket qua chinh")
+    ap.add_argument("--grids-dir", default=os.path.join(ROOT, "data", "grids"))
+    ap.add_argument("--folds-dir", default=os.path.join(ROOT, "data", "eval"))
+    ap.add_argument("--blocks", default=os.path.join(ROOT, "data", "eval", "holdout_blocks.geojson"))
+    ap.add_argument("--cwd", default=ROOT, help="Thu muc goc ghi artifacts/experiments")
+    ap.add_argument("--allow-untagged", action="store_true")
+    ap.add_argument("--allow-dirty", action="store_true")
+    main(ap.parse_args())
