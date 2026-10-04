@@ -1,13 +1,17 @@
+import datetime
+import hashlib
+import json
 import os
+import sys
 
 import geopandas as gpd
 import h3
 import numpy as np
 import pyproj
 import s2sphere
-from shapely.geometry import Point, Polygon, box
+import shapely
+from shapely.geometry import Polygon, box
 from shapely.ops import transform, unary_union
-from shapely.prepared import prep
 
 from config import (
     SHAPEFILE_RAW, SHAPEFILE_CLEAN,
@@ -15,9 +19,43 @@ from config import (
     H3_GRID_GEOJSON, H3_RESOLUTION,
 )
 
-CANONICAL_BOUNDARY = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "webapp", "backend", "data", "mekong_delta_boundary.geojson")
-)
+_BOUNDARY_DIR = os.path.join(os.path.dirname(__file__), "..", "webapp", "backend", "data")
+# v1: 13 tinh geoBoundaries (webapp van dung). v2 (An duyet 2026-10-03): v1 noi 3 km phia bien,
+# tru lanh tho lang gieng - sinh bang scripts/build_boundary_v2.py. Moi script du lieu dung v2.
+BOUNDARY_V1 = os.path.abspath(os.path.join(_BOUNDARY_DIR, "mekong_delta_boundary.geojson"))
+CANONICAL_BOUNDARY = os.path.abspath(os.path.join(_BOUNDARY_DIR, "mekong_delta_boundary_v2.geojson"))
+
+# O "giao" ranh gioi khi ty le dien tich giao > nguong nay. Nguong khac 0 chi de bo nhieu so hoc
+# (o chi cham canh/dinh ranh gioi cho dien tich giao ~1e-13 sau phep chieu qua lai).
+MIN_OVERLAP_FRAC = 1e-9
+
+
+def file_sha256(path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def provenance_path(output_path) -> str:
+    return f"{output_path}.provenance.json"
+
+
+def write_provenance(output_path, boundary_path, **extra) -> str:
+    """Ghi <output>.provenance.json: ranh gioi da dung (duong dan + sha256) va tham so sinh."""
+    info = {
+        "output": os.path.basename(output_path),
+        "boundary": os.path.abspath(boundary_path).replace("\\", "/"),
+        "boundary_sha256": file_sha256(boundary_path),
+        "created": datetime.datetime.now().isoformat(timespec="seconds"),
+        "script": os.path.basename(sys.argv[0]) if sys.argv and sys.argv[0] else None,
+        **extra,
+    }
+    path = provenance_path(output_path)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(info, f, ensure_ascii=False, indent=2)
+    return path
 
 
 def _resolve_boundary_path(boundary_path=None) -> str:
@@ -37,18 +75,28 @@ def _load_union(boundary_path, crs):
     return unary_union(gdf.geometry)
 
 
-def _overlap_fracs(cell_geoms, union_poly, cell_area=None):
-    """Ty le dien tich o nam trong ranh gioi. Chi tinh giao cho o cat duong bien."""
-    boundary_line = prep(union_poly.boundary)
-    fracs = []
-    for geom in cell_geoms:
-        if not boundary_line.intersects(geom):
-            fracs.append(1.0)
-            continue
-        inter = geom.intersection(union_poly)
-        area = cell_area if cell_area is not None else geom.area
-        fracs.append(round(inter.area / area, 4) if not inter.is_empty else 0.0)
-    return fracs
+def _select_intersecting(cell_ids, geoms, union_poly, cell_area=None):
+    """Giu o GIAO ranh gioi (overlap_frac > MIN_OVERLAP_FRAC), khong cat hinh o.
+
+    overlap_frac = dien tich (o giao ranh gioi) / dien tich o, tinh trong CRS cua hinh dau vao.
+    Tra ve (cell_ids, geoms, fracs) da loc, giu thu tu dau vao.
+    """
+    arr = np.empty(len(geoms), dtype=object)
+    arr[:] = list(geoms)
+    if len(arr) == 0:
+        return [], [], np.zeros(0)
+    shapely.prepare(union_poly)
+    hit = shapely.intersects(union_poly, arr)
+    inner = hit & shapely.contains_properly(union_poly, arr)
+    fracs = np.zeros(len(arr))
+    fracs[inner] = 1.0
+    edge = hit & ~inner
+    if edge.any():
+        inter = shapely.intersection(arr[edge], union_poly)
+        area = cell_area if cell_area is not None else shapely.area(arr[edge])
+        fracs[edge] = np.minimum(shapely.area(inter) / area, 1.0)
+    keep = np.flatnonzero(fracs > MIN_OVERLAP_FRAC)
+    return [cell_ids[i] for i in keep], list(arr[keep]), fracs[keep]
 
 
 def _write(gdf, output_path):
@@ -94,17 +142,13 @@ def clean_shapefile():
 
 
 # -----------------------------------------------------------
-# 4 KHUNG LUOI - quy tac chung: o thuoc luoi neu tam nam trong ranh gioi,
-# giu nguyen hinh hoc o (khong cat), ghi overlap_frac.
+# 4 KHUNG LUOI - quy tac chung (An duyet 2026-10-03): o thuoc luoi neu GIAO ranh gioi
+# (overlap_frac > 0, ke ca giao 1%), giu nguyen hinh hoc o (khong cat), ghi overlap_frac.
+# Moi diem trong ranh gioi deu thuoc it nhat 1 o. Truoc day: theo tam o (bo sot dai ven bien).
 # -----------------------------------------------------------
-def generate_h3_grid(boundary_path=None, resolution=None, output_path=None) -> gpd.GeoDataFrame:
-    boundary_path = _resolve_boundary_path(boundary_path)
-    resolution = H3_RESOLUTION if resolution is None else resolution
-    union_poly = _load_union(boundary_path, CRS_WGS84)
-    inside = prep(union_poly)
-
-    parts = union_poly.geoms if union_poly.geom_type == "MultiPolygon" else [union_poly]
-    candidates = set()
+def _h3_polyfill(poly, resolution):
+    parts = poly.geoms if poly.geom_type == "MultiPolygon" else [poly]
+    cells = set()
     for part in parts:
         if len(set(part.exterior.coords)) < 3:
             continue
@@ -115,30 +159,32 @@ def generate_h3_grid(boundary_path=None, resolution=None, output_path=None) -> g
             for ring in part.interiors
             if len(set(ring.coords)) >= 3
         ]
-        candidates.update(h3.polygon_to_cells(h3.LatLngPoly(outer, *holes), resolution))
+        cells.update(h3.polygon_to_cells(h3.LatLngPoly(outer, *holes), resolution))
+    return cells
 
-    cell_ids, geoms = [], []
-    for cell in sorted(candidates):
-        lat, lon = h3.cell_to_latlng(cell)
-        if inside.contains(Point(lon, lat)):
-            cell_ids.append(cell)
-            geoms.append(Polygon([(p[1], p[0]) for p in h3.cell_to_boundary(cell)]))
 
-    gdf = gpd.GeoDataFrame(
-        {"cell_id": cell_ids, "overlap_frac": _overlap_fracs(geoms, union_poly)},
-        geometry=geoms, crs=CRS_WGS84,
-    )
+def generate_h3_grid(boundary_path=None, resolution=None, output_path=None) -> gpd.GeoDataFrame:
+    boundary_path = _resolve_boundary_path(boundary_path)
+    resolution = H3_RESOLUTION if resolution is None else resolution
+    union_poly = _load_union(boundary_path, CRS_WGS84)
+
+    # Ung vien = o co TAM trong ranh gioi noi rong 2,5 canh o (do): moi o giao ranh gioi deu co tam
+    # cach ranh gioi <= ban kinh ngoai tiep (= canh o) nen nam trong tap nay; sau do loc theo giao.
+    pad_deg = 2.5 * h3.average_hexagon_edge_length(resolution, unit="km") / 110.0
+    candidates = sorted(_h3_polyfill(union_poly.buffer(pad_deg), resolution))
+    geoms = [Polygon([(p[1], p[0]) for p in h3.cell_to_boundary(c)]) for c in candidates]
+    cell_ids, geoms, fracs = _select_intersecting(candidates, geoms, union_poly)
+
+    gdf = gpd.GeoDataFrame({"cell_id": cell_ids, "overlap_frac": fracs}, geometry=geoms, crs=CRS_WGS84)
     return _write(gdf, output_path)
 
 
 def generate_s2_grid(boundary_path=None, level=11, output_path=None) -> gpd.GeoDataFrame:
     boundary_path = _resolve_boundary_path(boundary_path)
     union_poly = _load_union(boundary_path, CRS_WGS84)
-    inside = prep(union_poly)
     minx, miny, maxx, maxy = union_poly.bounds
 
-    # Liet ke moi o o dung level trong khung bao, roi loc theo tam
-    # (khong dung covering mac dinh vi no giu ca o chi cham ranh gioi).
+    # Liet ke moi o o dung level phu khung bao (co le), roi loc theo giao ranh gioi.
     coverer = s2sphere.RegionCoverer()
     coverer.min_level = level
     coverer.max_level = level
@@ -148,19 +194,15 @@ def generate_s2_grid(boundary_path=None, level=11, output_path=None) -> gpd.GeoD
         s2sphere.LatLng.from_degrees(maxy + 0.05, maxx + 0.05),
     )
 
-    cell_ids, geoms = [], []
+    ids, geoms = [], []
     for cid in coverer.get_covering(rect):
         cell = s2sphere.Cell(cid)
-        centre = s2sphere.LatLng.from_point(cell.get_center())
-        if inside.contains(Point(centre.lng().degrees, centre.lat().degrees)):
-            cell_ids.append(f"s2_{cid.to_token()}")
-            corners = [s2sphere.LatLng.from_point(cell.get_vertex(i)) for i in range(4)]
-            geoms.append(Polygon([(v.lng().degrees, v.lat().degrees) for v in corners]))
+        corners = [s2sphere.LatLng.from_point(cell.get_vertex(i)) for i in range(4)]
+        ids.append(f"s2_{cid.to_token()}")
+        geoms.append(Polygon([(v.lng().degrees, v.lat().degrees) for v in corners]))
+    cell_ids, geoms, fracs = _select_intersecting(ids, geoms, union_poly)
 
-    gdf = gpd.GeoDataFrame(
-        {"cell_id": cell_ids, "overlap_frac": _overlap_fracs(geoms, union_poly)},
-        geometry=geoms, crs=CRS_WGS84,
-    )
+    gdf = gpd.GeoDataFrame({"cell_id": cell_ids, "overlap_frac": fracs}, geometry=geoms, crs=CRS_WGS84)
     return _write(gdf, output_path)
 
 
@@ -168,21 +210,19 @@ def generate_square_grid(boundary_path=None, resolution_m=6458, output_path=None
     """O vuong trong EPSG:32648, goc neo o boi so cua resolution_m theo toa do UTM."""
     boundary_path = _resolve_boundary_path(boundary_path)
     union_poly = _load_union(boundary_path, CRS_METRIC)
-    inside = prep(union_poly)
 
     minx, miny, maxx, maxy = union_poly.bounds
     size = float(resolution_m)
     xs = np.arange(np.floor(minx / size) * size, maxx + size, size)
     ys = np.arange(np.floor(miny / size) * size, maxy + size, size)
 
-    cell_ids, geoms_utm = [], []
+    ids, geoms_utm = [], []
     for x in xs:
         for y in ys:
-            if inside.contains(Point(x + size / 2.0, y + size / 2.0)):
-                cell_ids.append(f"sq_{resolution_m}m_{int(x)}_{int(y)}")
-                geoms_utm.append(box(x, y, x + size, y + size))
+            ids.append(f"sq_{resolution_m}m_{int(x)}_{int(y)}")
+            geoms_utm.append(box(x, y, x + size, y + size))
+    cell_ids, geoms_utm, fracs = _select_intersecting(ids, geoms_utm, union_poly, cell_area=size * size)
 
-    fracs = _overlap_fracs(geoms_utm, union_poly, cell_area=size * size)
     to_wgs = pyproj.Transformer.from_crs(CRS_METRIC, CRS_WGS84, always_xy=True)
     geoms = [transform(to_wgs.transform, g) for g in geoms_utm]
 
@@ -194,25 +234,21 @@ def generate_latlon_grid(boundary_path=None, step_deg=0.0586, output_path=None) 
     """O deu theo do, goc neo o boi so cua step_deg tinh tu (0, 0)."""
     boundary_path = _resolve_boundary_path(boundary_path)
     union_poly = _load_union(boundary_path, CRS_WGS84)
-    inside = prep(union_poly)
 
     minx, miny, maxx, maxy = union_poly.bounds
     step = float(step_deg)
     ix0, ix1 = int(np.floor(minx / step)), int(np.ceil(maxx / step))
     iy0, iy1 = int(np.floor(miny / step)), int(np.ceil(maxy / step))
 
-    cell_ids, geoms = [], []
+    ids, geoms = [], []
     for ix in range(ix0, ix1 + 1):
         for iy in range(iy0, iy1 + 1):
             x, y = ix * step, iy * step
-            if inside.contains(Point(x + step / 2.0, y + step / 2.0)):
-                cell_ids.append(f"ll_{int(round(step * 10000))}p_{iy}_{ix}")
-                geoms.append(box(x, y, x + step, y + step))
+            ids.append(f"ll_{int(round(step * 10000))}p_{iy}_{ix}")
+            geoms.append(box(x, y, x + step, y + step))
+    cell_ids, geoms, fracs = _select_intersecting(ids, geoms, union_poly)
 
-    gdf = gpd.GeoDataFrame(
-        {"cell_id": cell_ids, "overlap_frac": _overlap_fracs(geoms, union_poly)},
-        geometry=geoms, crs=CRS_WGS84,
-    )
+    gdf = gpd.GeoDataFrame({"cell_id": cell_ids, "overlap_frac": fracs}, geometry=geoms, crs=CRS_WGS84)
     return _write(gdf, output_path)
 
 

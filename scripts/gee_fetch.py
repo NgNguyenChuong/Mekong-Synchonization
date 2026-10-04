@@ -34,6 +34,11 @@ if sys.platform == "win32":
 
 from preprocessing import CANONICAL_BOUNDARY  # noqa: E402
 
+# Export.toDrive chi nhan TEN thu muc: neu co thu muc trung ten o bat ky cap nao thi ghi vao do
+# (trung nhieu -> thu muc sua gan nhat), khong co thi tao moi o goc Drive. "GEE" = NCKH_Source/GEE
+# tren Drive cua tai khoan GEE (da kiem 2026-10-03). Khong tao them thu muc nao ten "GEE" khac tren Drive.
+DRIVE_FOLDER = "GEE"
+
 # bien -> (thu muc theo DEFAULT_DATA_SPECS, ham tao anh ngay tu 1 anh ERA5-Land daily)
 ERA5_VARS = {
     "rain": ("daily_rain", lambda im: im.select("total_precipitation_sum").multiply(1000)),          # m -> mm
@@ -44,7 +49,10 @@ ERA5_VARS = {
     "humidity": ("daily_humid", None),  # tinh tu nhiet do + diem suong (Magnus), xem _rh
 }
 ERA5_ID = "ECMWF/ERA5_LAND/DAILY_AGGR"
-ERA5_SCALE_M = 11132  # 0.1 do
+# Luoi goc ERA5-Land (tam pixel o boi so 0,1 do). KHONG dung `scale=11132`: luoi xuat khi do co tam pixel
+# roi sat mep pixel goc -> nearest chon pixel Dong-Bac, file lech nua pixel (+0,05 E / +0,05 N) so voi
+# toa do ghi (known-pitfalls 1a; file cu da sua header bang scripts/fix_era5_transform.py).
+ERA5_CRS_TRANSFORM = [0.1, 0, -180.05, 0, -0.1, 90.05]
 
 
 def _init(project):
@@ -86,9 +94,26 @@ def _download(url, path):
     os.replace(path + ".part", path)
 
 
+def _era5_region(ee, args):
+    """Vung tai ERA5: neu da co file (luoi goc) trong --out thi dung DUNG khung cua no (thu nho 0,001 do de
+    khong an them pixel ria) -> moi thang cung luoi pixel (era5_season.aggregate_season bat buoc); chua co
+    file thi dung ranh gioi + buffer."""
+    import glob
+    import rasterio
+    from era5_georef import is_native_aligned
+    for path in sorted(glob.glob(os.path.join(args.out, "daily_temp_avg", "*.tif")))[:1]:
+        with rasterio.open(path) as ds:
+            if not is_native_aligned(ds.transform):
+                raise SystemExit(f"{path} chua tren luoi goc - chay scripts/fix_era5_transform.py truoc")
+            b, e = ds.bounds, 1e-3
+        print(f"[vung] theo khung file co san {os.path.basename(path)}: {tuple(round(v, 3) for v in b)}", flush=True)
+        return ee.Geometry.Rectangle([b.left + e, b.bottom + e, b.right - e, b.top - e], "EPSG:4326", False)
+    return _region(ee, args.boundary, args.buffer_km)
+
+
 def cmd_era5(args):
     ee = _init(args.project)
-    region = _region(ee, args.boundary, args.buffer_km)
+    region = _era5_region(ee, args)
     months = pd.period_range(args.start, args.end, freq="M")
     variables = args.vars or list(ERA5_VARS)
     for var in variables:
@@ -111,7 +136,7 @@ def cmd_era5(args):
             daily = coll.map(lambda im: (_rh(ee, im) if fn is None else fn(im))
                              .updateMask(im.select("temperature_2m").mask()).float())
             img = daily.toBands().rename([f"b{i + 1}" for i in range(n)])
-            params = {"region": region, "scale": ERA5_SCALE_M, "crs": "EPSG:4326", "format": "GEO_TIFF"}
+            params = {"region": region, "crs": "EPSG:4326", "crs_transform": ERA5_CRS_TRANSFORM, "format": "GEO_TIFF"}
             _retry(lambda: _download(img.getDownloadURL(params), path), f"{var} {p}")
         print(f"[xong] {p}", flush=True)
 
@@ -121,6 +146,35 @@ def _export(ee, image, name, region, scale, folder):
                                          region=region, scale=scale, crs="EPSG:32648", maxPixels=1e13)
     task.start()
     print(f"[export] {name} -> Drive/{folder} (task {task.id})")
+
+
+def _export_grid(ee, image, name, region, crs_transform, folder):
+    """Xuat theo LUOI CO DINH (crsTransform) thay vi scale - tranh lech nua pixel (known-pitfalls 1a)."""
+    task = ee.batch.Export.image.toDrive(image=image, description=name, folder=folder, fileNamePrefix=name,
+                                         region=region, crs="EPSG:32648", crsTransform=crs_transform,
+                                         maxPixels=1e13)
+    task.start()
+    print(f"[export] {name} -> Drive/{folder} (task {task.id})")
+
+
+# Luoi cua file da tai (goc trai tren, EPSG:32648) - xuat lai PHAI trung luoi nay
+WC_GRID = [10, 0, 367790, 0, -10, 1225100]
+DEM_GRID = [30, 0, 367770, 0, -30, 1225110]
+
+
+def cmd_static_v2(args):
+    """WorldCover dem 25 km quanh ranh gioi (phu het o luoi tho ven ria); NoData ngoai khoi -> 80 (nuoc):
+    WorldCover khong co tile o bien xa (da kiem 2026-10-03: 106,3E 8,9N -> None; gan bo -> 80).
+    Them lop co WBM (Water Body Mask) cua Copernicus DEM: DEM chi coi la thieu khi DEM == 0 VA WBM > 0 (CHG-09);
+    chi WBM > 0 thi xoa nham 62% dat thap 0,05-1 m (co ho)."""
+    ee = _init(args.project)
+    wc_region = _region(ee, args.boundary, args.wc_buffer_km)
+    wc = ee.ImageCollection("ESA/WorldCover/v200").first().select("Map").unmask(80).uint8()
+    _export_grid(ee, wc.clip(wc_region), "LandCover_DBSCL_2021_v2", wc_region, WC_GRID, args.drive_folder)
+    dem_region = _region(ee, args.boundary, args.dem_buffer_km)
+    dem = ee.ImageCollection("COPERNICUS/DEM/GLO30_2024_1").filterBounds(dem_region)
+    flags = dem.select(["WBM", "EDM"]).mosaic().uint8()
+    _export_grid(ee, flags.clip(dem_region), "DEM_DBSCL_flags_v2", dem_region, DEM_GRID, args.drive_folder)
 
 
 def cmd_static(args):
@@ -152,7 +206,7 @@ def cmd_labels(args):
         comp = coll.median().clip(region)
         ndwi = comp.normalizedDifference(["SR_B5", "SR_B7"]).rename("NDWIchen")
         sal = comp.expression("28.013 * exp(-13.39 * NIR)", {"NIR": comp.select("SR_B5")}).rename("Salinity").float()
-        _export(ee, ndwi.addBands(sal), f"{year}_MD_dry_NDWIchen_Salinity_{args.sensors}", region, 30,
+        _export(ee, ndwi.addBands(sal), f"{year}_MD_dry_NDWIchen_Salinity_{args.sensors}{args.name_suffix}", region, 30,
                 args.drive_folder)
 
 
@@ -171,7 +225,7 @@ def cmd_watermask(args):
         water = coll.map(lambda im: im.normalizedDifference(["SR_B3", "SR_B6"]).gt(0).rename("water"))
         freq = water.mean().multiply(100).round().unmask(255).uint8().rename("water_freq")
         n = water.count().unmask(0).min(255).uint8().rename("n_clear")
-        _export(ee, freq.addBands(n).clip(region), f"{year}_MD_dry_watermask_l8", region, 30, args.drive_folder)
+        _export(ee, freq.addBands(n).clip(region), f"{year}_MD_dry_watermask_l8{args.name_suffix}", region, 30, args.drive_folder)
 
 
 if __name__ == "__main__":
@@ -187,13 +241,21 @@ if __name__ == "__main__":
     e.add_argument("--out", default=os.getenv("RAW_DIR") or os.path.join(ROOT, "data", "raw"))
     s = sub.add_parser("static")
     s.add_argument("--buffer-km", type=float, default=5.0)
-    s.add_argument("--drive-folder", default="NCKH_GEE")
+    s.add_argument("--drive-folder", default=DRIVE_FOLDER)
+    s2 = sub.add_parser("static_v2")
+    s2.add_argument("--wc-buffer-km", type=float, default=25.0)
+    s2.add_argument("--dem-buffer-km", type=float, default=5.0)
+    s2.add_argument("--drive-folder", default=DRIVE_FOLDER)
     lb = sub.add_parser("labels")
     lb.add_argument("--years", nargs="+", type=int, default=[2020, 2021, 2022, 2023])
     lb.add_argument("--sensors", choices=["l8", "l8l9"], default="l8")
-    lb.add_argument("--drive-folder", default="NCKH_GEE")
+    lb.add_argument("--drive-folder", default=DRIVE_FOLDER)
+    lb.add_argument("--name-suffix", default="_v2",
+                    help="hau to ten file; mac dinh _v2 vi --boundary mac dinh la v2 (khong hau to = ban cu theo v1)")
     wm = sub.add_parser("watermask")
     wm.add_argument("--years", nargs="+", type=int, default=list(range(2014, 2027)))
-    wm.add_argument("--drive-folder", default="NCKH_GEE")
+    wm.add_argument("--drive-folder", default=DRIVE_FOLDER)
+    wm.add_argument("--name-suffix", default="_v2",
+                    help="hau to ten file; mac dinh _v2 vi --boundary mac dinh la v2 (khong hau to = ban cu theo v1)")
     a = ap.parse_args()
-    {"era5": cmd_era5, "static": cmd_static, "labels": cmd_labels, "watermask": cmd_watermask}[a.cmd](a)
+    {"era5": cmd_era5, "static": cmd_static, "static_v2": cmd_static_v2, "labels": cmd_labels, "watermask": cmd_watermask}[a.cmd](a)

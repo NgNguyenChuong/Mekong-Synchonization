@@ -43,7 +43,8 @@ def test_merge_and_split_with_generic_ids():
         "salinity": [3.2, 5.1],
     })
 
-    merged = merge_with_salinity_labels(feature_df, label_df, tolerance_days=2, target_col="salinity")
+    with pytest.deprecated_call():  # ham cu, chi giu cho test - luong chinh dung merge_season_labels
+        merged = merge_with_salinity_labels(feature_df, label_df, tolerance_days=2, target_col="salinity")
     assert "cell_id" in merged.columns
     assert len(merged) == 4
     
