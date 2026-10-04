@@ -230,3 +230,31 @@ def test_without_flags_is_explicit_control_only(rasters, tmp_path):
     df, stats = _run(rasters, _cells([box(X0, Y0 - 180, X0 + 180, Y0)], ["c"]))
     assert df.loc["c", "dem_mean"] == pytest.approx(0.1)
     assert stats["dem_zero_wbm_to_nan_px"] == 0 and stats["dem_rule"].startswith("KHONG")
+
+
+def test_scope_centroids_tam_phan_dat(tmp_path):
+    """Tam pixel scope trong o (cho IDW): o trai co dat chi o cot 0-1 -> tam lech trai; o khong dat -> NaN."""
+    import geopandas as gpd
+    import rasterio
+    from rasterio.transform import from_origin
+    from shapely.geometry import box
+
+    from static_features import scope_centroids
+
+    x0, y1, res = 500000.0, 1100180.0, 30.0
+    scope = np.zeros((6, 6), "uint8")
+    scope[:, 0:2] = 1          # o trai (cot 0-2): dat o cot 0, 1
+    scope[0, 3] = 1            # o phai (cot 3-5): mot pixel dat hang 0 cot 3
+    p = tmp_path / "scope.tif"
+    with rasterio.open(p, "w", driver="GTiff", width=6, height=6, count=1, dtype="uint8", crs="EPSG:32648",
+                       transform=from_origin(x0, y1, res, res)) as ds:
+        ds.write(scope, 1)
+        ds.set_band_description(1, "scope")
+    cells = gpd.GeoDataFrame({"cell_id": ["L", "R", "E"]},
+                             geometry=[box(x0, y1 - 180, x0 + 90, y1), box(x0 + 90, y1 - 180, x0 + 180, y1),
+                                       box(x0 + 180, y1 - 180, x0 + 270, y1)], crs="EPSG:32648").to_crs(4326)
+    out = scope_centroids(str(p), (cells["cell_id"].tolist(), None, cells.geometry.tolist())).set_index("cell_id")
+    assert out.loc["L", "scope_n_px"] == 12 and out.loc["R", "scope_n_px"] == 1
+    assert out.loc["L", "scope_cx"] == pytest.approx(x0 + 30) and out.loc["L", "scope_cy"] == pytest.approx(y1 - 90)
+    assert out.loc["R", "scope_cx"] == pytest.approx(x0 + 105) and out.loc["R", "scope_cy"] == pytest.approx(y1 - 15)
+    assert np.isnan(out.loc["E", "scope_cx"]) and out.loc["E", "scope_n_px"] == 0

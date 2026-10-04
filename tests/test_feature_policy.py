@@ -71,9 +71,13 @@ def test_cot_chat_luong_khong_vao_dac_trung():
                        "tch_wl_frac_days": [1.0, 0.7], "n_days": [181, 181], "rain_mm": [1.0, 2.0],
                        "tch_wl_p20c": [0.2, 0.3], "tch_wl_n_censored": [21, 0], "tch_wl_days_le_0_3": [42.0, 20.0],
                        "zos_mean": [0.9, 0.95], "zos_coast_mean": [0.9, 0.95], "tch_wl_mean": [1.0, 1.2],
-                       "cdo_wl_mean": [1.1, 1.2]})
-    # Bo chinh (cau B): chi tch_wl_p20c + zos_coast_p90; mean/cdo/n_censored/days_le khong vao mac dinh
-    assert select_feature_columns(df) == ["zos_coast_p90", "rain_mm", "tch_wl_p20c"]
+                       "cdo_wl_mean": [1.1, 1.2], "zos_mouth_p90": [1.0, 1.1], "dist_mouth_river_km": [5.0, 9.0],
+                       "sluice_frac": [0.0, 0.3], "sluice_frac_from2021": [0.0, 0.3], "graph_lateral_km": [1.0, 2.0],
+                       "zos_cmems_far_frac": [0.0, 0.0]})
+    # Bo chinh: tch_wl_p20c (cau B) + hybrid CHG-16; zos_coast_p90 = ban doi chung (khong mac dinh);
+    # mean/cdo/n_censored/days_le va cot kiem hybrid khong vao mac dinh.
+    assert select_feature_columns(df) == ["rain_mm", "tch_wl_p20c", "zos_mouth_p90", "dist_mouth_river_km",
+                                          "sluice_frac"]
 
 
 def test_mau_cam_cot_chat_luong():

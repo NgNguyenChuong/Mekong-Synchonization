@@ -41,12 +41,17 @@ FEATURE_PREFIXES = ("landcover_class_",)
 #   trung thong tin TCH) - muon dung phai truyen --features tuong minh. Ten chinh xac, KHONG dung tien
 #   to: cot chat luong *_n_days, *_frac_days, *_ok, tch_wl_n_censored khong phai dac trung;
 #   tch_wl_days_le_0_3 chi cho do nhay.
+# - Hybrid (CHG-16, An chot 2026-10-04; scripts/build_river_graph.py): dist_mouth_river_km, zos_mouth_p90,
+#   sluice_frac. zos_coast_p90 (cap vung) RA KHOI mac dinh -> ban DOI CHUNG khi boc tach hybrid (truyen
+#   --features). Cot kiem cua bang hybrid (graph_lateral_km, sluice_frac_from2021, zos_cmems_far_frac)
+#   khong phai dac trung.
 DEFAULT_ALLOWED_FEATURES = (
     "rain_mm", "solar", "temp_c", "temp_max_c", "temp_min_c", "rh_percent",
     "dem_mean",
     "dist_main_river_km", "dist_any_water_km", "dist_coast_km",
     "landcover_class_*",
-    "tch_wl_p20c", "zos_coast_p90",
+    "tch_wl_p20c",
+    "dist_mouth_river_km", "zos_mouth_p90", "sluice_frac",
 )
 
 
