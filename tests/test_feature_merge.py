@@ -7,6 +7,7 @@ import os
 import sys
 
 import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -26,7 +27,8 @@ def test_merge_with_salinity_labels_matches_nearest_within_tolerance():
         "salinity": [3.5],
     })
 
-    merged = merge_with_salinity_labels(feature_df, salinity_df, tolerance_days=3)
+    with pytest.deprecated_call():  # ham cu, chi giu cho test - luong chinh dung merge_season_labels
+        merged = merge_with_salinity_labels(feature_df, salinity_df, tolerance_days=3)
 
     # h1/2024-01-05 cach quan trac (01-06) 1 ngay -> trong tolerance -> co nhan.
     row = merged[(merged["cell_id"] == "h1") & (merged["date"] == pd.Timestamp("2024-01-05"))]
@@ -53,7 +55,8 @@ def test_merge_preserves_all_feature_rows():
     })
     salinity_df = pd.DataFrame({"cell_id": [], "datetime": [], "salinity": []})
 
-    merged = merge_with_salinity_labels(feature_df, salinity_df)
+    with pytest.deprecated_call():
+        merged = merge_with_salinity_labels(feature_df, salinity_df)
 
     # Khong co quan trac nao -> tat ca feature row van giu nguyen, chi salinity la NaN.
     assert len(merged) == len(feature_df)
