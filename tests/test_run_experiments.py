@@ -129,3 +129,20 @@ def test_thieu_points_ref_phai_ghi_ro(setup):
            "--folds-dir", str(setup / "folds"), "--cwd", str(setup)]
     p = subprocess.run(cmd, cwd=setup, capture_output=True, text=True, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
     assert p.returncode != 0 and "--no-point-eval" in (p.stdout + p.stderr)
+
+
+@need_real
+def test_bo_dac_trung_dat_ten_tach_lan_chay_va_ghi_khoa(setup):
+    """--feature-set: ten lan chay co hau to __fs-<ten>, config dung dung danh sach, khoa co sha file bo dac trung."""
+    tmp = setup
+    p = _run(tmp, "--allow-untagged", "--allow-dirty", "--feature-set", "khong_diem", "--models", "linear")
+    assert p.returncode == 0, p.stdout + p.stderr
+    exp = tmp / "artifacts" / "experiments"
+    out = exp / "t__h3_res_5__linear__s42__fs-khong_diem" / "cv"
+    cfg = json.loads((out / "config.json").read_text(encoding="utf-8"))
+    banned = {"tch_wl_p20c", "dist_mouth_river_km", "zos_mouth_p90", "sluice_frac"}
+    assert not banned & set(cfg["features"]) and len(cfg["features"]) == 19
+    meta = json.loads((out / "run_meta.json").read_text(encoding="utf-8"))
+    assert meta["feature_set"] == "khong_diem" and len(meta["features_sha256"]) == 64
+    p = _run(tmp, "--allow-untagged", "--allow-dirty", "--feature-set", "khong_diem", "--models", "linear")
+    assert "bo_qua_da_xong" in pd.read_csv(exp / "t_manifest.csv")["status"].tolist()

@@ -30,7 +30,7 @@ from datetime import datetime
 
 import pandas as pd
 
-KEY_FIELDS = ("run", "grid", "model", "scheme", "label_set", "mode",
+KEY_FIELDS = ("run", "grid", "model", "scheme", "label_set", "mode", "feature_set", "features_sha256",
               "git_commit", "git_dirty_src_scripts", "allow_dirty", "allow_untagged", "seeds", "table_sha256",
               "cv_folds_sha256", "points_ref_sha256", "grid_sha256", "blocks_sha256", "points_sha256")
 
@@ -63,8 +63,9 @@ def git_state():
     return {"git_commit": commit, "git_tag": tag if rc == 0 else None, "git_dirty_src_scripts": bool(dirty)}
 
 
-def run_name(prefix, grid, model, scheme, label_set):
-    return f"{prefix}__{grid}__{model}__s{scheme}" + (f"__{label_set}" if label_set else "")
+def run_name(prefix, grid, model, scheme, label_set, feature_set=None):
+    return (f"{prefix}__{grid}__{model}__s{scheme}" + (f"__{label_set}" if label_set else "")
+            + (f"__fs-{feature_set}" if feature_set else ""))
 
 
 def versions():
@@ -119,6 +120,12 @@ def main(a):
     suffix = f"_{a.label_set}" if a.label_set else ""
     ref_sha = sha256(a.points_ref) if (a.points_ref and not a.no_point_eval) else None
     blocks_sha, points_sha = sha256(a.blocks), sha256(a.points)
+    feat_file, feat_sha = None, None
+    if a.feature_set:  # bo dac trung dat ten: configs/feature_sets/<ten>.txt (--features-file -> moi muc phai co)
+        feat_file = os.path.join(ROOT, "configs", "feature_sets", f"{a.feature_set}.txt")
+        if not os.path.exists(feat_file):
+            sys.exit(f"Khong co bo dac trung {feat_file}")
+        feat_sha = sha256(feat_file)
     exp_root = os.path.join(a.cwd, "artifacts", "experiments")
     rows, ref_features, vers = [], {}, versions()
     for grid in grids:
@@ -131,10 +138,11 @@ def main(a):
             folds = os.path.join(a.folds_dir, f"cv_folds_s{scheme}.csv")
             folds_sha = sha256(folds)
             for model in a.models:
-                name = run_name(a.prefix, grid, model, scheme, a.label_set)
+                name = run_name(a.prefix, grid, model, scheme, a.label_set, a.feature_set)
                 out = os.path.join(exp_root, name, a.mode)
                 meta_path = os.path.join(out, "run_meta.json")
                 want = {"run": name, "grid": grid, "model": model, "scheme": scheme, "label_set": a.label_set or "chinh",
+                        "feature_set": a.feature_set, "features_sha256": feat_sha,
                         "git_commit": state["git_commit"], "git_dirty_src_scripts": state["git_dirty_src_scripts"],
                         "allow_dirty": a.allow_dirty, "allow_untagged": a.allow_untagged, "seeds": list(a.seeds),
                         "mode": a.mode, "table_sha256": table_sha, "cv_folds_sha256": folds_sha,
@@ -155,6 +163,8 @@ def main(a):
                 cmd = [sys.executable, os.path.join(ROOT, "src", "training", "train.py"), "--table", table,
                        "--mode", a.mode, "--grid", grid_path, "--blocks", a.blocks, "--cv-folds", folds,
                        "--model", model, "--seeds", *map(str, a.seeds), "--experiment-name", name]
+                if feat_file:
+                    cmd += ["--features-file", feat_file]
                 cmd += ["--no-point-eval"] if a.no_point_eval else ["--points", a.points, "--points-ref", a.points_ref]
                 started = datetime.now().isoformat(timespec="seconds")
                 print(f"[chay] {name}", flush=True)
@@ -194,6 +204,8 @@ if __name__ == "__main__":
     ap.add_argument("--seeds", nargs="+", type=int, default=[42], help="seed mo hinh (HistGB tat dinh)")
     ap.add_argument("--mode", choices=["cv", "final"], default="cv")
     ap.add_argument("--label-set", default="", help='"" = bo chinh; keepwater / keepmangrove / keep6090')
+    ap.add_argument("--feature-set", default=None,
+                    help="Ten bo dac trung trong configs/feature_sets/<ten>.txt (mac dinh: danh sach cho phep mac dinh)")
     ap.add_argument("--tables-dir", default=f"{DATA}/features/unified")
     ap.add_argument("--points", default=os.path.join(ROOT, "data", "eval", "eval_points.geojson"))
     ap.add_argument("--points-ref", default=f"{DATA}/labels/points_reference.csv",

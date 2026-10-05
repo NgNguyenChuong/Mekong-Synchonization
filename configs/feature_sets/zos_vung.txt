@@ -1,0 +1,17 @@
+# Bo dac trung (c) boc tach hybrid: nhu bo chinh nhung zos CAP VUNG (zos_coast_p90) thay zos theo cua (zos_mouth_p90).
+# Dien giai chot truoc: kiem mot ban do lech Dong/Tay TINH, khong phai hieu ung trieu.
+rain_mm
+solar
+temp_c
+temp_max_c
+temp_min_c
+rh_percent
+dem_mean
+dist_main_river_km
+dist_any_water_km
+dist_coast_km
+landcover_class_*
+tch_wl_p20c
+dist_mouth_river_km
+zos_coast_p90
+sluice_frac
