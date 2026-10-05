@@ -914,6 +914,54 @@ def test_phuong_an_c_bien_the_dap_an_phai_khop(c_data, tmp_path):
         os.remove(prov)
 
 
+AUX_6090 = os.path.join(ROOT, "data", "eval", "aux_6090", "eval_points_6090.geojson")
+
+
+@need_real
+@pytest.mark.skipif(not os.path.exists(AUX_6090), reason="thieu data/eval/aux_6090 (scripts/build_aux_points_6090.py)")
+def test_cham_phu_tap_diem_con_cua_dap_an(c_data, tmp_path):
+    """S2 (2026-10-06): file diem = 349 diem 60/90 THAT, dap an (tong hop) = 10.801 diem chinh + 349 diem them (nhu
+    points_reference_keep6090.csv). Khong co --points-subset-of-ref -> LOI (dap an thua diem); co co -> chay duoc ca
+    cv lan final, chi cham dung 349 diem (moi (diem, mua) mot lan), config ghi so diem dap an bi bo. Khong co gia
+    dinh cung so diem 10.801 trong train.py."""
+    env, tab, ref_csv, folds_csv, _, _ = c_data
+    aux = gpd.read_file(AUX_6090)
+    rng = np.random.default_rng(7)
+    extra = pd.DataFrame([(p, s) for p in aux["point_id"] for s in range(2018, 2022)], columns=["point_id", "season"])
+    extra["n_valid_3x3"] = rng.choice([9, 4], size=len(extra), p=[0.8, 0.2])
+    extra["ref_salinity"] = np.where(extra["n_valid_3x3"] >= 5, rng.uniform(0, 6, len(extra)), np.nan)
+    ref_main = pd.read_csv(ref_csv, dtype={"point_id": str})
+    ref6090 = tmp_path / "ref6090.csv"
+    pd.concat([ref_main, extra], ignore_index=True).to_csv(ref6090, index=False)
+
+    def run(name, mode, *more):
+        cmd = [sys.executable, os.path.join(ROOT, "src", "training", "train.py"), "--table", str(tab), "--mode", mode,
+               "--grid", GRID_H3_5, "--blocks", BLOCKS, "--cv-folds", str(folds_csv), "--points", AUX_6090,
+               "--points-ref", str(ref6090), "--experiment-name", name, "--model", "hist_gb", *more]
+        return subprocess.run(cmd, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=900)
+
+    proc = run("aux0", "cv")
+    assert proc.returncode == 2 and "khong co trong file diem" in proc.stderr, proc.stdout + proc.stderr
+    valid = extra[extra["n_valid_3x3"] >= 5]
+    hb = valid["point_id"].map(aux.set_index("point_id")["is_holdout"].astype(bool))
+    proc = run("aux", "cv", "--points-subset-of-ref")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = tmp_path / "artifacts" / "experiments" / "aux"
+    op = pd.read_csv(out / "cv" / "oof_points.csv", dtype={"point_id": str})
+    cv_keys = valid[~hb & (valid["season"] != 2020)]
+    assert not op.duplicated(["point_id", "season"]).any()
+    assert set(zip(op["point_id"], op["season"])) == set(zip(cv_keys["point_id"], cv_keys["season"]))
+    cfg = json.loads((out / "cv" / "config.json").read_text(encoding="utf-8"))
+    assert cfg["point_eval"]["points_subset_of_ref"] is True
+    assert cfg["point_eval"]["n_ref_points_not_in_points_file"] == ref_main["point_id"].nunique()
+    proc = run("aux", "final", "--points-subset-of-ref")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    fp = pd.read_csv(out / "final" / "final_points.csv", dtype={"point_id": str})
+    fin_keys = valid[hb | (valid["season"] == 2020)]
+    assert set(zip(fp["point_id"], fp["season"])) == set(zip(fin_keys["point_id"], fin_keys["season"]))
+    assert fp.loc[fp["point_id"].map(aux.set_index("point_id")["is_holdout"].astype(bool)), "point_id"].nunique() <= 37
+
+
 
 @need_real
 def test_idw_cv_chi_noi_suy_tu_o_train_cua_fold_cung_mua(c_data, tmp_path):

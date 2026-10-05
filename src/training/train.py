@@ -169,6 +169,10 @@ def parse_args():
     parser.add_argument("--points-ref-variant", default="main",
                         help="Bien the (provenance 'variant') BAT BUOC cua --points-ref. Mac dinh 'main': moi bo nhan "
                              "cham chinh tren CUNG dap an bo chinh (chenh lech chi do du lieu huan luyen)")
+    parser.add_argument("--points-subset-of-ref", action="store_true", default=False,
+                        help="Cham phu: --points la TAP CON cua diem trong --points-ref (vd 349 diem 60/90 voi dap an "
+                             "keep6090); bo dap an cua diem khong co trong file diem (ghi so vao config). Mac dinh: "
+                             "dap an co diem la -> LOI")
     parser.add_argument("--no-point-eval", action="store_true", default=False,
                         help="Bo cham theo diem (chi cho bang thu nghiem; ghi vao config)")
     parser.add_argument("--min-val-cells", type=int, default=5)
@@ -458,8 +462,13 @@ def _load_point_frame(args):
     folds = pd.read_csv(args.cv_folds, dtype={"block_id": str})
     ref = pd.read_csv(args.points_ref, dtype={"point_id": str})
     ref_variant, table_set = _check_ref_variant(args)
-    pf = point_frame(gpd.read_file(args.points), grid, gpd.read_file(args.blocks), folds, ref,
-                     tuple(args.holdout_seasons))
+    points = gpd.read_file(args.points)
+    n_ref_dropped = 0
+    if getattr(args, "points_subset_of_ref", False):
+        from training.point_eval import restrict_reference
+
+        ref, n_ref_dropped = restrict_reference(ref, points["point_id"].astype(str))
+    pf = point_frame(points, grid, gpd.read_file(args.blocks), folds, ref, tuple(args.holdout_seasons))
     # V-G2: cv chi giu (diem, mua) vai tro cv - khong giu dap an cua diem test trong bo nho
     pf = pf[pf["role"] == "cv"] if args.mode == "cv" else pf[pf["role"] != "cv"]
     pf = pf.reset_index(drop=True)
@@ -467,6 +476,8 @@ def _load_point_frame(args):
             "points_ref": args.points_ref, "points_ref_sha256": _sha256(args.points_ref),
             "points_ref_variant": ref_variant, "table_label_set": table_set,
             "n_points": int(pf["point_id"].nunique()), "n_point_rows": int(len(pf)),
+            "points_subset_of_ref": bool(getattr(args, "points_subset_of_ref", False)),
+            "n_ref_points_not_in_points_file": n_ref_dropped,
             "rule": "phuong an C: mo hinh fold cua KHOI CHUA DIEM (theo vi tri diem) ap len o chua diem; "
                     "dap an median 3x3 >= 5/9"}
     return pf, info

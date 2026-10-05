@@ -76,6 +76,10 @@ def test_ghi_meta_chay_tiep_va_chay_lai_khi_bang_doi(setup):
         assert k in meta
     assert meta["returncode"] == 0 and len(meta["table_sha256"]) == 64 and meta["allow_untagged"]
     assert (exp / "t__h3_res_5__idw__s42" / "cv" / "oof_points.csv").exists()
+    # S2: bien the dap an mac dinh main ghi vao meta/khoa va truyen xuong train.py
+    assert meta["points_ref_variant"] == "main" and meta["points_subset_of_ref"] is False
+    i = meta["cmd"].index("--points-ref-variant")
+    assert meta["cmd"][i + 1] == "main" and "--points-subset-of-ref" not in meta["cmd"]
     # chay lai: bo qua ca hai
     p = _run(tmp, "--allow-untagged", "--allow-dirty")
     assert p.returncode == 0 and list(pd.read_csv(exp / "t_manifest.csv")["status"]) == ["bo_qua_da_xong"] * 2
@@ -176,3 +180,63 @@ def test_bo_dac_trung_dat_ten_tach_lan_chay_va_ghi_khoa(setup):
     assert meta["feature_set"] == "khong_diem" and len(meta["features_sha256"]) == 64
     p = _run(tmp, "--allow-untagged", "--allow-dirty", "--feature-set", "khong_diem", "--models", "linear")
     assert "bo_qua_da_xong" in pd.read_csv(exp / "t_manifest.csv")["status"].tolist()
+
+
+# ------------------------------------------------------------------ S2: bien the dap an / cham phu (tien to rieng)
+def _meta(exp, name, mode="cv", **kw):
+    d = exp / name / mode
+    d.mkdir(parents=True)
+    (d / "run_meta.json").write_text(json.dumps(kw), encoding="utf-8")
+
+
+def test_variant_conflicts_cung_tien_to_cung_bo(tmp_path):
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import run_experiments as rx
+
+    exp = tmp_path / "experiments"
+    _meta(exp, "cv1__h3_res_5__hist_gb__s42__keep6090", label_set="keep6090")          # truoc S2: khong co khoa = main
+    _meta(exp, "cv1__h3_res_5__hist_gb__s42__keepwater", label_set="keepwater", points_ref_variant="main")
+    _meta(exp, "cv10__h3_res_5__hist_gb__s42__keep6090", label_set="keep6090", points_ref_variant="keep6090")
+    got = rx.variant_conflicts(str(exp), "cv1", "keep6090", "keep6090")
+    assert len(got) == 1 and "cv1__h3_res_5__hist_gb__s42__keep6090" in got[0][0]   # cv10 khong tinh la cv1
+    assert rx.variant_conflicts(str(exp), "cv1", "keep6090", "main") == []
+    assert rx.variant_conflicts(str(exp), "cv1", "keepwater", "keep6090")              # bo khac cung chan
+    assert rx.variant_conflicts(str(exp), "phu6090", "keep6090", "keep6090") == []
+    assert rx.variant_conflicts(str(exp), "cv10", "keep6090", "main")                  # main khong ghi de cham phu
+    (exp / "cv1__x__hist_gb__s42__keep6090" / "cv").mkdir(parents=True)
+    (exp / "cv1__x__hist_gb__s42__keep6090" / "cv" / "run_meta.json").write_text("{hong", encoding="utf-8")
+    assert any("khong doc duoc" in r for _, r in rx.variant_conflicts(str(exp), "cv1", "keep6090", "main"))
+
+
+def _runner_light(tmp, *extra):
+    """Goi runner voi file gia (chi can ton tai/sha) - cac kiem S2 xay ra TRUOC khi doc bang."""
+    for sub in ("grids", "tables", "folds"):
+        (tmp / sub).mkdir(exist_ok=True)
+    (tmp / "grids" / "h3_res_5.geojson").write_text("{}")
+    for f in ("blocks.geojson", "points.geojson"):
+        (tmp / f).write_text("{}")
+    cmd = [sys.executable, RUNNER, "--grids", "h3_res_5", "--models", "hist_gb", "--schemes", "42",
+           "--tables-dir", str(tmp / "tables"), "--grids-dir", str(tmp / "grids"), "--folds-dir", str(tmp / "folds"),
+           "--blocks", str(tmp / "blocks.geojson"), "--points", str(tmp / "points.geojson"),
+           "--points-ref", str(tmp / "ref.csv"), "--cwd", str(tmp), "--allow-untagged", "--allow-dirty", *extra]
+    p = subprocess.run(cmd, cwd=tmp, capture_output=True, text=True, timeout=300,
+                       env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+    return p.returncode, p.stdout + p.stderr
+
+
+def test_runner_cham_phu_khong_ghi_de_lan_cham_chinh(tmp_path):
+    (tmp_path / "ref.csv").write_text("point_id,season,ref_salinity,n_valid_3x3\n")
+    (tmp_path / "ref.csv.provenance.json").write_text(json.dumps({"variant": "keep6090"}))
+    exp = tmp_path / "artifacts" / "experiments"
+    _meta(exp, "cv1__h3_res_5__hist_gb__s42__keep6090", label_set="keep6090", points_ref_variant="main")
+    rc, out = _runner_light(tmp_path, "--prefix", "cv1", "--label-set", "keep6090", "--points-ref-variant", "keep6090")
+    assert rc != 0 and "[LOI] Tien to 'cv1'" in out, out
+    assert (exp / "cv1__h3_res_5__hist_gb__s42__keep6090" / "cv" / "run_meta.json").exists()  # khong bi chuyen _cu
+    assert not (exp / "_cu").exists()
+    # tien to rieng: qua kiem S2, dung o buoc sau (khong co bang) - chung to chan chi do trung tien to
+    rc, out = _runner_light(tmp_path, "--prefix", "phu6090", "--label-set", "keep6090", "--points-ref-variant",
+                            "keep6090", "--points-subset-of-ref")
+    assert rc != 0 and "Khong co bang" in out and "[LOI] Tien to" not in out, out
+    # dap an provenance keep6090 ma yeu cau main -> loi som
+    rc, out = _runner_light(tmp_path, "--prefix", "phu6090", "--label-set", "keep6090")
+    assert rc != 0 and "khac --points-ref-variant 'main'" in out, out

@@ -83,6 +83,24 @@ def load_reference(ref: pd.DataFrame, min_valid: int = REF_MIN_VALID) -> pd.Data
                          "y_ref": ok["ref_salinity"].to_numpy(dtype=float)})
 
 
+def restrict_reference(ref: pd.DataFrame, point_ids) -> tuple[pd.DataFrame, int]:
+    """Cham phu (S2, 2026-10-06): file diem la TAP CON cua file dap an (vd 349 diem 60/90 trong dap an keep6090
+    11.150 diem). Bo dong dap an cua diem KHONG co trong file diem; tra (ref con lai, so diem bi bo).
+
+    Loi: point_id trung trong file diem; diem trong file khong co dong nao trong dap an (khong am tham bo diem).
+    Chi dung khi goi ro (train.py --points-subset-of-ref); mac dinh point_frame van coi diem la dap an thua la LOI.
+    """
+    ids = pd.Series(list(point_ids), dtype=str)
+    if ids.duplicated().any():
+        raise ValueError("point_id trung trong file diem")
+    rid = ref["point_id"].astype(str)
+    missing = sorted(set(ids) - set(rid))
+    if missing:
+        raise ValueError(f"{len(missing)} diem trong file diem khong co dong nao trong dap an (vd {missing[:3]})")
+    keep = rid.isin(set(ids)).to_numpy()
+    return ref.loc[keep].reset_index(drop=True), int(rid[~keep].nunique())
+
+
 def point_frame(points: gpd.GeoDataFrame, grid: gpd.GeoDataFrame, blocks: gpd.GeoDataFrame, cv_folds: pd.DataFrame,
                 ref: pd.DataFrame, holdout_seasons) -> pd.DataFrame:
     """Moi (diem, mua) co dap an hop le: point_id, season, block_id, cv_fold, is_holdout, cell_id, y_ref, role.

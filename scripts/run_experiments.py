@@ -13,11 +13,18 @@ Sau moi lan chay: danh sach dac trung (config.features) phai GIONG NHAU giua moi
 khong thieu muc nao (features_missing rong) - khac -> danh dau LOI.
 Bat buoc truoc khi chay that: HEAD co tag va cay lam viec sach o src/ scripts/ (tru --allow-untagged /
 --allow-dirty, chi de thu nghiem; ghi vao run_meta).
+Bien the dap an (--points-ref-variant, mac dinh main = cham chinh moi bo bang dap an bo chinh; S2 2026-10-06):
+cham phu (vd keep6090 tren 349 diem 60/90) PHAI dung tien to rieng - ten lan chay khong chua bien the, nen neu
+cung tien to + label_set da co lan chay bien the khac (meta thieu khoa = main) -> LOI truoc khi chay (khong ghi de,
+khong chuyen sang _cu). Dap an co provenance ma 'variant' khac yeu cau -> LOI som (train.py cung kiem).
 Tong hop -> artifacts/experiments/<prefix>_manifest.csv (gop don theo ten lan chay + mode, khong ghi de dong
 cu; KHONG in chi so sai so). run_meta ghi phien ban python/numpy/pandas/sklearn.
 
 Chay:  venv/Scripts/python.exe scripts/run_experiments.py --prefix cv1 [--grids h3_res_5 ...]
            [--models hist_gb linear idw] [--schemes 42 43 44] [--mode cv]
+       Cham phu 60/90: ... --prefix phu6090 --label-set keep6090 --models hist_gb --points-ref-variant keep6090
+           --points-subset-of-ref --points data/eval/aux_6090/eval_points_6090.geojson
+           --points-ref <DATA_ROOT>/labels/points_reference_keep6090.csv
 """
 import argparse
 import glob
@@ -32,7 +39,8 @@ import pandas as pd
 
 KEY_FIELDS = ("run", "grid", "model", "scheme", "label_set", "mode", "feature_set", "features_sha256",
               "git_commit", "git_dirty_src_scripts", "allow_dirty", "allow_untagged", "seeds", "table_sha256",
-              "cv_folds_sha256", "points_ref_sha256", "grid_sha256", "blocks_sha256", "points_sha256")
+              "cv_folds_sha256", "points_ref_sha256", "grid_sha256", "blocks_sha256", "points_sha256",
+              "points_ref_variant", "points_subset_of_ref")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
@@ -91,6 +99,36 @@ def check_features(out_dir, model, ref_features: dict):
     return None
 
 
+def variant_conflicts(exp_root, prefix, label_set, variant) -> list:
+    """Lan chay da co (artifacts/experiments/<prefix>__*/<mode>/run_meta.json) CUNG label_set nhung bien the dap an
+    khac `variant` (meta khong co khoa points_ref_variant = lan chay truoc S2 = 'main'). Meta khong doc duoc -> tinh
+    la xung dot (CHG-22: khong doan). Tra danh sach (duong dan, ly do)."""
+    want_set = label_set or "chinh"
+    out = []
+    for mp in sorted(glob.glob(os.path.join(exp_root, f"{glob.escape(prefix)}__*", "*", "run_meta.json"))):
+        try:
+            with open(mp, encoding="utf-8") as f:
+                meta = json.load(f)
+        except (OSError, ValueError) as exc:
+            out.append((mp, f"khong doc duoc run_meta ({exc})"))
+            continue
+        if meta.get("label_set", "chinh") != want_set:
+            continue
+        got = meta.get("points_ref_variant") or "main"
+        if got != variant:
+            out.append((mp, f"points_ref_variant {got} != {variant}"))
+    return out
+
+
+def ref_variant_of(points_ref):
+    """'variant' trong <points_ref>.provenance.json; khong co provenance -> None (train.py xu ly tiep)."""
+    pp = f"{points_ref}.provenance.json"  # = preprocessing.provenance_path (khong import geopandas/h3 o runner)
+    if not os.path.exists(pp):
+        return None
+    with open(pp, encoding="utf-8") as f:
+        return json.load(f).get("variant")
+
+
 def is_done(meta_path, cfg_path, want: dict) -> bool:
     if not (os.path.exists(meta_path) and os.path.exists(cfg_path)):
         return False
@@ -138,6 +176,15 @@ def main(a):
             sys.exit(f"Khong co bo dac trung {feat_file}")
         feat_sha = sha256(feat_file)
     exp_root = os.path.join(a.cwd, "artifacts", "experiments")
+    if ref_sha is not None:
+        v = ref_variant_of(a.points_ref)
+        if v is not None and v != a.points_ref_variant:
+            sys.exit(f"--points-ref co variant '{v}' khac --points-ref-variant '{a.points_ref_variant}'.")
+    conflicts = variant_conflicts(exp_root, a.prefix, a.label_set, a.points_ref_variant)
+    if conflicts:
+        sys.exit(f"[LOI] Tien to '{a.prefix}' (label_set {a.label_set or 'chinh'}) da co {len(conflicts)} lan chay "
+                 f"bien the dap an khac (vd {conflicts[0][0]}: {conflicts[0][1]}) - cham phu phai dung tien to rieng "
+                 "(vd --prefix phu6090), khong ghi de lan cham chinh.")
     rows, ref_features, vers = [], {}, versions()
     for grid in grids:
         table = os.path.join(a.tables_dir, f"{grid}_unified{suffix}.csv")
@@ -158,7 +205,8 @@ def main(a):
                         "allow_dirty": a.allow_dirty, "allow_untagged": a.allow_untagged, "seeds": list(a.seeds),
                         "mode": a.mode, "table_sha256": table_sha, "cv_folds_sha256": folds_sha,
                         "points_ref_sha256": ref_sha, "grid_sha256": grid_sha, "blocks_sha256": blocks_sha,
-                        "points_sha256": points_sha}
+                        "points_sha256": points_sha, "points_ref_variant": a.points_ref_variant,
+                        "points_subset_of_ref": a.points_subset_of_ref}
                 row = {"run": name, "grid": grid, "model": model, "scheme": scheme, "label_set": a.label_set or "chinh",
                        **want, "seeds": " ".join(map(str, a.seeds)), "git_tag": state["git_tag"]}
                 if is_done(meta_path, os.path.join(out, "config.json"), want):
@@ -176,7 +224,13 @@ def main(a):
                        "--model", model, "--seeds", *map(str, a.seeds), "--experiment-name", name]
                 if feat_file:
                     cmd += ["--features-file", feat_file]
-                cmd += ["--no-point-eval"] if a.no_point_eval else ["--points", a.points, "--points-ref", a.points_ref]
+                if a.no_point_eval:
+                    cmd += ["--no-point-eval"]
+                else:
+                    cmd += ["--points", a.points, "--points-ref", a.points_ref,
+                            "--points-ref-variant", a.points_ref_variant]
+                    if a.points_subset_of_ref:
+                        cmd += ["--points-subset-of-ref"]
                 started = datetime.now().isoformat(timespec="seconds")
                 print(f"[chay] {name}", flush=True)
                 os.makedirs(out, exist_ok=True)
@@ -221,6 +275,11 @@ if __name__ == "__main__":
     ap.add_argument("--points", default=os.path.join(ROOT, "data", "eval", "eval_points.geojson"))
     ap.add_argument("--points-ref", default=f"{DATA}/labels/points_reference.csv",
                     help="Dap an bo chinh cho MOI bo nhan (An chot 2026-10-04)")
+    ap.add_argument("--points-ref-variant", default="main",
+                    help="Bien the dap an (provenance 'variant'), truyen xuong train.py. main = cham chinh; khac main "
+                         "(vd keep6090) = cham phu, BAT BUOC tien to rieng")
+    ap.add_argument("--points-subset-of-ref", action="store_true",
+                    help="--points la tap con diem cua --points-ref (cham phu 349 diem 60/90)")
     ap.add_argument("--no-point-eval", action="store_true", help="Bo cham theo diem - KHONG dung cho ket qua chinh")
     ap.add_argument("--grids-dir", default=os.path.join(ROOT, "data", "grids"))
     ap.add_argument("--folds-dir", default=os.path.join(ROOT, "data", "eval"))
