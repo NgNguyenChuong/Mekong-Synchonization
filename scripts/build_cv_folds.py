@@ -58,6 +58,7 @@ import pandas as pd
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
+from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -589,9 +590,9 @@ if __name__ == "__main__":
     ap.add_argument("--report-dir", default=os.path.join(ROOT, "KE_HOACH", "ket-qua"))
     ap.add_argument("--backup-dir", default=os.path.join(ROOT, "data", "eval", "deprecated_v2b"),
                     help="--force sao luu cv_folds*, cell_blocks/, bang bao cao vao day TRUOC khi ghi")
-    ap.add_argument("--scope-mask", default="A:/Dataset_NCKH/features/scope_mask_v3.tif",
-                    help="Mat na pham vi (v3 CHG-10; v2: A:/Dataset_NCKH/features/scope_mask_v2.tif)")
-    ap.add_argument("--dist-coast", default="A:/Dataset_NCKH/raw/river/river_distance_90m.tif",
+    ap.add_argument("--scope-mask", default=data_path("features/scope_mask_v3.tif"),
+                    help="Mat na pham vi (v3 CHG-10; v2: <DATA_ROOT>/features/scope_mask_v2.tif)")
+    ap.add_argument("--dist-coast", default=data_path("raw/river/river_distance_90m.tif"),
                     help="Raster co band dist_coast_km")
     ap.add_argument("--coast-km", type=float, default=20.0)
     ap.add_argument("--min-points", type=int, default=30)

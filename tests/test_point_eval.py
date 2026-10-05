@@ -11,6 +11,7 @@ from shapely.geometry import Point, box
 
 from training.point_eval import (REF_MIN_VALID, attach_features, check_point_not_in_train, load_reference,
                                  point_blocks, point_frame)
+from settings import data_path  # (.env: DATA_ROOT)
 
 UTM = "EPSG:32648"
 
@@ -101,8 +102,8 @@ def test_gan_dac_trung_o_chua_diem_va_kiem_khong_hoc_o_cua_diem():
 
 # ---------------------------------------------------------------- du lieu that, KHONG fit mo hinh
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-UNIFIED = "A:/Dataset_NCKH/features/unified"
-REF = "A:/Dataset_NCKH/labels/points_reference.csv"
+UNIFIED = data_path("features/unified")
+REF = data_path("labels/points_reference.csv")
 POINTS = os.path.join(ROOT, "data", "eval", "eval_points.geojson")
 need_real = pytest.mark.skipif(not (os.path.isdir(UNIFIED) and os.path.exists(REF) and os.path.exists(POINTS)),
                                reason="khong co du lieu that")

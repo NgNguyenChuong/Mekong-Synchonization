@@ -5,11 +5,11 @@ Buoc 1 (luon chay): dung do thi, tim cua song, noi cho ho (tu dong + thu cong), 
   -> in + ghi danh sach de An duyet: KE_HOACH/ket-qua/dot4_do_thi_cua_song.csv, dot4_do_thi_cho_noi.csv,
   dot4_do_thi_manh.csv, dot4_do_thi_diem_quen.csv. Bat bien hoac thu tu song Hau sai -> dung (exit 1).
 Buoc 2 (bo qua neu --lists-only):
-  A:/Dataset_NCKH/raw/river/river_graph_90m.tif (cung luoi river_distance_90m.tif): dist_mouth_km, mouth_id
+  <DATA_ROOT>/raw/river/river_graph_90m.tif (cung luoi river_distance_90m.tif): dist_mouth_km, mouth_id
       (-1 = khong), behind_sluice (0/1), graph_lateral_km
-  A:/Dataset_NCKH/features/hybrid/zos_mouth_season.csv  (mouth_id x mua: zos p90; pixel CMEMS; cmems_far > 10 km)
-  A:/Dataset_NCKH/features/hybrid/hybrid_scope_30m.tif  (luoi scope 30 m, NaN ngoai scope)
-  A:/Dataset_NCKH/features/hybrid/<luoi>_hybrid.csv     (cell_id, season,
+  <DATA_ROOT>/features/hybrid/zos_mouth_season.csv  (mouth_id x mua: zos p90; pixel CMEMS; cmems_far > 10 km)
+  <DATA_ROOT>/features/hybrid/hybrid_scope_30m.tif  (luoi scope 30 m, NaN ngoai scope)
+  <DATA_ROOT>/features/hybrid/<luoi>_hybrid.csv     (cell_id, season,
       dac trung: dist_mouth_river_km, zos_mouth_p90, sluice_frac;
       cot kiem/do nhay (KHONG vao bo chinh): sluice_frac_from2021, graph_lateral_km, zos_cmems_far_frac)
 Moi dau ra kem .provenance.json.
@@ -28,6 +28,7 @@ import pandas as pd
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
+from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -318,13 +319,13 @@ def main(a):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--osm", default="A:/Dataset_NCKH/rivers/osm_waterways_mekong_delta.gpkg")
-    ap.add_argument("--coast", default="A:/Dataset_NCKH/raw/river/coastline_sayre2019.gpkg")
-    ap.add_argument("--cmems", default="A:/Dataset_NCKH/cmems/cmems_zos_daily_mekong_1999_2026.nc")
-    ap.add_argument("--scope", default="A:/Dataset_NCKH/features/scope_mask_v3.tif")
-    ap.add_argument("--river-dir", default="A:/Dataset_NCKH/raw/river")
-    ap.add_argument("--static-dir", default="A:/Dataset_NCKH/features/static")
-    ap.add_argument("--out-dir", default="A:/Dataset_NCKH/features/hybrid")
+    ap.add_argument("--osm", default=data_path("rivers/osm_waterways_mekong_delta.gpkg"))
+    ap.add_argument("--coast", default=data_path("raw/river/coastline_sayre2019.gpkg"))
+    ap.add_argument("--cmems", default=data_path("cmems/cmems_zos_daily_mekong_1999_2026.nc"))
+    ap.add_argument("--scope", default=data_path("features/scope_mask_v3.tif"))
+    ap.add_argument("--river-dir", default=data_path("raw/river"))
+    ap.add_argument("--static-dir", default=data_path("features/static"))
+    ap.add_argument("--out-dir", default=data_path("features/hybrid"))
     ap.add_argument("--grids-dir", default=os.path.join(ROOT, "data", "grids"))
     ap.add_argument("--grids", nargs="*")
     ap.add_argument("--lists-only", action="store_true")

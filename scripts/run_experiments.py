@@ -35,7 +35,10 @@ KEY_FIELDS = ("run", "grid", "model", "scheme", "label_set", "mode",
               "cv_folds_sha256", "points_ref_sha256", "grid_sha256", "blocks_sha256", "points_sha256")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA = "A:/Dataset_NCKH"
+sys.path.insert(0, os.path.join(ROOT, "src"))
+from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
+
+DATA = data_path()
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

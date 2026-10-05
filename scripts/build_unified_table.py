@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Bang hop nhat (cell_id, season) cho 13 luoi x 4 bo nhan (tuan 3 viec 3). Quy tac ghep: src/unified_table.py.
 
-Dau ra A:/Dataset_NCKH/features/unified/<luoi>_unified[_<bo>].csv (+ .provenance.json: sha256 moi nguon,
+Dau ra <DATA_ROOT>/features/unified/<luoi>_unified[_<bo>].csv (+ .provenance.json: sha256 moi nguon,
 vai tro cot, danh sach dac trung mac dinh). Bao cao -> KE_HOACH/ket-qua/dot4_bang_hop_nhat.csv (so dong,
 so o, dong train_ok, dong train_ok_scope = tap huan luyen, NaN tung dac trung mac dinh tren tap huan luyen).
 Tap huan luyen = train_ok_scope (train_ok VA scope_frac > 0); dong nao trong tap co MOI dac trung tinh NaN -> loi.
@@ -18,6 +18,7 @@ import pandas as pd
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
+from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -30,7 +31,7 @@ STATIC_FEATURES = ("dem_mean", "dist_main_river_km", "dist_any_water_km", "dist_
 HYBRID_FEATURES = ("dist_mouth_river_km", "zos_mouth_p90", "sluice_frac")
 LABEL_ONLY_COLS = ("salinity", "n_valid_px", "valid_frac", "train_ok", "train_ok_10pct", TRAIN_COL)
 
-DATA = "A:/Dataset_NCKH"
+DATA = data_path()
 
 
 def sources(a, grid, label_set):

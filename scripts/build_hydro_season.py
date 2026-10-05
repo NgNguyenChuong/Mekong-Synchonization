@@ -37,9 +37,9 @@ Cot:
                             zos_coast_p90 = NaN (cung quy tac voi MRC; ven bo la tap con cua toan vung nen
                             khong thieu nhieu ngay hon).
 
-Chay:  python scripts/build_hydro_season.py [--mrc A:/Dataset_NCKH/mrc/mrc_water_level_daily.csv]
-           [--cmems A:/Dataset_NCKH/cmems/cmems_zos_daily_mekong_1999_2026.nc]
-           [--out A:/Dataset_NCKH/features/hydro_season_2014_2026.csv] [--years 2014 2026] [--coast-km 30]
+Chay:  python scripts/build_hydro_season.py [--mrc <DATA_ROOT>/mrc/mrc_water_level_daily.csv]
+           [--cmems <DATA_ROOT>/cmems/cmems_zos_daily_mekong_1999_2026.nc]
+           [--out <DATA_ROOT>/features/hydro_season_2014_2026.csv] [--years 2014 2026] [--coast-km 30]
            [--censor-runs-within-season]
 """
 import argparse
@@ -51,6 +51,7 @@ import pandas as pd
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
+from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -141,10 +142,10 @@ if __name__ == "__main__":
     from preprocessing import CANONICAL_BOUNDARY  # noqa: E402
 
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--mrc", default="A:/Dataset_NCKH/mrc/mrc_water_level_daily.csv")
-    ap.add_argument("--cmems", default="A:/Dataset_NCKH/cmems/cmems_zos_daily_mekong_1999_2026.nc")
+    ap.add_argument("--mrc", default=data_path("mrc/mrc_water_level_daily.csv"))
+    ap.add_argument("--cmems", default=data_path("cmems/cmems_zos_daily_mekong_1999_2026.nc"))
     ap.add_argument("--boundary", default=CANONICAL_BOUNDARY)
-    ap.add_argument("--out", default="A:/Dataset_NCKH/features/hydro_season_2014_2026.csv")
+    ap.add_argument("--out", default=data_path("features/hydro_season_2014_2026.csv"))
     ap.add_argument("--years", nargs=2, type=int, default=[2014, 2026], metavar=("TU", "DEN"))
     ap.add_argument("--coast-km", type=float, default=30.0)
     ap.add_argument("--censor-runs-within-season", action="store_true",

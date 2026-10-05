@@ -46,3 +46,6 @@ KE_HOACH/
 GIAO_TIEP/
 
 _workspace/
+
+# Ket qua thi nghiem (~1,5 GB/lan CV): tai sinh duoc tu tag git + du lieu (manifest sha256) -> khong commit
+artifacts/

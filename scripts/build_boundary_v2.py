@@ -35,6 +35,7 @@ from shapely.ops import transform as shp_transform
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
+from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -355,13 +356,13 @@ if __name__ == "__main__":
     ap.add_argument("--v1", default=BOUNDARY_V1)
     ap.add_argument("--out", default=CANONICAL_BOUNDARY)
     ap.add_argument("--buffer-km", type=float, default=3.0)
-    ap.add_argument("--cache-dir", default="A:/Dataset_NCKH/raw/boundary")
+    ap.add_argument("--cache-dir", default=data_path("raw/boundary"))
     ap.add_argument("--check", action="store_true", help="Kiem dat ven bien + bang mask (can raster o A:)")
-    ap.add_argument("--worldcover", default="A:/Dataset_NCKH/gee/LandCover_DBSCL_2021.tif")
-    ap.add_argument("--dist", default="A:/Dataset_NCKH/raw/river/river_distance_90m.tif")
-    ap.add_argument("--gee-dir", default="A:/Dataset_NCKH/gee")
+    ap.add_argument("--worldcover", default=data_path("gee/LandCover_DBSCL_2021.tif"))
+    ap.add_argument("--dist", default=data_path("raw/river/river_distance_90m.tif"))
+    ap.add_argument("--gee-dir", default=data_path("gee"))
     ap.add_argument("--mask-suffix", default="_v2", help="hau to file mask nuoc (mac dinh _v2 theo ranh gioi v2)")
-    ap.add_argument("--zenodo-dir", default="A:/Dataset_NCKH/zenodo_15653696")
+    ap.add_argument("--zenodo-dir", default=data_path("zenodo_15653696"))
     ap.add_argument("--mask-csv", default=os.path.join(ROOT, "KE_HOACH", "ket-qua", "dot4_kiem_mask_dai_bien_moi.csv"))
     ap.add_argument("--year-start", type=int, default=2014)
     ap.add_argument("--year-end", type=int, default=2026)

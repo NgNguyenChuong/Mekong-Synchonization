@@ -34,6 +34,7 @@ import rasterio
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
+from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -233,8 +234,8 @@ if __name__ == "__main__":
     ap.add_argument("--boundary", default=CANONICAL_BOUNDARY)
     ap.add_argument("--grids-dir", default=os.path.join(ROOT, "data", "grids"))
     ap.add_argument("--out-dir", default=os.path.join(ROOT, "data", "eval"))
-    ap.add_argument("--worldcover", default="A:/Dataset_NCKH/gee/LandCover_DBSCL_2021.tif")
-    ap.add_argument("--scope-mask", default="A:/Dataset_NCKH/features/scope_mask_v2.tif",
+    ap.add_argument("--worldcover", default=data_path("gee/LandCover_DBSCL_2021.tif"))
+    ap.add_argument("--scope-mask", default=data_path("features/scope_mask_v2.tif"),
                     help="Mat na pham vi tinh (scripts/build_scope_mask.py)")
     ap.add_argument("--backup-name", default="deprecated_v2a",
                     help="Thu muc sao luu ban dang co (diem/khoi/cv_folds/cell_blocks) truoc khi ghi")
