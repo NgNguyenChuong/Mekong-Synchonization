@@ -76,3 +76,28 @@ def test_bo_xu_huong_bac_2_theo_khoang_cach_bo():
     assert after["ok"] and after["range_m"] < 50_000
     r = detrend_poly(v, dist, 2)
     assert abs(np.nanmean(r)) < 1e-9 and abs(np.corrcoef(r, dist)[0, 1]) < 1e-9
+
+
+def test_het_ram_khong_bi_tinh_la_vuot(monkeypatch):
+    """3 trang thai (An 2026-10-05): MemoryError = LOI may -> noi len (dung), khong ghi 'vuot'; loi fit khac -> vuot."""
+    import skgstat
+
+    rng = np.random.default_rng(0)
+    xy = 500_000 + rng.uniform(0, 100_000, (100, 2))
+    v = rng.normal(size=100)
+
+    def het_ram(*a, **k):
+        raise MemoryError("gia lap het RAM")
+
+    def fit_loi(*a, **k):
+        raise RuntimeError("gia lap fit khong hoi tu")
+
+    monkeypatch.setattr(skgstat, "Variogram", het_ram)
+    monkeypatch.setattr(skgstat, "DirectionalVariogram", het_ram)
+    with pytest.raises(MemoryError):
+        variogram_range(xy, v)
+    with pytest.raises(MemoryError):
+        variogram_range(xy, v, azimuth=45.0)
+    monkeypatch.setattr(skgstat, "Variogram", fit_loi)
+    r = variogram_range(xy, v)
+    assert not r["ok"] and np.isinf(r["range_m"]) and r["reason"] == "fit loi: RuntimeError"

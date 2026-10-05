@@ -53,6 +53,8 @@ def variogram_range(xy, values, maxlag=MAXLAG_M, n_lags=N_LAGS, azimuth=None, to
             else:
                 vg = skgstat.DirectionalVariogram(xy, v, azimuth=azimuth, tolerance=tolerance, **kw)
             r, sill, nug = (float(x) for x in vg.parameters[:3])
+    except MemoryError:  # het RAM la loi MAY, khong phai fit that bai -> dung lai (2026-10-05: 280 mua bi tinh nham)
+        raise
     except Exception as exc:  # fit that bai -> tinh la vuot (quy tac chot truoc)
         out["reason"] = f"fit loi: {type(exc).__name__}"
         return out
