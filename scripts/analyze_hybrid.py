@@ -10,6 +10,12 @@ Buoc 2 - cai thien co khac giua cac khung khong: D = I_A - I_B cho 12 cap ho chi
 Theo nhom khoang cach toi song tinh THEO DIEM (graph_lateral_km cua pixel chua diem): <=2 / 2-10 / >10 km - MO TA.
 Quy tac D: bao them tung cach chia rieng (ket luan phai giu ca 3).
 (c) bao giong buoc 1 voi (c) thay (b).
+Cot ci90_low/ci90_high cua buoc 1 = KTC 90% (t theo cum) cua I - CHI MO TA, KHONG co nguong tuong duong dang ky
+  cho buoc 1 (T7 N3, An 2026-10-05 21:22); buoc 2 giu ci_tost_* vi co Delta_min_D dang ky.
+CHG-22 (3 trang thai): moi oof_points phai pred_source = "oof", err huu han, khong trung (diem, mua); (a)/(b)/(c) va
+  moi luoi phai CUNG tap (point_id, season, unit_id) theo tung cach chia, unit_id khop don vi tinh tu vi tri diem;
+  (a)/(b) va cac luoi trong cap phai cung tap don vi sau loc min_pts; mean_I khong huu han; diem thieu/NaN/ngoai
+  khoang graph_lateral_km -> LOI (dung, khong ghi ket qua). Khong con giao/merge inner am tham.
 
 Chay:  venv/Scripts/python.exe scripts/analyze_hybrid.py --prefix cv1
 """
@@ -36,23 +42,64 @@ DMIN_FRAC = 0.25
 STRATA = [(-0.001, 2.0, "<=2 km"), (2.0, 10.0, "2-10 km"), (10.0, 1e9, ">10 km")]
 
 
+KEYS = ["seed", "point_id", "season", "unit_id"]
+
+
 def load(exp, prefix, grid, schemes, feature_set=None):
     parts = []
     for s in schemes:
         name = f"{prefix}__{grid}__hist_gb__s{s}" + (f"__fs-{feature_set}" if feature_set else "")
-        d = pd.read_csv(os.path.join(exp, name, "cv", "oof_points.csv"), dtype={"point_id": str},
-                        usecols=["point_id", "season", "err"])
+        path = os.path.join(exp, name, "cv", "oof_points.csv")
+        d = pd.read_csv(path, dtype={"point_id": str, "unit_id": str},
+                        usecols=["point_id", "season", "err", "pred_source", "unit_id"])
+        if (d["pred_source"] != "oof").any():
+            raise SystemExit(f"LOI: {name}: {int((d['pred_source'] != 'oof').sum())} dong pred_source khac 'oof'")
+        if not np.isfinite(d["err"].to_numpy(float)).all():
+            raise SystemExit(f"LOI: {name}: {int((~np.isfinite(d['err'].to_numpy(float))).sum())} err khong huu han")
+        if d["unit_id"].isna().any() or d.duplicated(["point_id", "season"]).any():
+            raise SystemExit(f"LOI: {name}: unit_id NaN hoac trung (point_id, season)")
         d["grid"], d["seed"] = grid, s
-        parts.append(d)
+        parts.append(d.drop(columns="pred_source"))
     return pd.concat(parts, ignore_index=True)
 
 
+def key_frame(d):
+    """Tap khoa (seed, point_id, season, unit_id) da sap xep - de so bang nhau giua cac bang."""
+    return d[KEYS].sort_values(KEYS).reset_index(drop=True)
+
+
+def assert_same_keys(frames: dict, pu=None):
+    """CHG-22: moi bang (ten -> DataFrame) phai CUNG tap (seed, point_id, season, unit_id); unit_id khop pu."""
+    names = list(frames)
+    ref = key_frame(frames[names[0]])
+    if ref.empty:
+        raise SystemExit(f"LOI: {names[0]} rong")
+    for n in names[1:]:
+        if not key_frame(frames[n]).equals(ref):
+            raise SystemExit(f"LOI: {n} khac tap (seed, point_id, season, unit_id) voi {names[0]}")
+    if pu is not None:
+        u = ref.drop_duplicates("point_id").set_index("point_id")["unit_id"]
+        exp = u.index.map(pu)
+        bad = exp.isna() | (exp.to_numpy() != u.to_numpy())
+        if bad.any():
+            raise SystemExit(f"LOI: {int(bad.sum())} diem co unit_id trong oof_points khac don vi tinh tu vi tri diem")
+    return ref
+
+
+def _same_index(x, y, what):
+    if not x.equals(y):
+        raise SystemExit(f"LOI: {what}: khac tap don vi - chi o mot ben {sorted(set(x) ^ set(y))[:10]}")
+
+
 def unit_improvement(full, ablated, pu, min_pts=30):
-    """I theo don vi: MAE(ablated) - MAE(full), trong so n_pts_mean. Hai bang cung tap (diem, mua)."""
+    """I theo don vi: MAE(ablated) - MAE(full), trong so n_pts_mean. Hai bang cung tap (diem, mua) (assert)."""
+    assert_same_keys({"day_du": full, "bo": ablated})
     a = seed_mean_errors(full.assign(model="a"))
     b = seed_mean_errors(ablated.assign(model="b"))
     ua, _, _ = unit_metrics(a, pu, min_pts)
     ub, _, _ = unit_metrics(b, pu, min_pts)
+    _same_index(pd.MultiIndex.from_frame(ua[["grid", "unit"]]).sort_values(),
+                pd.MultiIndex.from_frame(ub[["grid", "unit"]]).sort_values(), "unit_improvement (a)/(b)")
     m = ua.merge(ub, on=["grid", "unit"], suffixes=("_a", "_b"), validate="one_to_one")
     m["I"] = m["mae_b"] - m["mae_a"]
     return m[["grid", "unit", "I", "mae_a", "mae_b", "n_pts_mean_a"]].rename(columns={"n_pts_mean_a": "w"})
@@ -62,7 +109,7 @@ def test_vec(d, w, cmp_id, thr=None):
     t = signflip_test(d, w, seed=comparison_seed(cmp_id))
     ci2 = cluster_t_ci(d, w, 2 * ALPHA)
     out = {"delta_hat": t["delta_hat"], "p_value": t["p_value"], "G": t["G"],
-           "k_pos": int((np.asarray(d) > 0).sum()), "ci_tost_low": ci2["ci_low"], "ci_tost_high": ci2["ci_high"]}
+           "k_pos": int((np.asarray(d) > 0).sum()), "ci90_low": ci2["ci_low"], "ci90_high": ci2["ci_high"]}
     if thr is not None:
         out["thr"] = thr
         out["tuong_duong"] = bool(ci2["ci_low"] > -thr and ci2["ci_high"] < thr)
@@ -76,7 +123,8 @@ def step1(imp_by_grid, tag):
         mae_b = float(np.average(m["mae_b"], weights=m["w"]))
         rows.append({"cau_hinh": tag, "grid": g, "I": r["delta_hat"], "I_tuong_doi": r["delta_hat"] / mae_b,
                      "p_value": r["p_value"], "don_vi_cai_thien": f"{r['k_pos']}/{r['G']}",
-                     "ci_tost_low": r["ci_tost_low"], "ci_tost_high": r["ci_tost_high"]})
+                     # KTC 90%, mo ta, KHONG co nguong tuong duong dang ky cho buoc 1 (khong goi la TOST)
+                     "ci90_low": r["ci90_low"], "ci90_high": r["ci90_high"]})
     out = pd.DataFrame(rows)
     out["p_holm"] = holm_adjust(out["p_value"].to_numpy())
     return out
@@ -84,19 +132,24 @@ def step1(imp_by_grid, tag):
 
 def step2(imp_by_grid, pairs, levels, s1, tag):
     mean_I = {lv: float(s1[s1["grid"].isin(levels[levels == lv].index)]["I"].mean()) for lv in levels.unique()}
+    bad = {lv: v for lv, v in mean_I.items() if not np.isfinite(v)}
+    if bad:
+        raise SystemExit(f"LOI: {tag}: I trung binh muc khong huu han {bad} (luoi cua muc thieu trong buoc 1?)")
     sig = s1.set_index("grid")["p_holm"] < ALPHA
     rows = []
     for a, b in zip(pairs["grid_a"], pairs["grid_b"]):
         lv = levels[a]
         ma, mb = imp_by_grid[a].set_index("unit"), imp_by_grid[b].set_index("unit")
-        units = ma.index.intersection(mb.index)
+        _same_index(ma.index.sort_values(), mb.index.sort_values(), f"buoc 2 {tag} {a}/{b}")
+        units = ma.index
         d = (ma.loc[units, "I"] - mb.loc[units, "I"]).to_numpy()
         w = ma.loc[units, "w"].to_numpy()
         thr = DMIN_FRAC * mean_I[lv]
         r = test_vec(d, w / w.sum(), f"hybrid_D|{tag}|{a}|{b}", thr=thr if thr > 0 else None)
         ap_dung = thr > 0 and bool(sig[[g for g in levels[levels == lv].index]].any())
         rows.append({"cau_hinh": tag, "muc": lv, "grid_a": a, "grid_b": b, "D": r["delta_hat"], "p_value": r["p_value"],
-                     "nguong_D": thr, "ci_tost_low": r["ci_tost_low"], "ci_tost_high": r["ci_tost_high"],
+                     # buoc 2 co Delta_min_D dang ky -> KTC 90% dung cho TOST, giu ten ci_tost_*
+                     "nguong_D": thr, "ci_tost_low": r["ci90_low"], "ci_tost_high": r["ci90_high"],
                      "tuong_duong": r.get("tuong_duong", False), "ap_dung": ap_dung})
     out = pd.DataFrame(rows)
     out["p_holm"] = holm_adjust(out["p_value"].to_numpy())
@@ -107,6 +160,13 @@ def step2(imp_by_grid, pairs, levels, s1, tag):
 
 
 def strata_table(full, ablated, lat_by_point, tag):
+    pts = pd.Index(full["point_id"].unique()).union(ablated["point_id"].unique())
+    lat = lat_by_point.reindex(pts)
+    lo_min, hi_max = STRATA[0][0], STRATA[-1][1]
+    bad = lat.isna() | ~((lat > lo_min) & (lat <= hi_max))
+    if bad.any():  # CHG-22: diem roi khoi moi nhom -> LOI (truoc day roi lang)
+        raise SystemExit(f"LOI: {tag}: {int(bad.sum())} diem graph_lateral_km NaN/thieu/ngoai ({lo_min}, {hi_max}]: "
+                         f"{list(lat[bad].index[:5])}")
     rows = []
     for lo, hi, ten in STRATA:
         ids = lat_by_point[(lat_by_point > lo) & (lat_by_point <= hi)].index
@@ -138,9 +198,12 @@ def main(a):
     lat = point_lateral()
     pu = _point_unit()
     fulls = {g: load(exp, a.prefix, g, a.schemes) for g in GRIDS}
+    ref = assert_same_keys({f"(a) {g}": fulls[g] for g in GRIDS}, pu)
+    print(f"(diem, mua) moi cach chia: {len(ref) // len(a.schemes)}; cach chia {a.schemes}", flush=True)
     res1, res2, strata, sens = [], [], [], []
     for fs in ("khong_diem", "zos_vung"):
         abls = {g: load(exp, a.prefix, g, a.schemes, fs) for g in GRIDS}
+        assert_same_keys({"(a)": fulls[GRIDS[0]], **{f"({fs}) {g}": abls[g] for g in GRIDS}})
         imp = {g: unit_improvement(fulls[g], abls[g], pu) for g in GRIDS}
         s1 = step1(imp, fs)
         res1.append(s1)
