@@ -434,6 +434,8 @@ def compare_family(err_long: pd.DataFrame, point_unit: pd.Series, pairs, *,
         raise ValueError("metric phai la mae/rmse/mse")
     if not 0 < alpha < 0.5:
         raise ValueError("alpha phai trong (0; 0,5)")
+    if not (np.isfinite(delta_min) and delta_min > 0):  # CHG-22: NaN/am -> moi so sanh nguong sai lang
+        raise ValueError(f"delta_min phai huu han va > 0 (nhan {delta_min})")
     if confirm_min_frac is not None and not 0 <= confirm_min_frac <= 1:
         raise ValueError("confirm_min_frac phai trong [0, 1] hoac None")
     if not (isinstance(delta_ref, str) and delta_ref == "level_mean"):
@@ -561,6 +563,9 @@ def compare_family(err_long: pd.DataFrame, point_unit: pd.Series, pairs, *,
     # --- muc tham chieu cho nguong tuong doi: tinh MOT lan / muc, chi tren CV ---
     level_ref = {lv: float(np.mean([_arm_level(units_cv, a, metric) for a in arms_lv]))
                  for lv, arms_lv in ref_arms_by_level.items()}
+    bad_ref = {lv: v for lv, v in level_ref.items() if not (np.isfinite(v) and v > 0)}
+    if bad_ref:
+        raise ValueError(f"{family}: muc tham chieu khong huu han / <= 0: {bad_ref}")
 
     seasons_cv = ";".join(str(x) for x in sorted(sub_cv["season"].unique()))
     seasons_ho = ";".join(str(x) for x in sorted(sub_ho["season"].unique())) if mode == "final" else ""
@@ -587,6 +592,8 @@ def compare_family(err_long: pd.DataFrame, point_unit: pd.Series, pairs, *,
         else:
             ref, ref_level, ref_grids = float(delta_ref), None, ""
             thr = delta_min * ref
+        if not (np.isfinite(thr) and thr > 0):
+            raise ValueError(f"{cmp_id}: nguong delta_min_thr khong huu han / <= 0 ({thr})")
         seed_deltas = [_wmean(*_pair_d(seed_units_cv[s], arm_a, arm_b, metric)) for s in seeds]
         seed_same = bool(sgn != 0 and all(np.sign(x) == sgn for x in seed_deltas))
         k_same = int((np.sign(d) == sgn).sum()) if sgn != 0 else 0

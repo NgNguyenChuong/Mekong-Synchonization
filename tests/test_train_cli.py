@@ -171,3 +171,22 @@ def test_fit_predict_dien_thieu_cho_diem_bang_trung_vi_tap_huan_luyen():
     expected = model.predict(ref.transform(extra[["x"]]))
     np.testing.assert_allclose(ppred, expected)
     assert handler.medians_["x"] == ref.medians_["x"]
+
+
+def test_metrics_du_doan_khong_huu_han_hist_gb_linear_la_loi():
+    """CHG-22: hist_gb/linear du doan NaN/inf -> LOI (truoc day bo lang); idw/season_mean/persistence (NaN theo
+    thiet ke) giu hanh vi cu, ghi so dong bi bo."""
+    from training.train import _metrics_or_none
+
+    y = np.array([1.0, 2.0, 3.0, 4.0])
+    p = np.array([1.1, np.nan, 2.9, np.inf])
+    for m in ("hist_gb", "linear"):
+        with pytest.raises(ValueError, match="khong huu han"):
+            _metrics_or_none(y, p, m)
+        assert _metrics_or_none(y, y + 0.1, m)["n"] == 4
+    for m in ("idw", "season_mean", "persistence", None):
+        r = _metrics_or_none(y, p, m)
+        assert r["n"] == 2 and r["n_pred_bo_khong_huu_han"] == 2
+        assert r["mae"] == pytest.approx(0.1)
+    assert "n_pred_bo_khong_huu_han" not in _metrics_or_none(y, y, "idw")
+    assert _metrics_or_none(y, np.full(4, np.nan), "idw") is None

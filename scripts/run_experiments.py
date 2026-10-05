@@ -83,6 +83,8 @@ def check_features(out_dir, model, ref_features: dict):
     if cfg.get("features_missing"):
         return f"thieu dac trung {cfg['features_missing']}"
     feats = cfg.get("features")
+    if feats is None:  # CHG-22: thieu khoa -> truoc day None == None la "giong luoi truoc"
+        return "config.json thieu khoa features"
     if model in ref_features and ref_features[model] != feats:
         return f"danh sach dac trung khac luoi truoc ({len(feats)} vs {len(ref_features[model])})"
     ref_features.setdefault(model, feats)
@@ -97,6 +99,15 @@ def is_done(meta_path, cfg_path, want: dict) -> bool:
     if meta.get("allow_dirty") or meta.get("allow_untagged") or meta.get("git_dirty_src_scripts"):
         if not (want["allow_dirty"] or want["allow_untagged"]):
             return False  # ket qua thu nghiem khong thay cho lan chay chinh thuc
+    # CHG-22: config thieu khoa features hoac (co cham theo diem) thieu file diem cua mode -> CHUA xong
+    with open(cfg_path, encoding="utf-8") as f:
+        cfg = json.load(f)
+    if "features" not in cfg:
+        return False
+    if want.get("points_ref_sha256") is not None:
+        pts = "oof_points.csv" if want.get("mode") == "cv" else "final_points.csv"
+        if not os.path.exists(os.path.join(os.path.dirname(cfg_path), pts)):
+            return False
     return meta.get("returncode") == 0 and all(meta.get(k) == want.get(k) for k in KEY_FIELDS)
 
 

@@ -121,6 +121,8 @@ def merge_sources(labels, era5, static, hydro, hybrid, hydro_cols=HYDRO_COLS) ->
         raise ValueError(f"So dong doi sau ghep: {len(labels)} -> {len(out)}")
     if "train_ok" not in out.columns or "scope_frac" not in out.columns:
         raise ValueError("Can cot train_ok (nhan) va scope_frac (tinh) de tao " + TRAIN_COL)
+    if out["scope_frac"].isna().any():  # CHG-22: NaN > 0 la False -> truoc day loai lang khoi tap huan luyen
+        raise ValueError(f"{int(out['scope_frac'].isna().sum())} dong scope_frac NaN (o khong co trong bang tinh?)")
     out[TRAIN_COL] = strict_bool(out["train_ok"], "train_ok") & (out["scope_frac"] > 0)
     if "scope_n_px" in out.columns:
         # O chi co manh dat < 1 pixel (khong tam pixel dat nao trong o, scope_frac ~1e-4): dac trung tinh tren manh

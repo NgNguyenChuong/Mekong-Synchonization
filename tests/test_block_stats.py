@@ -580,3 +580,24 @@ def test_family_verdict_cap_co_y_nghia_khong_con_khoi_giu_rieng_la_loi():
     # cap khong co y nghia voi n_holdout_units = 0 khong anh huong
     flat = _family_out(d_a=0.0, d_d=0.0, ho_a=0.0, ho_d=0.0).assign(n_holdout_units=0)
     assert family_verdict(flat)[1]["denominator"] == 0
+
+
+def test_compare_family_delta_min_va_muc_tham_chieu_khong_hop_le_la_loi(monkeypatch):
+    """CHG-22: delta_min NaN/inf/<= 0 hoac muc tham chieu NaN -> moi so sanh nguong sai lang -> LOI."""
+    import training.block_stats as bs
+
+    d = {f"u{i}": -0.1 - 0.01 * i for i in range(6)}
+    d["h0"] = -0.1
+    df, pu, cv, ho = _mk({u: 30 for u in d}, _ab(d), ho_units=("h0",))
+    for bad in (np.nan, np.inf, 0.0, -0.05):
+        with pytest.raises(ValueError, match="delta_min"):
+            compare_family(df, pu, [("A", "B")], cv_units=cv, holdout_units=ho, mode="final",
+                           **dict(KW, delta_min=bad))
+    kw = dict(KW, delta_min_kind="rel")
+    ok = compare_family(df, pu, [("A", "B")], cv_units=cv, holdout_units=ho, mode="final", levels={"A": 5, "B": 5},
+                        **kw).iloc[0]
+    assert np.isfinite(ok["delta_min_thr"]) and ok["delta_min_thr"] > 0
+    monkeypatch.setattr(bs, "_arm_level", lambda *a, **k: np.nan)
+    with pytest.raises(ValueError, match="muc tham chieu"):
+        compare_family(df, pu, [("A", "B")], cv_units=cv, holdout_units=ho, mode="final", levels={"A": 5, "B": 5},
+                       **kw)

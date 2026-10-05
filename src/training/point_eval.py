@@ -11,7 +11,8 @@ Quy tac (An duyet; test o tests/test_point_eval.py):
     khong_gian / thoi_gian / ca_hai theo diem.
   - Khong diem nao duoc du doan boi mo hinh da huan luyen tren o chua no (kiem khi chay: loi neu vi pham).
   - Dap an = ref_salinity cua points_reference*.csv: median cua so 3x3 voi >= REF_MIN_VALID/9 pixel hop le
-    (CHG-13). Dong n_valid_3x3 < REF_MIN_VALID phai NaN va bi bo; dong >= nguong ma NaN -> loi.
+    (CHG-13). Dong n_valid_3x3 < REF_MIN_VALID phai NaN va bi bo; dong >= nguong ma NaN -> loi;
+    n_valid_3x3 NaN / ngoai [0, 9] -> loi (CHG-22).
   - O chua diem: evaluate.assign_points_to_cells (canh chung -> cell_id nho nhat). Diem ngoai luoi -> loi.
 """
 import geopandas as gpd
@@ -51,6 +52,9 @@ def point_blocks(points: gpd.GeoDataFrame, blocks: gpd.GeoDataFrame, cv_folds: p
     out["cv_fold"] = out["cv_fold"].astype(int)
     if "unit_id" in cv_folds.columns:  # don vi kiem dinh (khoi it diem gop vao khoi ke) - block_stats
         out["unit_id"] = out["block_id"].astype(str).map(cv_folds.set_index(cv_folds["block_id"].astype(str))["unit_id"])
+        if out["unit_id"].isna().any():  # CHG-22: NaN -> astype(str) thanh "nan" o buoc sau = mot don vi gia
+            miss = out.loc[out["unit_id"].isna(), "block_id"].unique()[:5].tolist()
+            raise ValueError(f"{int(out['unit_id'].isna().sum())} diem: khoi khong co unit_id trong file fold: {miss}")
     bad = out[(out["is_holdout"] & (out["cv_fold"] != -1)) | (~out["is_holdout"] & (out["cv_fold"] < 0))]
     if len(bad):
         raise ValueError(f"{len(bad)} diem: is_holdout va cv_fold khong nhat quan (khoi giu rieng phai co fold -1)")
@@ -64,6 +68,10 @@ def load_reference(ref: pd.DataFrame, min_valid: int = REF_MIN_VALID) -> pd.Data
         raise ValueError(f"File dap an thieu cot {sorted(need - set(ref.columns))}")
     if ref.duplicated(["point_id", "season"]).any():
         raise ValueError("File dap an trung (point_id, season)")
+    nv = pd.to_numeric(ref["n_valid_3x3"], errors="coerce")
+    bad_nv = nv.isna() | (nv < 0) | (nv > 9)
+    if bad_nv.any():  # CHG-22: NaN < 5 la False -> truoc day dong NaN bi coi la "du 5/9"
+        raise ValueError(f"{int(bad_nv.sum())} dong n_valid_3x3 NaN hoac ngoai [0, 9] (so 3x3)")
     few = ref["n_valid_3x3"] < min_valid
     if ref.loc[few, "ref_salinity"].notna().any():
         raise ValueError(f"{int(ref.loc[few, 'ref_salinity'].notna().sum())} dap an co < {min_valid}/9 pixel hop le "

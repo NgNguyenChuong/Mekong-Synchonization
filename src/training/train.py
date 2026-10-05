@@ -382,9 +382,26 @@ def _fit_predict(model_name, params, seed, train, other, feature_cols, target_co
     return np.asarray(m.predict(X_ot), dtype=float), m, handler, _pred_extra(lambda e: m.predict(tf(e)))
 
 
-def _metrics_or_none(y, p) -> dict | None:
+STRICT_PRED_MODELS = ("hist_gb", "linear")  # du doan phai huu han o moi dong (CHG-22)
+
+
+def _metrics_or_none(y, p, model=None) -> dict | None:
+    """Chi so tren dong du doan huu han.
+
+    CHG-22: model trong STRICT_PRED_MODELS (hist_gb, linear) co du doan khong huu han -> LOI (ValueError).
+    Mo hinh khac (idw / season_mean / persistence: NaN theo thiet ke, vd mua giu rieng) giu hanh vi cu - bo dong
+    NaN - va ghi so dong bi bo vao "n_pred_bo_khong_huu_han" (chi khi > 0).
+    """
     ok = np.isfinite(np.asarray(p, dtype=float))
-    return compute_metrics(np.asarray(y)[ok], np.asarray(p)[ok]) if ok.any() else None
+    n_bad = int((~ok).sum())
+    if n_bad and model in STRICT_PRED_MODELS:
+        raise ValueError(f"{model}: {n_bad}/{len(ok)} du doan khong huu han (LOI, khong bo lang)")
+    if not ok.any():
+        return None
+    out = compute_metrics(np.asarray(y)[ok], np.asarray(p)[ok])
+    if n_bad:
+        out["n_pred_bo_khong_huu_han"] = n_bad
+    return out
 
 
 def _mean_over_seeds(per_seed: dict) -> dict:
@@ -691,16 +708,16 @@ def run_eval_mode(args, dataset: pd.DataFrame, target_col: str) -> None:
                     "cell_id": va["cell_id"].astype(str).to_numpy(), "season": va["season"].astype(int).to_numpy(),
                     "y_true": va[target_col].to_numpy(dtype=float), "y_pred": pred, "fold": int(k),
                     "seed": seed, "model": args.model, "pred_source": "oof"}))
-                fold_metrics[str(int(k))] = _metrics_or_none(va[target_col], pred)
+                fold_metrics[str(int(k))] = _metrics_or_none(va[target_col], pred, args.model)
                 print(f"  seed {seed} fold {int(k)}: train {len(tr)} dong, val {len(va)} dong, "
                       f"MAE {fold_metrics[str(int(k))]['mae']:.4f}", flush=True)
             oof_seed = pd.concat(parts[-len(splits):])
-            cv_metrics[str(seed)] = {"oof": _metrics_or_none(oof_seed["y_true"], oof_seed["y_pred"]),
+            cv_metrics[str(seed)] = {"oof": _metrics_or_none(oof_seed["y_true"], oof_seed["y_pred"], args.model),
                                      "by_fold": fold_metrics}
             ps = [p for p in pt_parts if p["seed"].iat[0] == seed]
             if ps:
                 ps = pd.concat(ps)
-                pt_metrics[str(seed)] = _metrics_or_none(ps["y_ref"], ps["y_pred"])
+                pt_metrics[str(seed)] = _metrics_or_none(ps["y_ref"], ps["y_pred"], args.model)
         oof = pd.concat(parts, ignore_index=True)
         oof.to_csv(os.path.join(out_dir, "oof_predictions.csv"), index=False)
         if pts_cv is not None:
@@ -767,14 +784,14 @@ def run_eval_mode(args, dataset: pd.DataFrame, target_col: str) -> None:
                 "model": args.model, "test_group": test_df["test_group"].to_numpy(), "pred_source": "final"}))
             for g in TEST_GROUPS:
                 m = (test_df["test_group"] == g).to_numpy()
-                by_group[g][str(seed)] = _metrics_or_none(test_df[target_col].to_numpy()[m], pred[m])
+                by_group[g][str(seed)] = _metrics_or_none(test_df[target_col].to_numpy()[m], pred[m], args.model)
         pd.concat(parts, ignore_index=True).to_csv(os.path.join(out_dir, "final_predictions.csv"), index=False)
         if fp_parts:
             fpts = pd.concat(fp_parts, ignore_index=True)
             _check_points_once(fpts, pts_test, seeds)
             fpts.to_csv(os.path.join(out_dir, "final_points.csv"), index=False)
             config["point_metrics_by_group"] = {
-                g: {str(sd): _metrics_or_none(d["y_ref"], d["y_pred"])
+                g: {str(sd): _metrics_or_none(d["y_ref"], d["y_pred"], args.model)
                     for sd, d in fpts[fpts["test_group"] == g].groupby("seed")} for g in TEST_GROUPS}
             config["n_point_rows_by_group"] = fpts[fpts["seed"] == seeds[0]]["test_group"].value_counts().to_dict()
         config["test_metrics_by_group"] = by_group

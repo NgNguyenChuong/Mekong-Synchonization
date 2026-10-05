@@ -4,7 +4,8 @@
 Dau ra <DATA_ROOT>/features/unified/<luoi>_unified[_<bo>].csv (+ .provenance.json: sha256 moi nguon,
 vai tro cot, danh sach dac trung mac dinh). Bao cao -> KE_HOACH/ket-qua/dot4_bang_hop_nhat.csv (so dong,
 so o, dong train_ok, dong train_ok_scope = tap huan luyen, NaN tung dac trung mac dinh tren tap huan luyen).
-Tap huan luyen = train_ok_scope (train_ok VA scope_frac > 0); dong nao trong tap co MOI dac trung tinh NaN -> loi.
+Tap huan luyen = train_ok_scope (train_ok VA scope_frac > 0); dong nao trong tap co MOI dac trung tinh NaN -> loi;
+NaN o dac trung mac dinh trong tap huan luyen ngoai danh sach cho phep (tch_wl_p20c mua 2015, dem_mean) -> loi (CHG-22).
 ERA5 dung ban `_filled` (lap ven bien 1 pixel, CHG-11); co era5_fill_frac chi de phan tang.
 
 Chay:  venv/Scripts/python.exe scripts/build_unified_table.py [--grids h3_res_7 ...] [--sets "" keepwater ...]
@@ -30,6 +31,25 @@ from unified_table import (KEY_COLS, LABEL_SETS, QUALITY_COLS, TARGET_COL, TRAIN
 STATIC_FEATURES = ("dem_mean", "dist_main_river_km", "dist_any_water_km", "dist_coast_km")
 HYBRID_FEATURES = ("dist_mouth_river_km", "zos_mouth_p90", "sluice_frac")
 LABEL_ONLY_COLS = ("salinity", "n_valid_px", "valid_frac", "train_ok", "train_ok_10pct", TRAIN_COL)
+# NaN DUOC PHEP trong dong huan luyen (CHG-22; da biet, HistGB xu ly NaN): cot -> tap mua (None = moi mua).
+#   tch_wl_p20c mua 2015: MRC thieu (CHG-12); dem_mean: o ven bien DEM coi la nuoc (pitfall 32).
+ALLOWED_TRAIN_NAN = {"tch_wl_p20c": {2015}, "dem_mean": None}
+
+
+def unexpected_train_nan(table, feats, ok) -> dict:
+    """{cot: so dong} NaN trong dong huan luyen NGOAI danh sach cho phep ALLOWED_TRAIN_NAN."""
+    out = {}
+    sub = table.loc[ok]
+    for c in feats:
+        m = sub[c].isna()
+        if c in ALLOWED_TRAIN_NAN:
+            seasons = ALLOWED_TRAIN_NAN[c]
+            if seasons is None:
+                continue
+            m &= ~sub["season"].astype(int).isin(seasons)
+        if m.any():
+            out[c] = int(m.sum())
+    return out
 
 DATA = data_path()
 
@@ -97,6 +117,9 @@ def build_one(a, grid, label_set):
         n_all_nan = int(table.loc[ok, list(cols)].isna().all(axis=1).sum())
         if n_all_nan:
             raise ValueError(f"{grid}/{label_set or 'chinh'}: {n_all_nan} dong {TRAIN_COL} co MOI dac trung {group} NaN")
+    bad_nan = unexpected_train_nan(table, feats, ok)
+    if bad_nan:  # vd ERA5 / thuy van thieu ca mua lot vao tap huan luyen
+        raise ValueError(f"{grid}/{label_set or 'chinh'}: NaN ngoai danh sach cho phep trong dong {TRAIN_COL}: {bad_nan}")
     nr = nan_report(table, feats)
     row = {"grid": grid, "label_set": label_set or "chinh", "rows": len(table), "cells": table["cell_id"].nunique(),
            "rows_label": int(table[TARGET_COL].notna().sum()), "rows_train_ok": int(table["train_ok"].sum()),

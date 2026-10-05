@@ -151,3 +151,23 @@ def test_fold_diem_phai_cung_cach_chia_voi_o():
     _check_point_folds_match_cells(pf, ct)
     with pytest.raises(ValueError, match="cach chia fold khac nhau"):
         _check_point_folds_match_cells(pf, ct.assign(cv_fold=[1, 0, 0]))
+
+
+def test_n_valid_3x3_nan_hoac_ngoai_0_9_la_loi():
+    """CHG-22: n_valid_3x3 NaN -> (NaN < 5) = False -> truoc day coi la "du 5/9"; ngoai [0, 9] khong the co."""
+    ref = pd.DataFrame({"point_id": ["a", "b"], "season": [2019, 2019], "ref_salinity": [1.0, 2.0],
+                        "n_valid_3x3": [9.0, 5.0]})
+    assert len(load_reference(ref)) == 2
+    for bad in (np.nan, 10, -1):
+        with pytest.raises(ValueError, match="n_valid_3x3"):
+            load_reference(ref.assign(n_valid_3x3=[9.0, bad]))
+
+
+def test_unit_id_thieu_trong_file_fold_la_loi():
+    """CHG-22: khoi cua diem khong co unit_id -> NaN -> astype(str) = "nan" (mot don vi gia) o buoc sau -> LOI."""
+    folds = _folds().assign(unit_id=["blk_10_20", "blk_11_20"])
+    pb = point_blocks(_points([(520000, 1020000), (570000, 1020000)]), _blocks(), folds)
+    assert pb["unit_id"].tolist() == ["blk_10_20", "blk_11_20"]
+    with pytest.raises(ValueError, match="unit_id"):
+        point_blocks(_points([(520000, 1020000), (570000, 1020000)]), _blocks(),
+                     folds.assign(unit_id=["blk_10_20", None]))

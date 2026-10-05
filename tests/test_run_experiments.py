@@ -104,13 +104,43 @@ def test_ket_qua_thu_nghiem_khong_thay_lan_chinh_thuc(tmp_path):
     want.update(git_commit="c1", allow_dirty=False, allow_untagged=False, git_dirty_src_scripts=False, seeds=[42],
                 mode="cv")
     meta = {**want, "returncode": 0, "allow_dirty": True, "git_dirty_src_scripts": True}
-    (tmp_path / "config.json").write_text("{}")
+    # CHG-22: config phai co khoa features moi duoc tinh la xong (truoc day "{}" du) - xem test ngay duoi
+    (tmp_path / "config.json").write_text(json.dumps({"features": ["dem_mean"]}))
     (tmp_path / "run_meta.json").write_text(json.dumps(meta))
     assert not rx.is_done(str(tmp_path / "run_meta.json"), str(tmp_path / "config.json"), want)
     (tmp_path / "run_meta.json").write_text(json.dumps({**want, "returncode": 0}))
     assert rx.is_done(str(tmp_path / "run_meta.json"), str(tmp_path / "config.json"), want)
     (tmp_path / "run_meta.json").write_text(json.dumps({**want, "returncode": 0, "seeds": [42, 43]}))
     assert not rx.is_done(str(tmp_path / "run_meta.json"), str(tmp_path / "config.json"), want)
+
+
+def test_is_done_thieu_features_hoac_file_diem_la_chua_xong(tmp_path):
+    """CHG-22: config thieu khoa features; co cham theo diem (points_ref_sha256) ma thieu oof_points.csv (cv) /
+    final_points.csv (final) -> CHUA xong (chay lai), khong bo qua. check_features: thieu khoa -> LOI."""
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import run_experiments as rx
+
+    want = {k: None for k in rx.KEY_FIELDS}
+    want.update(git_commit="c1", allow_dirty=False, allow_untagged=False, git_dirty_src_scripts=False, seeds=[42],
+                mode="cv", points_ref_sha256="abc")
+    meta, cfg = tmp_path / "run_meta.json", tmp_path / "config.json"
+    meta.write_text(json.dumps({**want, "returncode": 0}))
+    cfg.write_text("{}")
+    (tmp_path / "oof_points.csv").write_text("point_id\n")
+    assert not rx.is_done(str(meta), str(cfg), want)                       # thieu khoa features
+    assert rx.check_features(str(tmp_path), "hist_gb", {}) == "config.json thieu khoa features"
+    cfg.write_text(json.dumps({"features": ["dem_mean"]}))
+    assert rx.is_done(str(meta), str(cfg), want)
+    os.remove(tmp_path / "oof_points.csv")
+    assert not rx.is_done(str(meta), str(cfg), want)                       # thieu file diem cua mode cv
+    (tmp_path / "final_points.csv").write_text("point_id\n")
+    assert not rx.is_done(str(meta), str(cfg), want)                       # file cua mode khac khong thay duoc
+    want_f = {**want, "mode": "final"}
+    meta.write_text(json.dumps({**want_f, "returncode": 0}))
+    assert rx.is_done(str(meta), str(cfg), want_f)
+    want_np = {**want, "points_ref_sha256": None}                          # --no-point-eval: khong can file diem
+    meta.write_text(json.dumps({**want_np, "returncode": 0}))
+    assert rx.is_done(str(meta), str(cfg), want_np)
 
 
 @need_real

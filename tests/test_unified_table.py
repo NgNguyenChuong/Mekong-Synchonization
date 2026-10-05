@@ -129,3 +129,29 @@ def test_bay_train_ok_nan_va_chuoi_false():
     labels = labels.assign(train_ok=["False", "False", "True", "False"])  # CSV doc thanh chuoi
     t = merge_sources(labels, era5, static.assign(scope_frac=[0.5, 0.5]), hydro, hybrid)
     assert t[TRAIN_COL].tolist() == [False, False, True, False]
+
+
+def test_scope_frac_nan_la_loi_khong_loai_lang():
+    """CHG-22: scope_frac NaN -> (NaN > 0) = False -> truoc day dong bi loai lang khoi tap huan luyen."""
+    labels, era5, static, hydro, hybrid = _src()
+    with pytest.raises(ValueError, match="scope_frac NaN"):
+        merge_sources(labels, era5, static.assign(scope_frac=[0.5, np.nan]), hydro, hybrid)
+
+
+def test_build_nan_dong_huan_luyen_ngoai_danh_sach_cho_phep():
+    """CHG-22: NaN trong dong huan luyen chi duoc o tch_wl_p20c mua 2015 va dem_mean; con lai (vd ERA5 thieu ca
+    mua) -> LOI khi dung bang."""
+    import importlib.util
+
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    spec = importlib.util.spec_from_file_location("build_unified_table",
+                                                  os.path.join(root, "scripts", "build_unified_table.py"))
+    bu = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bu)
+    t = pd.DataFrame({"season": [2015, 2016, 2016, 2017], "tch_wl_p20c": [np.nan, 1.0, 1.0, 1.0],
+                      "dem_mean": [1.0, np.nan, 2.0, 3.0], "rain_mm": [1.0, 2.0, 3.0, 4.0]})
+    ok = pd.Series([True, True, True, False])
+    feats = ["tch_wl_p20c", "dem_mean", "rain_mm"]
+    assert bu.unexpected_train_nan(t, feats, ok) == {}
+    assert bu.unexpected_train_nan(t.assign(tch_wl_p20c=[1.0, np.nan, 1.0, 1.0]), feats, ok) == {"tch_wl_p20c": 1}
+    assert bu.unexpected_train_nan(t.assign(rain_mm=[1.0, np.nan, np.nan, np.nan]), feats, ok) == {"rain_mm": 2}
