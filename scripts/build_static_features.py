@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Dac trung TINH theo o cho 13 luoi, tinh tren PIXEL DAT HOP LE (scope == 1) - An chot 2026-10-03.
 
-Dau ra A:/Dataset_NCKH/features/static/<luoi>_static.csv (+ .provenance.json):
+Dau ra <DATA_ROOT>/features/static/<luoi>_static.csv (+ .provenance.json):
   cell_id, dem_mean, dist_main_river_km, dist_any_water_km, dist_coast_km  (chi pixel scope; o 0 scope -> NaN)
   scope_frac                                                               (cot CHAT LUONG, khong phai dac trung)
   landcover_class_<Lop>                                                    (WorldCover 10 m, TOAN O)
@@ -18,7 +18,7 @@ CHG-09 (DEM): DEM thieu khi DEM == 0 VA co WBM > 0 (--dem-flags, band WBM). CHG-
 WorldCover: LandCover_DBSCL_2021_v2.tif (dem 25 km, bien xa da dien 80).
 
 Chay:  venv/Scripts/python.exe scripts/build_static_features.py [--grids h3_res_7 ...] [--force]
-       [--prev-dir A:/Dataset_NCKH/features/static/deprecated_v2 --control-stack <scratch>/static_scope_30m_doi_chung.tif]
+       [--prev-dir <DATA_ROOT>/features/static/deprecated_v2 --control-stack <scratch>/static_scope_30m_doi_chung.tif]
 """
 import argparse
 import glob
@@ -33,6 +33,7 @@ import pandas as pd
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
+from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -350,14 +351,14 @@ def main(a):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--scope", default="A:/Dataset_NCKH/features/scope_mask_v3.tif",
-                    help="Mat na pham vi (v3 CHG-10; v2: A:/Dataset_NCKH/features/scope_mask_v2.tif)")
-    ap.add_argument("--dem", default="A:/Dataset_NCKH/gee/DEM_DBSCL.tif")
-    ap.add_argument("--river", default="A:/Dataset_NCKH/raw/river/river_distance_90m.tif")
-    ap.add_argument("--dem-flags", default="A:/Dataset_NCKH/gee/DEM_DBSCL_flags_v2.tif",
+    ap.add_argument("--scope", default=data_path("features/scope_mask_v3.tif"),
+                    help="Mat na pham vi (v3 CHG-10; v2: <DATA_ROOT>/features/scope_mask_v2.tif)")
+    ap.add_argument("--dem", default=data_path("gee/DEM_DBSCL.tif"))
+    ap.add_argument("--river", default=data_path("raw/river/river_distance_90m.tif"))
+    ap.add_argument("--dem-flags", default=data_path("gee/DEM_DBSCL_flags_v2.tif"),
                     help="co Copernicus DEM (band WBM) cho CHG-09")
-    ap.add_argument("--worldcover", default="A:/Dataset_NCKH/gee/LandCover_DBSCL_2021_v2.tif")
-    ap.add_argument("--worldcover-prev", default="A:/Dataset_NCKH/gee/LandCover_DBSCL_2021.tif",
+    ap.add_argument("--worldcover", default=data_path("gee/LandCover_DBSCL_2021_v2.tif"))
+    ap.add_argument("--worldcover-prev", default=data_path("gee/LandCover_DBSCL_2021.tif"),
                     help="WorldCover cua ban truoc (chi de bao cao do phu khung o --prev-dir)")
     ap.add_argument("--prev-dir", default=None, help="thu muc CSV ban truoc de so (vd <out-dir>/deprecated_v2)")
     ap.add_argument("--control-stack", default=None,
@@ -365,9 +366,9 @@ if __name__ == "__main__":
     ap.add_argument("--boundary", default=CANONICAL_BOUNDARY)
     ap.add_argument("--grids-dir", default=os.path.join(ROOT, "data", "grids"))
     ap.add_argument("--grids", nargs="*", help="chi chay cac luoi nay (ten file khong duoi)")
-    ap.add_argument("--out-dir", default="A:/Dataset_NCKH/features/static")
+    ap.add_argument("--out-dir", default=data_path("features/static"))
     ap.add_argument("--stack", default=None, help="raster trung gian (mac dinh <out-dir>/static_scope_30m.tif)")
-    ap.add_argument("--old-river-dir", default="A:/Dataset_NCKH/raw/river/features")
+    ap.add_argument("--old-river-dir", default=data_path("raw/river/features"))
     ap.add_argument("--report-dir", default=os.path.join(ROOT, "KE_HOACH", "ket-qua"))
     ap.add_argument("--report-prefix", default="dot4_dac_trung_tinh", help="tien to file bao cao")
     ap.add_argument("--no-report", action="store_true")

@@ -23,6 +23,7 @@ import pandas as pd
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
+from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -190,10 +191,10 @@ if __name__ == "__main__":
     ap.add_argument("--points", default=os.path.join(ROOT, "data", "eval", "eval_points.geojson"))
     ap.add_argument("--backup-dir", default=os.path.join(ROOT, "data", "eval", "deprecated_v2b"),
                     help="Ban truoc khi loc (nguon) - tao lan dau, khong ghi de")
-    ap.add_argument("--scope", default="A:/Dataset_NCKH/features/scope_mask_v3.tif")
-    ap.add_argument("--compare-scope", default="A:/Dataset_NCKH/features/scope_mask_v2.tif",
+    ap.add_argument("--scope", default=data_path("features/scope_mask_v3.tif"))
+    ap.add_argument("--compare-scope", default=data_path("features/scope_mask_v2.tif"),
                     help="Mat na cu: moi diem nguon phai co scope = 1 ('none' = bo qua)")
-    ap.add_argument("--dist-raster", default="A:/Dataset_NCKH/raw/river/river_distance_90m.tif")
+    ap.add_argument("--dist-raster", default=data_path("raw/river/river_distance_90m.tif"))
     ap.add_argument("--boundary", default=CANONICAL_BOUNDARY)
     ap.add_argument("--report-dir", default=os.path.join(ROOT, "KE_HOACH", "ket-qua"))
     ap.add_argument("--dry-run", action="store_true")

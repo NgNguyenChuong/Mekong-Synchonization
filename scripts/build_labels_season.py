@@ -27,7 +27,7 @@ Buoc:
   Moi dau ra kem .provenance.json.
 
 Chay:  venv/Scripts/python.exe scripts/build_labels_season.py [--years 2014 2026] [--grids h3_res_5 ...]
-           [--out-dir A:/Dataset_NCKH/labels] [--work-dir <tam>] [--force] [--report-dir KE_HOACH/ket-qua]
+           [--out-dir <DATA_ROOT>/labels] [--work-dir <tam>] [--force] [--report-dir KE_HOACH/ket-qua]
 """
 import argparse
 import glob
@@ -44,6 +44,7 @@ import pandas as pd
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
+from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -54,7 +55,7 @@ from label_season import (MAIN_LC, MIN_CLEAR, MIN_TRAIN_FRAC, MIN_TRAIN_PX, REF_
 from preprocessing import CANONICAL_BOUNDARY, file_sha256, write_provenance  # noqa: E402
 from scope_mask import SCOPE_BANDS_V3, SCOPE_INCLUDE_LC, band_index, wc_at_centers  # noqa: E402
 
-DATA = "A:/Dataset_NCKH"
+DATA = data_path()
 COMPARE = ("v2_old", "v2_clear", "v3_noclear", "drop_lc", "drop_lc50", "drop_lc6090", "drop_clear",
            "drop_clear_n0", "drop_clear_n1")
 SETS = ("before",) + VARIANTS + COMPARE

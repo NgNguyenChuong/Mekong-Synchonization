@@ -32,6 +32,7 @@ from rasterio.transform import Affine
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
+from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -262,7 +263,7 @@ def main(a):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--raw-dir", default=os.environ.get("RAW_DIR", "A:/Dataset_NCKH/raw"))
+    ap.add_argument("--raw-dir", default=os.environ.get("RAW_DIR", data_path("raw")))
     ap.add_argument("--log", help="JSON ghi transform cu/moi + sha256 (mac dinh <raw-dir>/era5_transform_fix.json)")
     ap.add_argument("--dry-run", action="store_true", help="Chi in ke hoach, khong ghi")
     ap.add_argument("--revert", action="store_true", help="Tra transform cu theo JSON")

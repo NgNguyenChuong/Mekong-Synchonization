@@ -14,7 +14,7 @@ Ranh gioi v2 (noi 3 km ra bien, 2026-10-03) chi dung cho KHUNG raster va luoi. H
     vung nuoc dai -> 2,14 trieu pixel bien bi tinh la "kenh" (do 2026-10-03, loi kieu known-pitfalls 10).
 Dau ra cu duoc chuyen sang <out-dir>/deprecated_v1/ truoc khi ghi; moi dau ra kem .provenance.json.
 
-Chay:  python scripts/build_river_features.py [--project <id>] [--grids-dir data/grids] [--out-dir A:/Dataset_NCKH/raw/river]
+Chay:  python scripts/build_river_features.py [--project <id>] [--grids-dir data/grids] [--out-dir <DATA_ROOT>/raw/river]
        (--project chi can khi chua co cache bo bien)
 """
 import argparse
@@ -37,6 +37,7 @@ from scipy import ndimage
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
+from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -202,10 +203,10 @@ if __name__ == "__main__":
     ap.add_argument("--boundary", default=CANONICAL_BOUNDARY)
     ap.add_argument("--jrc-clip-boundary", default=BOUNDARY_V1,
                     help="Ranh gioi cat mat nuoc JRC (mac dinh v1; KHONG dung v2 - dai bien thanh 'kenh')")
-    ap.add_argument("--osm", default="A:/Dataset_NCKH/rivers/osm_waterways_mekong_delta.gpkg")
-    ap.add_argument("--jrc", default="A:/Dataset_NCKH/rivers/jrc_gsw_occ50_30m.tif")
+    ap.add_argument("--osm", default=data_path("rivers/osm_waterways_mekong_delta.gpkg"))
+    ap.add_argument("--jrc", default=data_path("rivers/jrc_gsw_occ50_30m.tif"))
     ap.add_argument("--grids-dir", default=os.path.join(ROOT, "data", "grids"))
-    ap.add_argument("--out-dir", default="A:/Dataset_NCKH/raw/river")
+    ap.add_argument("--out-dir", default=data_path("raw/river"))
     ap.add_argument("--res-m", type=float, default=90.0)
     ap.add_argument("--pad-km", type=float, default=10.0)
     ap.add_argument("--report", default=os.path.join(ROOT, "KE_HOACH", "ket-qua", "tuan3_dac_trung_song.csv"))

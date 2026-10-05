@@ -32,12 +32,13 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+import settings  # noqa: E402,F401  nap .env (EE_PROJECT, GEE_DRIVE_FOLDER)
 from preprocessing import CANONICAL_BOUNDARY  # noqa: E402
 
 # Export.toDrive chi nhan TEN thu muc: neu co thu muc trung ten o bat ky cap nao thi ghi vao do
 # (trung nhieu -> thu muc sua gan nhat), khong co thi tao moi o goc Drive. "GEE" = NCKH_Source/GEE
 # tren Drive cua tai khoan GEE (da kiem 2026-10-03). Khong tao them thu muc nao ten "GEE" khac tren Drive.
-DRIVE_FOLDER = "GEE"
+DRIVE_FOLDER = os.getenv("GEE_DRIVE_FOLDER", "GEE")  # .env
 
 # bien -> (thu muc theo DEFAULT_DATA_SPECS, ham tao anh ngay tu 1 anh ERA5-Land daily)
 ERA5_VARS = {

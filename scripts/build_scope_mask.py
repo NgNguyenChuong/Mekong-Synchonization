@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Dung mat na pham vi TINH v3 (CHG-10, An chot 2026-10-03) -> A:/Dataset_NCKH/features/scope_mask_v3.tif.
+"""Dung mat na pham vi TINH v3 (CHG-10, An chot 2026-10-03) -> <DATA_ROOT>/features/scope_mask_v3.tif.
 
 pham vi v3 = ranh gioi v2 ∩ WorldCover 2021 THUOC {10, 20, 30, 40} (tam pixel 30 m)
            ∩ dau chan Zenodo (Salinity huu han o >= 1 nam 2014-2023).
@@ -14,7 +14,7 @@ Da co file -> khong ghi lai (tru --force). Kem .provenance.json (sha256 ranh gio
 
 Chay:  venv/Scripts/python.exe scripts/build_scope_mask.py [--force]
 Chay lai v2 (quy tac cu, 2 band):
-       venv/Scripts/python.exe scripts/build_scope_mask.py --worldcover A:/Dataset_NCKH/gee/LandCover_DBSCL_2021.tif
+       venv/Scripts/python.exe scripts/build_scope_mask.py --worldcover <DATA_ROOT>/gee/LandCover_DBSCL_2021.tif
            --exclude-lc 0 80 95 --no-wc-class --compare-scope none --compare-worldcover none
            --out <thu_muc_khac>/scope_mask_v2.tif
 """
@@ -29,6 +29,7 @@ import pandas as pd
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
+from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -158,19 +159,19 @@ def main(a):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--boundary", default=CANONICAL_BOUNDARY)
-    ap.add_argument("--worldcover", default="A:/Dataset_NCKH/gee/LandCover_DBSCL_2021_v2.tif")
+    ap.add_argument("--worldcover", default=data_path("gee/LandCover_DBSCL_2021_v2.tif"))
     ap.add_argument("--include-lc", type=int, nargs="+", default=list(SCOPE_INCLUDE_LC),
                     help="Lop WorldCover GIU (mac dinh v3: 10 20 30 40)")
     ap.add_argument("--exclude-lc", type=int, nargs="+", default=None,
                     help="Thay --include-lc: lop WorldCover BO (v2: 0 80 95)")
     ap.add_argument("--no-wc-class", action="store_true", help="Khong ghi band wc_class (dinh dang v2)")
-    ap.add_argument("--zenodo-dir", default="A:/Dataset_NCKH/zenodo_15653696")
+    ap.add_argument("--zenodo-dir", default=data_path("zenodo_15653696"))
     ap.add_argument("--y0", type=int, default=2014)
     ap.add_argument("--y1", type=int, default=2023)
-    ap.add_argument("--out", default="A:/Dataset_NCKH/features/scope_mask_v3.tif")
-    ap.add_argument("--compare-scope", default="A:/Dataset_NCKH/features/scope_mask_v2.tif",
+    ap.add_argument("--out", default=data_path("features/scope_mask_v3.tif"))
+    ap.add_argument("--compare-scope", default=data_path("features/scope_mask_v2.tif"),
                     help="Mat na cu de bao dien tich mat/them theo lop ('none' = bo qua)")
-    ap.add_argument("--compare-worldcover", default="A:/Dataset_NCKH/gee/LandCover_DBSCL_2021.tif",
+    ap.add_argument("--compare-worldcover", default=data_path("gee/LandCover_DBSCL_2021.tif"),
                     help="WorldCover cu de kiem trung gia tri trong v2 ('none' = bo qua)")
     ap.add_argument("--report-dir", default=os.path.join(ROOT, "KE_HOACH", "ket-qua"))
     ap.add_argument("--force", action="store_true")

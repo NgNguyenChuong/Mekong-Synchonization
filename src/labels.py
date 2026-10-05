@@ -18,8 +18,9 @@ import os
 import numpy as np
 
 from scope_mask import band_index
+from settings import data_path  # (.env: DATA_ROOT)
 
-ZENODO_DIR = os.environ.get("ZENODO_DIR", "A:/Dataset_NCKH/zenodo_15653696")
+ZENODO_DIR = os.environ.get("ZENODO_DIR", data_path("zenodo_15653696"))
 FOOTPRINT_YEARS = tuple(range(2014, 2024))   # bo chinh OLI; TM 2000-2010 khong vao dau chan
 
 

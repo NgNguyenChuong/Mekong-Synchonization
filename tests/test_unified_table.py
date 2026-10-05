@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from unified_table import QUALITY_COLS, TRAIN_COL, finite_or_nan, label_suffix, merge_sources, nan_report
+from settings import data_path  # (.env: DATA_ROOT)
 
 
 def _src(cells=("a", "b"), seasons=(2019, 2020)):
@@ -83,7 +84,7 @@ def test_cot_tap_huan_luyen_bi_chan_khoi_dac_trung():
     assert find_leak_columns([TRAIN_COL])
 
 
-UNIFIED_DIR = "A:/Dataset_NCKH/features/unified"
+UNIFIED_DIR = data_path("features/unified")
 REPORT = os.path.join(os.path.dirname(__file__), "..", "KE_HOACH", "ket-qua", "dot4_bang_hop_nhat.csv")
 
 

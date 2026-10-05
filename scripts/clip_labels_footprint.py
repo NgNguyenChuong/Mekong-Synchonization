@@ -5,8 +5,8 @@ Dau chan = pixel Salinity huu han o >= 1 nam 2014-2023 (Zenodo). Can luoi theo t
 pixel), khong noi suy. Mac dinh CHI DEM so pixel bi cat (toan raster + trong ranh gioi v1, v2);
 `--out-dir` -> ghi them file `<ten>_fp.tif` (ca hai band NaN ngoai dau chan; file da co -> bo qua).
 
-Chay:  python scripts/clip_labels_footprint.py [--labels A:/Dataset_NCKH/gee/2024_MD_dry_NDWIchen_Salinity_l8_v2.tif ...]
-           [--zenodo-dir A:/Dataset_NCKH/zenodo_15653696] [--out-dir A:/Dataset_NCKH/labels_fp]
+Chay:  python scripts/clip_labels_footprint.py [--labels <DATA_ROOT>/gee/2024_MD_dry_NDWIchen_Salinity_l8_v2.tif ...]
+           [--zenodo-dir <DATA_ROOT>/zenodo_15653696] [--out-dir <DATA_ROOT>/labels_fp]
 """
 import argparse
 import os
@@ -15,13 +15,14 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
+from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from labels import FOOTPRINT_YEARS, ZENODO_DIR, build_footprint, clip_label_file, zenodo_label_paths  # noqa: E402
 from preprocessing import BOUNDARY_V1, CANONICAL_BOUNDARY  # noqa: E402
 
-GEE_DIR = os.environ.get("GEE_DIR", "A:/Dataset_NCKH/gee")
+GEE_DIR = os.environ.get("GEE_DIR", data_path("gee"))
 DEFAULT_LABELS = [os.path.join(GEE_DIR, f"{y}_MD_dry_NDWIchen_Salinity_l8_v2.tif") for y in (2024, 2025, 2026)]
 PX_KM2 = 900 / 1e6
 

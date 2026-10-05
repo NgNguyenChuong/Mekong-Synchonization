@@ -1,6 +1,8 @@
 import os
 import json
 
+import settings  # noqa: F401  nap .env (DATA_ROOT, RAW_DIR, OUTPUT_DIR...) truoc khi doc bien moi truong
+
 
 def _env_bool(name, default=False):
     value = os.getenv(name)

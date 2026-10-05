@@ -5,7 +5,7 @@ Mua kho Y = 01/11/(Y-1) .. 29/04/Y (src/seasons.py; thang 4 chi lay band 1..29).
 Gop (src/era5_season.py): mua = TONG (cat am ve 0 truoc), bien khac = TRUNG BINH; pixel thieu >= 1 ngay
 -> NaN (khong lap); pixel ngoai mat na dat temp_avg -> NaN moi bien.
 
-Dau ra (trong --out-dir, mac dinh A:/Dataset_NCKH/features/era5_season):
+Dau ra (trong --out-dir, mac dinh <DATA_ROOT>/features/era5_season):
   <bien>_<mua>.tif           : band 1 = gia tri mua, band 2 = n_days (so ngay co gia tri)
   era5_valid_<mua>.tif       : 1 = pixel dat va du ngay o MOI bien, 0 = khong
   <luoi>_era5_season.csv     : cell_id, season, rain_mm, solar, temp_c, temp_max_c, temp_min_c, rh_percent,
@@ -22,8 +22,8 @@ Dau ra (trong --out-dir, mac dinh A:/Dataset_NCKH/features/era5_season):
                                era5_cover_frac giu nghia goc (pixel hop le that) -> cover + fill = ty le co gia tri.
   moi file kem .provenance.json (sha256 ranh gioi + luoi / file ERA5 nguon).
 
-Chay:  python scripts/build_era5_season.py [--raw-dir A:/Dataset_NCKH/raw] [--grids-dir data/grids]
-           [--out-dir A:/Dataset_NCKH/features/era5_season] [--years 2014 2026] [--grids h3_res_5 ...]
+Chay:  python scripts/build_era5_season.py [--raw-dir <DATA_ROOT>/raw] [--grids-dir data/grids]
+           [--out-dir <DATA_ROOT>/features/era5_season] [--years 2014 2026] [--grids h3_res_5 ...]
            [--skip-existing] [--report KE_HOACH/ket-qua/dot4_era5_season.csv]
 """
 import argparse
@@ -37,6 +37,7 @@ import pandas as pd
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
+from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -167,9 +168,9 @@ def main(a):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--raw-dir", default=os.environ.get("RAW_DIR", "A:/Dataset_NCKH/raw"))
+    ap.add_argument("--raw-dir", default=os.environ.get("RAW_DIR", data_path("raw")))
     ap.add_argument("--grids-dir", default=os.path.join(ROOT, "data", "grids"))
-    ap.add_argument("--out-dir", default="A:/Dataset_NCKH/features/era5_season")
+    ap.add_argument("--out-dir", default=data_path("features/era5_season"))
     ap.add_argument("--boundary", default=CANONICAL_BOUNDARY)
     ap.add_argument("--years", nargs=2, type=int, default=[2014, 2026], metavar=("TU", "DEN"))
     ap.add_argument("--grids", nargs="*", help="Ten luoi (khong .geojson); mac dinh moi luoi trong --grids-dir")
