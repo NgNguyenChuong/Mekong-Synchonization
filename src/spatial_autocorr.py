@@ -9,6 +9,7 @@ Quy tac (ghi TRUOC khi tinh, NHAT_KY 2026-10-05):
   - Bat dang huong (chi bao cao): DirectionalVariogram phuong vi 45 / 135 do, dung sai 22,5 do.
 Toa do phai la MET (EPSG:32648).
 """
+import gc
 import warnings
 
 import numpy as np
@@ -55,6 +56,11 @@ def variogram_range(xy, values, maxlag=MAXLAG_M, n_lags=N_LAGS, azimuth=None, to
     except Exception as exc:  # fit that bai -> tinh la vuot (quy tac chot truoc)
         out["reason"] = f"fit loi: {type(exc).__name__}"
         return out
+    finally:
+        # Variogram skgstat co tham chieu vong -> ma tran cap diem (~0,85 GB / mua 7.000 diem) khong duoc giai phong
+        # ngay; chay lien tiep nhieu mua da lam tran RAM 16 GB (2026-10-05). Don ngay sau moi lan fit.
+        vg = None
+        gc.collect()
     out.update(sill=sill, nugget=nug)
     if not np.isfinite(r) or r <= 0:
         out["reason"] = "tam khong huu han"
