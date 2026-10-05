@@ -21,13 +21,34 @@ def test_tam_uoc_luong_dung_bac_do_lon():
     assert r["ok"] and 10_000 < r["range_m"] < 60_000  # ~24 km (3a), dung sai rong do mau huu han
 
 
-def test_nhieu_trang_tam_nho_va_hang_so_bi_tinh_la_vuot():
+def test_nhieu_trang_tam_nho_va_hang_so_la_loi():
+    """CHG-22 (An 2026-10-05 21:22): truoc day hang so -> inf -> 'vuot'; nay phuong sai 0 = LOI (raise), khong vuot."""
     rng = np.random.default_rng(0)
     xy = 500_000 + rng.uniform(0, 120_000, (600, 2))
     r = variogram_range(xy, rng.normal(size=600))
     assert (not r["ok"]) or r["range_m"] < 50_000
-    c = variogram_range(xy, np.ones(600))
-    assert not c["ok"] and np.isinf(c["range_m"])  # khong fit duoc -> inf -> vuot
+    with pytest.raises(ValueError, match="phuong sai 0"):
+        variogram_range(xy, np.ones(600))
+
+
+def test_it_diem_va_gia_tri_khong_huu_han_la_loi():
+    """CHG-22: < 30 diem -> LOI; NaN/inf trong gia tri hoac toa do -> LOI (khong bo lang roi tinh tiep)."""
+    rng = np.random.default_rng(0)
+    xy = 500_000 + rng.uniform(0, 100_000, (100, 2))
+    v = rng.normal(size=100)
+    with pytest.raises(ValueError, match="< 30"):
+        variogram_range(xy[:29], v[:29])
+    for bad in (np.nan, np.inf, -np.inf):
+        vb = v.copy()
+        vb[5] = bad
+        with pytest.raises(ValueError, match="1/100 diem"):
+            variogram_range(xy, vb)
+        with pytest.raises(ValueError, match="1/100 diem"):
+            moran_band(xy, vb, permutations=9)
+    xb = xy.copy()
+    xb[7, 1] = np.nan
+    with pytest.raises(ValueError, match="khong huu han"):
+        variogram_range(xb, v)
 
 
 def test_toa_do_do_bi_tu_choi():
@@ -40,9 +61,21 @@ def test_quy_tac_vi_pham():
     assert violates([60] * 7 + [20] * 6)["violates"]                 # trung vi > 50
     assert violates([20] * 10 + [60, 70, 80])["violates"]           # 3 mua vuot
     assert not violates([20] * 11 + [60, 70])["violates"]           # 2 mua vuot: chap nhan
-    v = violates([20] * 10 + [np.nan, np.inf, 30])
-    assert v["n_over"] == 2 and not v["violates"]                   # NaN/inf tinh la vuot
-    assert violates([20] * 10 + [np.nan, np.inf, np.inf])["violates"]
+    v = violates([20] * 10 + [60, np.inf, 30])
+    assert v["n_over"] == 2 and not v["violates"]                   # +inf (vuot that) tinh la vuot
+    assert violates([20] * 10 + [60, np.inf, np.inf])["violates"]
+
+
+def test_quy_tac_vi_pham_loi_khong_quy_ve_dat():
+    """CHG-22: mang rong (truoc: trung vi inf -> 'vi pham'), NaN (truoc: tinh la vuot), -inf, tam <= 0 -> LOI."""
+    with pytest.raises(ValueError, match="khong co mua"):
+        violates([])
+    with pytest.raises(ValueError, match="NaN"):
+        violates([20] * 12 + [np.nan])
+    with pytest.raises(ValueError):
+        violates([20] * 12 + [-np.inf])
+    with pytest.raises(ValueError):
+        violates([20] * 12 + [0.0])
 
 
 def test_moran_duong_va_dao_bi_loai():
@@ -79,7 +112,10 @@ def test_bo_xu_huong_bac_2_theo_khoang_cach_bo():
 
 
 def test_het_ram_khong_bi_tinh_la_vuot(monkeypatch):
-    """3 trang thai (An 2026-10-05): MemoryError = LOI may -> noi len (dung), khong ghi 'vuot'; loi fit khac -> vuot."""
+    """3 trang thai (An 2026-10-05): MemoryError = LOI may -> noi len (dung), khong ghi 'vuot'.
+
+    CHG-22: chi RuntimeError "khong hoi tu" cua curve_fit moi la vuot; RuntimeError khac -> LOI.
+    """
     import skgstat
 
     rng = np.random.default_rng(0)
@@ -90,7 +126,7 @@ def test_het_ram_khong_bi_tinh_la_vuot(monkeypatch):
         raise MemoryError("gia lap het RAM")
 
     def fit_loi(*a, **k):
-        raise RuntimeError("gia lap fit khong hoi tu")
+        raise RuntimeError("Optimal parameters not found: gia lap fit khong hoi tu")
 
     monkeypatch.setattr(skgstat, "Variogram", het_ram)
     monkeypatch.setattr(skgstat, "DirectionalVariogram", het_ram)
@@ -100,4 +136,89 @@ def test_het_ram_khong_bi_tinh_la_vuot(monkeypatch):
         variogram_range(xy, v, azimuth=45.0)
     monkeypatch.setattr(skgstat, "Variogram", fit_loi)
     r = variogram_range(xy, v)
-    assert not r["ok"] and np.isinf(r["range_m"]) and r["reason"] == "fit loi: RuntimeError"
+    assert not r["ok"] and np.isinf(r["range_m"]) and r["reason"] == "fit khong hoi tu"
+
+    def runtime_khac(*a, **k):
+        raise RuntimeError("loi phan mem bat ky")
+
+    monkeypatch.setattr(skgstat, "Variogram", runtime_khac)
+    with pytest.raises(RuntimeError, match="phan mem"):
+        variogram_range(xy, v)
+
+
+def test_khong_hoi_tu_that_cua_scipy_la_vuot(monkeypatch):
+    """Xac minh thong diep THAT cua scipy (khong gia lap): curve_fit het max_nfev -> RuntimeError
+    'Optimal parameters not found' noi ra tu skgstat.Variogram -> tinh la VUOT (that bai thuc chat, CHG-22)."""
+    import sys
+
+    import skgstat  # noqa: F401
+
+    mod = sys.modules["skgstat.Variogram"]
+    goc = mod.curve_fit
+    monkeypatch.setattr(mod, "curve_fit", lambda *a, **k: goc(*a, max_nfev=1, **k))
+    rng = np.random.default_rng(0)
+    xy = 500_000 + rng.uniform(0, 100_000, (100, 2))
+    r = variogram_range(xy, rng.normal(size=100))
+    assert not r["ok"] and np.isposinf(r["range_m"]) and r["reason"] == "fit khong hoi tu"
+
+
+@pytest.mark.parametrize("exc", [TypeError("t"), AttributeError("a"), ValueError("v"),
+                                 np.linalg.LinAlgError("suy bien"), FloatingPointError("f"), KeyError("k")])
+def test_loi_phan_mem_so_hoc_la_loi_khong_phai_vuot(monkeypatch, exc):
+    """CHG-22: truoc day 'except Exception' -> 'fit loi' -> vuot; nay moi ngoai le khac khong hoi tu -> noi len."""
+    import skgstat
+
+    def nem(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(skgstat, "Variogram", nem)
+    monkeypatch.setattr(skgstat, "DirectionalVariogram", nem)
+    rng = np.random.default_rng(0)
+    xy = 500_000 + rng.uniform(0, 100_000, (100, 2))
+    v = rng.normal(size=100)
+    with pytest.raises(type(exc)):
+        variogram_range(xy, v)
+    with pytest.raises(type(exc)):
+        variogram_range(xy, v, azimuth=135.0)
+
+
+@pytest.mark.parametrize("params, ket_qua", [
+    ([np.nan, 1.0, 0.1], "loi"),            # tham so NaN -> LOI
+    ([20_000.0, np.nan, 0.1], "loi"),
+    ([20_000.0, 1.0, np.nan], "loi"),
+    ([0.0, 1.0, 0.1], "loi"),               # tam <= 0 -> LOI
+    ([-5.0, 1.0, 0.1], "loi"),
+    ([np.inf, 1.0, 0.1], "vuot"),           # tam = +inf -> vuot
+    ([149_900.0, 1.0, 0.1], "vuot"),        # cham bien 0,999*maxlag -> vuot (giu reason cu)
+    ([149_800.0, 1.0, 0.1], "ok"),
+    ([24_000.0, 1.0, 0.1], "ok"),
+])
+def test_phan_loai_tham_so_fit(monkeypatch, params, ket_qua):
+    import skgstat
+
+    class GiaVg:
+        def __init__(self, *a, **k):
+            self.parameters = params
+
+    monkeypatch.setattr(skgstat, "Variogram", GiaVg)
+    rng = np.random.default_rng(0)
+    xy = 500_000 + rng.uniform(0, 100_000, (100, 2))
+    v = rng.normal(size=100)
+    if ket_qua == "loi":
+        with pytest.raises(ValueError, match="LOI"):
+            variogram_range(xy, v)
+        return
+    r = variogram_range(xy, v)
+    if ket_qua == "vuot":
+        assert not r["ok"] and np.isposinf(r["range_m"])
+        if params[0] == 149_900.0:
+            assert r["reason"] == "tam cham bien maxlag"
+    else:
+        assert r["ok"] and r["range_m"] == params[0] and r["reason"] == ""
+
+
+def test_moran_khong_con_diem_nao_la_loi():
+    """CHG-22: moi diem deu la dao (khong lan can trong dai) -> LOI, khong tra Moran rong."""
+    xy = np.array([[500_000.0 + 50_000 * i, 1_000_000.0] for i in range(40)])
+    with pytest.raises(ValueError, match="dao"):
+        moran_band(xy, np.arange(40.0), band=10_000.0, permutations=9)
