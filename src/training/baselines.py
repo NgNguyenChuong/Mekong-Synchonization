@@ -20,6 +20,28 @@ class GlobalMeanBaseline:
         return np.full(int(n), self.mean_)
 
 
+class SeasonMeanBaseline:
+    """Baseline RONG (CHG-18): du doan = trung binh nhan tap huan luyen CUA CUNG MUA KHO.
+
+    Khong dung dac trung nao -> do muc "mo hinh khong hoc gi ngoai bien dong giua cac mua". Mua khong co trong tap
+    huan luyen (vd mua giu rieng 2020 o `final`) -> NaN (khong muon mua khac, giong IDW).
+    (ClimatologyBaseline lay trung binh theo THANG - bang theo mua quy ve thang 1 -> thanh trung binh chung.)
+    """
+
+    def fit(self, season, y):
+        s = pd.Series(np.asarray(season)).astype(int)
+        v = pd.Series(np.asarray(y, dtype=float))
+        ok = v.notna().to_numpy()
+        if not ok.any():
+            raise ValueError("SeasonMeanBaseline: khong co nhan")
+        self.season_mean_ = v[ok].groupby(s[ok].to_numpy()).mean().to_dict()
+        return self
+
+    def predict(self, season) -> np.ndarray:
+        s = pd.Series(np.asarray(season)).astype(int)
+        return s.map(lambda k: self.season_mean_.get(int(k), np.nan)).to_numpy(dtype=float)
+
+
 class ClimatologyBaseline:
     """Du doan = trung binh theo thang cua tap huan luyen (thang khong co -> trung binh chung)."""
 

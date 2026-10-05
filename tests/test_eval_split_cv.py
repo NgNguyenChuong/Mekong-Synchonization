@@ -973,3 +973,29 @@ def test_touched_folds_kieu_chuoi_bi_tu_choi():
         _membership_arrays(fold, [{0}, {1}], "touch", "0")
     tr, val = _membership_arrays(fold, [{0}, {0, 1}], "touch", 0)
     assert tr.tolist() == [False, False] and val.tolist() == [True, False]  # o 2 cham fold 0 -> khong train
+
+
+def test_season_mean_baseline_don_vi():
+    from training.baselines import SeasonMeanBaseline
+
+    m = SeasonMeanBaseline().fit([2019, 2019, 2021, 2021], [1.0, 3.0, 10.0, np.nan])
+    assert m.predict([2019, 2021, 2020]).tolist()[:2] == [2.0, 10.0] and np.isnan(m.predict([2020])[0])
+
+
+@need_real
+def test_season_mean_cv_chi_tu_o_train_cua_fold_cung_mua(c_data, tmp_path):
+    """Baseline rong CHG-18: du doan diem = trung binh nhan o vai tro 'train' cua fold, cung mua."""
+    from training.split import assign_eval_split
+
+    env, tab, ref_csv, folds_csv, table, t = c_data
+    proc = _run_c(c_data, tmp_path, "sm", "cv", "--model", "season_mean")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = tmp_path / "artifacts" / "experiments" / "sm" / "cv"
+    op = pd.read_csv(out / "oof_points.csv", dtype={"point_id": str, "point_cell_id": str})
+    mem = pd.read_csv(out / "cv_membership.csv", dtype={"cell_id": str})
+    tr_all = assign_eval_split(t[t["train_ok_scope"]], table)
+    tr_all = tr_all[tr_all["split"] == "train"]
+    for (fold, season), g in op.groupby(["fold", "season"]):
+        cells = set(mem.loc[(mem["fold"] == fold) & (mem["role"] == "train"), "cell_id"])
+        exp = tr_all.loc[tr_all["cell_id"].isin(cells) & (tr_all["season"] == season), "salinity"].mean()
+        assert np.allclose(g["y_pred"], exp), (fold, season)

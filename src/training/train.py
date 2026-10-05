@@ -28,7 +28,7 @@ from salinity.loader import load_salinity_observations  # noqa: E402
 from salinity.preprocessing import clean_salinity_observations  # noqa: E402
 from salinity.spatial_mapping import map_observations_to_h3  # noqa: E402
 from seasons import season_of  # noqa: E402
-from training.baselines import ClimatologyBaseline, IDWBaseline, PersistenceBaseline  # noqa: E402
+from training.baselines import ClimatologyBaseline, IDWBaseline, PersistenceBaseline, SeasonMeanBaseline  # noqa: E402
 from training.evaluate import compute_metrics  # noqa: E402
 from training.features import (  # noqa: E402,F401  (assert_no_leak_columns re-export cho script khac)
     DEFAULT_ALLOWED_FEATURES,
@@ -71,6 +71,7 @@ DEFAULT_MODEL_PARAMS = {
     "idw": {"p": 2.0, "k": 8},
 }
 SPATIAL_MODELS = ("idw",)  # khong qua sklearn; can toa do tam phan dat cua o
+NULL_MODELS = ("season_mean",)  # baseline rong CHG-18: trung binh nhan tap huan luyen theo mua, khong dac trung
 SPATIAL_XY = ("scope_cx", "scope_cy")
 MODEL_PARAMS_STATUS = {  # trang thai tham so mac dinh (ghi vao config)
     "hist_gb": "co_dinh_CHG-06", "linear": "mac_dinh_sklearn", "idw": "co_dinh_An_2026-10-04",
@@ -134,7 +135,8 @@ def parse_args():
                       help="Danh sach CHO PHEP cot dac trung (ten hoac tien to 'x_*'). "
                            f"Mac dinh: {' '.join(DEFAULT_ALLOWED_FEATURES)}")
     feat.add_argument("--features-file", default=None, help="File danh sach cho phep, moi dong mot ten")
-    parser.add_argument("--model", choices=["climatology", "persistence", *MODEL_REGISTRY.keys(), *SPATIAL_MODELS],
+    parser.add_argument("--model", choices=["climatology", "persistence", *MODEL_REGISTRY.keys(), *SPATIAL_MODELS,
+                                            *NULL_MODELS],
                         default="linear")
     parser.add_argument("--train-end", default=None,
                         help="Moc cuoi tap train: YYYY-MM-DD (bang theo ngay) hoac nam mua kho YYYY (bang theo mua)")
@@ -357,6 +359,12 @@ def _fit_predict(model_name, params, seed, train, other, feature_cols, target_co
     if model_name == "climatology":
         m = ClimatologyBaseline().fit(_time_key(train), train[target_col])
         return m.predict(_time_key(other)), m, None, _pred_extra(lambda e: m.predict(_time_key(e)))
+    if model_name == "season_mean":
+        m = SeasonMeanBaseline().fit(train["season"], train[target_col])
+
+        def _sm(e):
+            return m.predict(e["season"])
+        return _sm(other), m, None, _pred_extra(_sm)
     if model_name == "idw":
         # Chi dung nhan cua `train` (o huan luyen cua fold) cung mua; toa do = tam phan dat (SPATIAL_XY).
         m = IDWBaseline(float(params["p"]), int(params["k"]))
@@ -775,6 +783,9 @@ def run_eval_mode(args, dataset: pd.DataFrame, target_col: str) -> None:
         if args.model in SPATIAL_MODELS:
             notes["idw"] = ("IDW noi suy theo TUNG MUA tu nhan cung mua cua tap huan luyen; mua giu rieng (nhom "
                             "thoi_gian, ca_hai) khong co nhan cung mua trong train -> NaN (khong muon mua khac).")
+        if args.model in NULL_MODELS:
+            notes["season_mean"] = ("Baseline rong: trung binh nhan tap huan luyen theo mua; mua giu rieng (thoi_gian, "
+                                    "ca_hai) khong co trong train -> NaN.")
         if notes:
             config["notes"] = notes
         print("--- Test theo nhom (trung binh qua seed) ---")
@@ -790,7 +801,7 @@ def main():
     args = parse_args()
     label_csv = args.label_csv or args.salinity_csv
     target_col = args.target
-    if args.model in SPATIAL_MODELS and not args.mode:
+    if args.model in (*SPATIAL_MODELS, *NULL_MODELS) and not args.mode:
         print(f"--model {args.model} chi dung voi --mode cv|final.", file=sys.stderr, flush=True)
         sys.exit(2)
     if args.table:
