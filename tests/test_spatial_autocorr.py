@@ -222,3 +222,20 @@ def test_moran_khong_con_diem_nao_la_loi():
     xy = np.array([[500_000.0 + 50_000 * i, 1_000_000.0] for i in range(40)])
     with pytest.raises(ValueError, match="dao"):
         moran_band(xy, np.arange(40.0), band=10_000.0, permutations=9)
+
+
+def test_bo_mat_xu_huong_theo_toa_do():
+    """CHG-23 C: mat xu huong bac 2 theo (x, y) + truong cuc bo -> sau khi bo: tam huu han, nho; phan du truc giao."""
+    from spatial_autocorr import detrend_surface
+
+    xy, z = _field(n=700, corr_len_m=4_000.0, seed=7)
+    xk, yk = (xy[:, 0] - 500_000) / 1000.0, (xy[:, 1] - 500_000) / 1000.0
+    v = 0.0015 * xk ** 2 - 0.001 * xk * yk + 0.02 * yk + 0.5 * z
+    before = variogram_range(xy, v)
+    r = detrend_surface(v, xy[:, 0], xy[:, 1])
+    after = variogram_range(xy, r)
+    assert (not before["ok"]) or before["range_m"] > 50_000
+    assert after["ok"] and after["range_m"] < 50_000
+    assert abs(r.mean()) < 1e-9 and max(abs(np.corrcoef(r, c)[0, 1]) for c in (xk, yk, xk ** 2, xk * yk, yk ** 2)) < 1e-9
+    with pytest.raises(ValueError):
+        detrend_surface(np.r_[v[:-1], np.nan], xy[:, 0], xy[:, 1])

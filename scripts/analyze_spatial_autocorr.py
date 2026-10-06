@@ -28,7 +28,7 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from settings import data_path  # noqa: E402
-from spatial_autocorr import BLOCK_KM, detrend_poly, moran_band, season_frame, variogram_range, violates  # noqa: E402
+from spatial_autocorr import BLOCK_KM, detrend_poly, detrend_surface, moran_band, season_frame, variogram_range, violates  # noqa: E402
 
 GRIDS = ["h3_res_5", "h3_res_6", "h3_res_7", "latlon_0.0222deg", "latlon_0.0586deg", "latlon_0.1552deg",
          "s2_level_9", "s2_level_10", "s2_level_11", "s2_level_12", "square_utm_17087m", "square_utm_2441m",
@@ -43,6 +43,7 @@ def point_xy():
 KEY = ["grid", "scheme", "season"]
 CONCL_THUONG = ["dot6_tu_tuong_quan_ket_luan.csv", "dot6_tu_tuong_quan_nhan.csv", "dot6_tu_tuong_quan_huong.csv"]
 CONCL_BO_XU_HUONG = ["dot6_tu_tuong_quan_bo_xu_huong_ket_luan.csv"]
+CONCL_BO_XU_HUONG_XY = ["dot6_tu_tuong_quan_bo_xu_huong_xy_ket_luan.csv"]  # CHG-23 C
 
 
 def xoa_ket_luan_cu(out_dir, names):
@@ -116,14 +117,16 @@ def point_dist_coast():
     return pd.Series(v, index=p["point_id"].astype(str))
 
 
-def main_detrend(a):
-    """CHG-20 tieu chi 1: phan du bo xu huong bac 2 theo khoang cach bo cua diem -> semivariogram cung cau hinh."""
+def main_detrend(a, mode="coast"):
+    """CHG-20 tieu chi 1 (mode "coast"): bo xu huong bac 2 theo khoang cach bo cua diem; CHG-23 C (mode "xy"):
+    bo mat xu huong bac 2 theo TOA DO diem (x, y met) - cach bo xu huong bo sung DUY NHAT. Semivariogram cung cau hinh."""
     pxy = point_xy()
-    dc = point_dist_coast()
+    dc = point_dist_coast() if mode == "coast" else None
     exp = os.path.join(ROOT, "artifacts", "experiments")
     os.makedirs(a.out_dir, exist_ok=True)
-    xoa_ket_luan_cu(a.out_dir, CONCL_BO_XU_HUONG)
-    out_res = os.path.join(a.out_dir, "dot6_tu_tuong_quan_bo_xu_huong.csv")
+    suf = "" if mode == "coast" else "_xy"
+    xoa_ket_luan_cu(a.out_dir, CONCL_BO_XU_HUONG if mode == "coast" else CONCL_BO_XU_HUONG_XY)
+    out_res = os.path.join(a.out_dir, f"dot6_tu_tuong_quan_bo_xu_huong{suf}.csv")
     done = pd.read_csv(out_res) if os.path.exists(out_res) else pd.DataFrame(columns=KEY)
     done_keys = set(zip(done["grid"], done["scheme"], done["season"]))
     expected = {}
@@ -132,9 +135,15 @@ def main_detrend(a):
             d = pd.read_csv(os.path.join(exp, f"{a.prefix}__{g}__hist_gb__s{s}", "cv", "oof_points.csv"),
                             dtype={"point_id": str}, usecols=["point_id", "season", "err"])
             expected[(g, s)] = mua_oof(d)
-            d["dc"] = d["point_id"].map(dc)
-            d["err_bo_xu_huong"] = d.groupby("season", group_keys=False).apply(
-                lambda x: pd.Series(detrend_poly(x["err"], x["dc"], 2), index=x.index), include_groups=False)
+            if mode == "coast":
+                d["dc"] = d["point_id"].map(dc)
+                d["err_bo_xu_huong"] = d.groupby("season", group_keys=False).apply(
+                    lambda x: pd.Series(detrend_poly(x["err"], x["dc"], 2), index=x.index), include_groups=False)
+            else:  # CHG-23 C: mat xu huong bac 2 theo toa do, tung mua
+                d = d.merge(pxy, on="point_id", how="left", validate="many_to_one")
+                d["err_bo_xu_huong"] = d.groupby("season", group_keys=False).apply(
+                    lambda x: pd.Series(detrend_surface(x["err"], x["x"], x["y"]), index=x.index), include_groups=False)
+                d = d.drop(columns=["x", "y"])
             rows = []
             for season, (xy, v) in sorted(season_frame(pxy, d, "err_bo_xu_huong").items()):
                 if (g, s, season) in done_keys:
@@ -152,15 +161,20 @@ def main_detrend(a):
         v = violates(x["range_km"].to_numpy())
         concl.append({"grid": g, "scheme": s, **v, "n_fit_fail_or_bound": int((~x["ok"].astype(bool)).sum())})
     concl = pd.DataFrame(concl)
-    ghi_nguyen_tu(concl, os.path.join(a.out_dir, "dot6_tu_tuong_quan_bo_xu_huong_ket_luan.csv"))
+    ghi_nguyen_tu(concl, os.path.join(a.out_dir, f"dot6_tu_tuong_quan_bo_xu_huong{suf}_ket_luan.csv"))
     with pd.option_context("display.width", 200):
         print(concl.round(2).to_string(index=False))
     print("TIEU CHI 1 (bo xu huong) - VI PHAM (bat ky bo nao):", bool(concl["violates"].any()))
 
 
 def main(a):
-    if a.detrend_coast:
-        return main_detrend(a)
+    coast, xy = getattr(a, "detrend_coast", False), getattr(a, "detrend_xy", False)  # Namespace cu khong co detrend_xy
+    if coast and xy:
+        raise SystemExit("LOI: chon MOT trong --detrend-coast / --detrend-xy")
+    if coast:
+        return main_detrend(a, "coast")
+    if xy:
+        return main_detrend(a, "xy")
     os.makedirs(a.out_dir, exist_ok=True)
     xoa_ket_luan_cu(a.out_dir, CONCL_THUONG)
     pxy = point_xy()
@@ -218,6 +232,8 @@ if __name__ == "__main__":
     ap.add_argument("--prefix", default="cv1")
     ap.add_argument("--schemes", nargs="+", type=int, default=[42, 43, 44])
     ap.add_argument("--out-dir", default=os.path.join(ROOT, "KE_HOACH", "ket-qua"))
+    ap.add_argument("--detrend-xy", action="store_true",
+                    help="CHG-23 C: bo mat xu huong bac 2 theo toa do diem truoc semivariogram (cach bo sung DUY NHAT)")
     ap.add_argument("--detrend-coast", action="store_true",
                     help="CHG-20 tieu chi 1: bo xu huong bac 2 theo khoang cach bo cua diem truoc semivariogram")
     main(ap.parse_args())

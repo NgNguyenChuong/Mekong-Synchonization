@@ -156,6 +156,28 @@ def season_frame(points_xy: pd.DataFrame, values: pd.DataFrame, value_col: str) 
     return {int(s): (g[["x", "y"]].to_numpy(float), g[value_col].to_numpy(float)) for s, g in d.groupby("season")}
 
 
+def detrend_surface(values, x, y):
+    """Phan du cua OLS values ~ 1 + x + y + x^2 + xy + y^2 (CHG-23 C: mat xu huong bac 2 theo TOA DO, met).
+
+    Toa do duoc chuan hoa (tru TB, chia do lech chuan) truoc khi lap ma tran de tranh suy bien so hoc.
+    CHG-22: gia tri/toa do khong huu han -> LOI (khong bo am tham).
+    """
+    v = np.asarray(values, dtype=float)
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if not (v.shape == x.shape == y.shape):
+        raise ValueError("values, x, y phai cung do dai")
+    if not (np.isfinite(v).all() and np.isfinite(x).all() and np.isfinite(y).all()):
+        raise ValueError("detrend_surface: co gia tri khong huu han (LOI, CHG-22)")
+    if len(v) < 30:
+        raise ValueError("detrend_surface: < 30 diem (LOI, CHG-22)")
+    xs = (x - x.mean()) / x.std()
+    ys = (y - y.mean()) / y.std()
+    X = np.column_stack([np.ones_like(xs), xs, ys, xs ** 2, xs * ys, ys ** 2])
+    beta, *_ = np.linalg.lstsq(X, v, rcond=None)
+    return v - X @ beta
+
+
 def detrend_poly(values, x, degree=2):
     """Phan du cua hoi quy OLS values ~ 1 + x + ... + x^degree (CHG-20: x = khoang cach toi bo cua CHINH DIEM, km).
 
