@@ -62,7 +62,8 @@ OUT_FILES = {
     "phu_6090": "dot6_bo_phu_cham_phu_6090.csv",
 }
 NOTE_CV = "so tuyet doi CV khoi 50 km - co the lac quan (bo phu khong chay khoi 100 km)"
-NOTE_FINAL = "giu rieng (final, 1 cach chia); khong co luot final keep6090 tren diem nong nghiep -> khong co ngu canh"
+NOTE_FINAL = ("giu rieng = nhom khong_gian (khoi giu rieng, mua != 2020; muc 10), final 1 cach chia; "
+              "khong co luot final keep6090 tren diem nong nghiep -> khong co ngu canh")
 
 
 def loi(msg):
@@ -91,11 +92,22 @@ def check_meta(meta, name, label_set, variant, mode):
 
 
 def load_points(path, name, pred_source):
-    """Mot file oof_points / final_points: kiem pred_source, err + y_ref huu han, unit_id, khong trung (diem, mua)."""
+    """Mot file oof_points / final_points: kiem pred_source, err + y_ref huu han, unit_id, khong trung (diem, mua).
+
+    final_points chua ca nhom khong_gian / thoi_gian / ca_hai -> CHI giu nhom KHONG GIAN (khoi giu rieng, mua != 2020;
+    muc 10 NHAT_KY 2026-10-05: nhom cho ket luan chinh). Thieu cot test_group -> LOI.
+    """
     if not os.path.isfile(path):
         loi(f"{name}: thieu file {path}")
-    d = pd.read_csv(path, dtype={"point_id": str, "unit_id": str},
-                    usecols=["point_id", "season", "unit_id", "y_ref", "err", "pred_source"])
+    cols = ["point_id", "season", "unit_id", "y_ref", "err", "pred_source"]
+    if pred_source == "final":
+        cols.append("test_group")
+    have = pd.read_csv(path, nrows=0).columns
+    if missing := [c for c in cols if c not in have]:
+        loi(f"{name}: thieu cot {missing} trong {path}")
+    d = pd.read_csv(path, dtype={"point_id": str, "unit_id": str}, usecols=cols)
+    if pred_source == "final":
+        d = d[d["test_group"] == "khong_gian"].drop(columns="test_group")
     if d.empty:
         loi(f"{name}: {path} rong")
     if (d["pred_source"] != pred_source).any():

@@ -83,7 +83,10 @@ def make_exp(tmp_path, shift=None, mutate=None, meta_mut=None, aux_err=None):
             _put(exp, name, "cv", mutate(name, d), meta_mut(name, _meta("keep6090", "cv", s, "keep6090")),
                  "oof_points.csv")
         name = f"phu6090__{g}__hist_gb__s42__keep6090"
-        d = _frame(rng, _points("f_", AUX_HO_UNITS, 5), "final", aux_err)
+        d = _frame(rng, _points("f_", AUX_HO_UNITS, 5), "final", aux_err).assign(test_group="khong_gian")
+        # file final that con nhom thoi_gian (diem CV, mua 2020) -> phai bi loai, khong tinh la giu rieng
+        tg = _frame(rng, _points("a_", AUX_CV_UNITS[:1], 3), "final", aux_err).assign(test_group="thoi_gian")
+        d = pd.concat([d, tg[tg["season"] == tg["season"].iloc[0]]], ignore_index=True)
         _put(exp, name, "final", mutate(name, d), meta_mut(name, _meta("keep6090", "final", 42, "keep6090")),
              "final_points.csv")
     return str(exp)
@@ -239,3 +242,21 @@ def test_xoa_ket_qua_cu_va_ghi_qua_file_tam(mod, tmp_path):
     assert not any((out / f).exists() for f in mod.OUT_FILES.values())
     mod.write_outputs(str(out), {"f1": pd.DataFrame({"x": [1]})})
     assert (out / mod.OUT_FILES["f1"]).exists() and not list(out.glob("*.tmp"))
+
+
+def test_final_chi_lay_nhom_khong_gian(mod, tmp_path):
+    """Muc 10: giu rieng = nhom khong_gian; dong thoi_gian (diem CV mua 2020) trong final_points bi loai, khong LOI."""
+    exp = make_exp(tmp_path)
+    p = os.path.join(exp, f"phu6090__{GRIDS[0]}__hist_gb__s42__keep6090", "final", "final_points.csv")
+    d = pd.read_csv(p)
+    assert (d["test_group"] == "thoi_gian").any() and d.loc[d["test_group"] == "thoi_gian", "point_id"].str.startswith("a_").all()
+    run(mod, exp)  # khong bao "vua o CV vua o giu rieng"
+
+
+def test_final_thieu_cot_test_group_la_loi(mod, tmp_path):
+    exp = make_exp(tmp_path)
+    for g in GRIDS:
+        p = os.path.join(exp, f"phu6090__{g}__hist_gb__s42__keep6090", "final", "final_points.csv")
+        pd.read_csv(p).drop(columns="test_group").to_csv(p, index=False)
+    with pytest.raises(SystemExit, match="thieu cot"):
+        run(mod, exp)
