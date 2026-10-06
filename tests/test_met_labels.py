@@ -1,6 +1,6 @@
 """Kiem thu ham thuan cho nhan khi tuong Dot 7 (CHIRPS v3 mua, MCD18A1 buc xa) - KHONG goi GEE.
 
-Chong tai phat: cua so 01/11..30/04 (khac seasons.py 29/04), nam nhuan, chon pentad/thang, ten file,
+Chong tai phat: cua so = seasons.py (01/11..29/04), nam nhuan, chon pentad/thang, ten file,
 TB co/khong thang 12, NaN/-9999 khong bi dien 0, doc band theo ten.
 """
 import datetime as dt
@@ -24,36 +24,40 @@ D = dt.date
 
 
 # ---------------------------------------------------------------- cua so mua
-def test_cua_so_mua_gom_30_04_va_nam_nhuan():
-    assert ml.met_season_window(2020) == (D(2019, 11, 1), D(2020, 4, 30))
-    assert ml.met_season_days(2020) == 182          # 2020 nhuan (29/02)
-    assert ml.met_season_days(2021) == 181
-    assert ml.met_season_days(2024) == 182
+def test_cua_so_mua_het_29_04_va_nam_nhuan():
+    assert ml.met_season_window(2020) == (D(2019, 11, 1), D(2020, 4, 29))
+    assert ml.met_season_days(2020) == 181          # 2020 nhuan (29/02)
+    assert ml.met_season_days(2021) == 180
+    assert ml.met_season_days(2024) == 181
     days = ml.met_season_dates(2020)
-    assert days[0] == D(2019, 11, 1) and days[-1] == D(2020, 4, 30)
-    assert D(2019, 10, 31) not in days and D(2020, 5, 1) not in days
+    assert days[0] == D(2019, 11, 1) and days[-1] == D(2020, 4, 29)
+    assert D(2019, 10, 31) not in days and D(2020, 4, 30) not in days
     assert D(2020, 2, 29) in days and D(2020, 4, 29) in days
     assert len(set(days)) == len(days)
 
 
-def test_cua_so_khac_seasons_py_dung_mot_ngay():
-    # seasons.py (do man, ma tac gia Zenodo) dung o 29/04; nhan khi tuong gom 30/04 (An chot 2026-10-06).
+def test_cua_so_trung_seasons_py():
+    # Nhan khi tuong dung CHUNG cua so voi do man/dac trung (An chot 2026-10-06), khong tu dinh nghia lai.
     from seasons import season_days, season_window
-    assert season_window(2021)[1].date() == D(2021, 4, 29)
-    assert ml.met_season_days(2021) == season_days(2021) + 1
+    for y in range(2014, 2027):
+        s, e = season_window(y)
+        assert ml.met_season_window(y) == (s.date(), e.date())
+        assert ml.met_season_days(y) == season_days(y)
+    assert not hasattr(ml, "MET_SEASON_END")
 
 
 def test_filter_date_gee_loai_ngay_cuoi():
-    assert ml.met_season_filter_dates(2014) == ("2013-11-01", "2014-05-01")
-    assert ml.met_season_filter_dates(2026) == ("2025-11-01", "2026-05-01")
+    # giong filterDate cua tac gia nhan Zenodo ('Y-1-11-01', 'Y-04-30')
+    assert ml.met_season_filter_dates(2014) == ("2013-11-01", "2014-04-30")
+    assert ml.met_season_filter_dates(2026) == ("2025-11-01", "2026-04-30")
 
 
 def test_bo_thang_12():
     nd = ml.met_season_dates(2020, exclude_months=(12,))
-    assert len(nd) == 182 - 31
+    assert len(nd) == 181 - 31
     assert all(d.month != 12 for d in nd)
     assert D(2019, 11, 30) in nd and D(2020, 1, 1) in nd
-    assert len(ml.mcd18_indices(2021, exclude_months=(12,))) == 150
+    assert len(ml.mcd18_indices(2021, exclude_months=(12,))) == 149
 
 
 # ---------------------------------------------------------------- chon thang / pentad / chi so anh
@@ -72,7 +76,7 @@ def test_pentad_chirps():
 
 def test_chi_so_mcd18_va_ngay_thieu():
     idx = ml.mcd18_indices(2020)
-    assert idx[0] == "2019_11_01" and idx[-1] == "2020_04_30" and len(idx) == 182
+    assert idx[0] == "2019_11_01" and idx[-1] == "2020_04_29" and len(idx) == 181
     avail = [i for i in idx if not ("2019_12_07" <= i <= "2019_12_31")]
     miss = ml.missing_indices(idx, avail)
     assert len(miss) == 25
@@ -238,3 +242,17 @@ def test_lenh_con_co_trong_cli():
                            capture_output=True, text=True, cwd=ROOT)
         assert r.returncode == 0, r.stderr
         assert "--years" in r.stdout and "--buffer-km" in r.stdout
+
+
+# ---------------------------------------------------------------- file cu khac cua so -> LOI
+def test_file_cu_khac_cua_so_la_loi(tmp_path):
+    import json
+    gf = importlib.import_module("gee_fetch")
+    path = str(tmp_path / "mcd18a1_dsr_2021.tif")
+    with open(path + ".provenance.json", "w", encoding="utf-8") as f:
+        json.dump({"window": ["2020-11-01", "2021-04-30"]}, f)       # ban cu gom 30/04
+    with pytest.raises(SystemExit, match="LOI"):
+        gf._check_window(path, 2021)
+    with open(path + ".provenance.json", "w", encoding="utf-8") as f:
+        json.dump({"window": ["2020-11-01", "2021-04-29"]}, f)
+    assert gf._check_window(path, 2021)["window"][1] == "2021-04-29"

@@ -1,10 +1,12 @@
 """Ham thuan cho nhan khi tuong Dot 7 lay tu GEE: MUA (CHIRPS v3) va BUC XA (MCD18A1.062).
 
-Cua so mua kho cho nhan khi tuong = 01/11/(s-1) .. 30/04/s, GOM CA HAI DAU (An chot 2026-10-06 16:40:
-"cua so 01/11-30/04 cho ca 4 bien"). KHAC `seasons.py` (01/11 .. 29/04, khop ma GEE cua tac gia nhan Zenodo
-cho do man) - khong dung chung ham do de khong lam doi nhan do man da dong bang.
-  - mua 2020 (nhuan): 01/11/2019 .. 30/04/2020 = 182 ngay; mua 2021: 181 ngay.
-  - GEE filterDate loai ngay cuoi -> truyen (s-1)-11-01 .. s-05-01.
+Cua so mua kho = `seasons.season_window` (01/11/(s-1) .. 29/04/s, gom 2 dau) - DUNG CHUNG voi do man va
+dac trung (An chot 2026-10-06: cung quy uoc seasons.py; khong tu dinh nghia lai mua).
+  - mua 2020 (nhuan): 01/11/2019 .. 29/04/2020 = 181 ngay; mua 2021: 180 ngay.
+  - GEE filterDate loai ngay cuoi -> truyen (s-1)-11-01 .. s-04-30.
+  - MCD18 (ngay): dung dung cua so tren.
+  - CHIRPS v3 PENTAD: giu 36 pentad tron 6 thang; pentad cuoi (26-30/04) GOM 30/04 -> lech 1 ngay so voi
+    seasons.py; chap nhan (khong tach pentad), ghi trong provenance.
 
 Khong goi GEE trong module nay (test chay khong can mang).
 """
@@ -12,8 +14,8 @@ import datetime as dt
 
 import numpy as np
 
-MET_SEASON_START = (11, 1)   # 01/11 nam s-1
-MET_SEASON_END = (4, 30)     # 30/04 nam s (bao gom)
+from seasons import season_window
+
 SEASON_MONTHS = (11, 12, 1, 2, 3, 4)
 
 # CHIRPS v3 PENTAD: moi thang 6 pentad bat dau ngay 1, 6, 11, 16, 21, 26 (pentad 6 = 26 -> het thang).
@@ -35,12 +37,13 @@ DSR_QUALITY_MASK = 0b11
 
 
 def met_season_window(year: int) -> tuple[dt.date, dt.date]:
-    """(ngay dau, ngay cuoi) GOM ca hai dau cua mua kho khi tuong nam `year`."""
-    return dt.date(year - 1, *MET_SEASON_START), dt.date(year, *MET_SEASON_END)
+    """(ngay dau, ngay cuoi) GOM ca hai dau cua mua kho nam `year` - lay tu seasons.season_window."""
+    start, end = season_window(year)
+    return start.date(), end.date()
 
 
 def met_season_filter_dates(year: int) -> tuple[str, str]:
-    """Cap ngay cho GEE filterDate (ngay cuoi BI LOAI) -> ('Y-1-11-01', 'Y-05-01')."""
+    """Cap ngay cho GEE filterDate (ngay cuoi BI LOAI) -> ('Y-1-11-01', 'Y-04-30')."""
     start, end = met_season_window(year)
     return start.isoformat(), (end + dt.timedelta(days=1)).isoformat()
 

@@ -11,10 +11,10 @@ Lenh con:
           median, Salinity = 28.013*exp(-13.39*SR_B5), NDWIchen = ND(SR_B5, SR_B7).
           --sensors l8l9 them Landsat 9 (khac tac gia; chi dung sau khi da doi chieu).
           -> Export len Google Drive (moi nam ~380 MB).
-  chirps3 Nhan MUA Dot 7: tong mua kho 01/11/(s-1)..30/04/s tu CHIRPS v3 PENTAD (GEE khong co ban thang;
+  chirps3 Nhan MUA Dot 7: tong mua kho 36 pentad 11/(s-1)..04/s (het 30/04, lech 1 ngay so seasons.py) tu CHIRPS v3 PENTAD (GEE khong co ban thang;
           ban thang CHC = tong 6 pentad) -> 1 file/mua `chirps3_rain_<s>.tif`, luoi goc 0,05 do, tai truc tiep
           vao <DATA_ROOT>/raw/chirps3/ + bang mo ta chirps3_season_summary.csv.
-  mcd18   Nhan BUC XA Dot 7: TB mua DSR ngay (TB 8 band 3 gio, W/m2) tu MODIS/062/MCD18A1, 01/11..30/04
+  mcd18   Nhan BUC XA Dot 7: TB mua DSR ngay (TB 8 band 3 gio, W/m2) tu MODIS/062/MCD18A1, cua so seasons.py 01/11..29/04
           -> 1 file/mua `mcd18a1_dsr_<s>.tif` (dsr_mean, n_days_valid, frac_quality2, dsr_mean_no_dec),
           luoi goc sinusoidal ~926 m, tai truc tiep vao <DATA_ROOT>/raw/mcd18a1/ + mcd18a1_season_summary.csv.
 
@@ -298,6 +298,17 @@ def _write_summary(rows, path, boundary):
         print(df.to_string(index=False), flush=True)
 
 
+def _check_window(path, year):
+    """File da co tren dia phai mang cua so mua hien tai (seasons.py); lech -> LOI, khong dung lai (CHG-22)."""
+    prov = json.load(open(path + ".provenance.json", encoding="utf-8"))
+    start, end = ml.met_season_window(year)
+    want = [start.isoformat(), end.isoformat()]
+    if prov.get("window") != want:
+        raise SystemExit(f"LOI: {path} co cua so {prov.get('window')} khac {want} - chuyen file cu ra cho khac"
+                         " roi xuat lai")
+    return prov
+
+
 def cmd_chirps3(args):
     """Tong mua kho tu 36 pentad CHIRPS v3. Pentad NoData (mask hoac < 0, vd -9999) -> thang/mua do = NaN
     (khong cong thieu thanh 0). Band chan doan: rain_m11..m04, rain_jfm (mat na kho), n_pentad_valid, n_pentad_neg."""
@@ -349,8 +360,9 @@ def cmd_chirps3(args):
                 path, args.boundary, asset=CHIRPS3_ID, product="CHIRPS v3.0 PENTAD (GEE; khong co ban THANG tren GEE,"
                 " ban thang CHC = tong 6 pentad)", variable="precipitation (mm/pentad) -> tong mm",
                 query_date=pd.Timestamp.now().date().isoformat(), season=year,
-                window=[start.isoformat(), end.isoformat()], window_rule="01/11/(s-1)..30/04/s gom 2 dau (An chot"
-                " 2026-10-06 16:40)", n_images=len(idx), pentads=[idx[0], idx[-1]],
+                window=[start.isoformat(), end.isoformat()], window_rule="seasons.season_window 01/11/(s-1)..29/04/s;"
+                " CHIRPS giu 36 pentad tron thang -> pentad cuoi 26-30/04 gom 30/04 (lech 1 ngay, chap nhan)",
+                window_data=[start.isoformat(), f"{year}-04-30"], n_images=len(idx), pentads=[idx[0], idx[-1]],
                 ingest_version_min=_iso_us(min(version.values())), ingest_version_max=_iso_us(max(version.values())),
                 final_prelim=("final" if n_final == len(idx) else f"CO PRELIM: {len(idx) - n_final}/36"),
                 final_prelim_rule=f"suy luan tu system:version >= 01/(M+1) + {ml.FINAL_MIN_LAG_DAYS} ngay; GEE"
@@ -358,7 +370,7 @@ def cmd_chirps3(args):
                 crs=crs, crs_transform=transform, region_rect_4326=rect, buffer_km=args.buffer_km,
                 bands=list(ml.CHIRPS_BANDS), nodata="NaN", aggregation="tong; pentad mask hoac < 0 -> thang/mua NaN")
             print(f"[xong] chirps3 {year}: {n_final}/36 pentad final (suy luan)", flush=True)
-        prov = json.load(open(path + ".provenance.json", encoding="utf-8"))
+        prov = _check_window(path, year)
         rows.append({"season": year, "final_prelim": prov.get("final_prelim"),
                      **ml.chirps_season_summary(path, args.boundary)})
     if rows:
@@ -414,8 +426,8 @@ def cmd_mcd18(args):
                 path, args.boundary, asset=MCD18_ID, product="MCD18A1 Collection 6.2 (062), Terra+Aqua, ngay, ~1 km",
                 variable="DSR ngay = TB(GMT_0000..GMT_2100_DSR) W/m2", units="W/m2",
                 query_date=pd.Timestamp.now().date().isoformat(), season=year,
-                window=[start.isoformat(), end.isoformat()], window_rule="01/11/(s-1)..30/04/s gom 2 dau (An chot"
-                " 2026-10-06 16:40)", n_days_expected=len(idx), n_images=len(avail),
+                window=[start.isoformat(), end.isoformat()], window_rule="seasons.season_window 01/11/(s-1)..29/04/s gom"
+                " 2 dau (cung quy uoc do man)", n_days_expected=len(idx), n_images=len(avail),
                 n_days_expected_no_dec=len(idx_nd), n_images_no_dec=len(set(idx_nd) & set(avail)),
                 missing_dates=ml.date_runs(to_dates),
                 images_without_valid_px=[ml.parse_mcd18_index(i).isoformat() for i in empty],
@@ -429,7 +441,7 @@ def cmd_mcd18(args):
                 " khong thuoc thang 12")
             print(f"[xong] mcd18 {year}: {len(avail)}/{len(idx)} ngay co anh; thieu {ml.date_runs(to_dates)};"
                   f" anh rong {len(empty)}", flush=True)
-        prov = json.load(open(path + ".provenance.json", encoding="utf-8"))
+        prov = _check_window(path, year)
         rows.append({"season": year, "n_days_expected": prov["n_days_expected"], "n_images": prov["n_images"],
                      "missing_dates": ";".join(prov["missing_dates"]),
                      "n_images_without_valid_px": len(prov["images_without_valid_px"]),
@@ -472,7 +484,7 @@ if __name__ == "__main__":
                     help="hau to ten file; mac dinh _v2 vi --boundary mac dinh la v2 (khong hau to = ban cu theo v1)")
     for name, sub_dir in (("chirps3", "chirps3"), ("mcd18", "mcd18a1")):
         sp = sub.add_parser(name)
-        sp.add_argument("--years", nargs="+", type=int, default=list(range(2014, 2027)), help="mua kho s (01/11/s-1..30/04/s)")
+        sp.add_argument("--years", nargs="+", type=int, default=list(range(2014, 2027)), help="mua kho s (seasons.py: 01/11/s-1..29/04/s)")
         sp.add_argument("--buffer-km", type=float, default=15.0, help="dem quanh ranh gioi truoc khi lay khung (nhu era5)")
         sp.add_argument("--out", default=None, help=f"mac dinh <DATA_ROOT>/raw/{sub_dir}")
     a = ap.parse_args()
