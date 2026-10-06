@@ -420,6 +420,7 @@ def cmd_mcd18(args):
             img = ee.Image.cat([d.mean(), n, daily.select("q2").sum().divide(n).updateMask(n.gt(0)),
                                 nd.mean()]).toFloat().rename(list(ml.MCD18_BANDS))
             _get_tif(ee, img, rect, crs, transform, path, ml.MCD18_BANDS, f"mcd18 {year}")
+            ml.set_modis_sphere_crs(path)   # WKT GEE ghi ellipsoid -> lech ~15 km (xem met_labels.MODIS_SINU_PROJ4)
             start, end = ml.met_season_window(year)
             to_dates = [ml.parse_mcd18_index(i) for i in missing]
             write_provenance(
@@ -434,7 +435,8 @@ def cmd_mcd18(args):
                 valid_px_per_image_min=min(int(v or 0) for v in meta["n"]) if meta["n"] else None,
                 valid_px_per_image_max=max(int(v or 0) for v in meta["n"]) if meta["n"] else None,
                 final_prelim="khong ap dung (MODIS 062 la ban xu ly chinh thuc, khong co prelim)",
-                crs=crs, crs_transform=transform, region_rect_4326=rect, buffer_km=args.buffer_km,
+                crs=crs, crs_file=ml.MODIS_SINU_PROJ4, crs_note="GEE ghi WKT ellipsoid cho SR-ORG:6974; da ghi de CRS file sang hinh cau",
+                crs_transform=transform, region_rect_4326=rect, buffer_km=args.buffer_km,
                 bands=list(ml.MCD18_BANDS), nodata="NaN",
                 aggregation="dsr_mean = TB tren ngay hop le (du 8 band); n_days_valid = so ngay hop le tai pixel;"
                 " frac_quality2 = ty le ngay hop le co DSR_Quality&3 == 2; dsr_mean_no_dec = TB tren ngay hop le"
@@ -442,6 +444,10 @@ def cmd_mcd18(args):
             print(f"[xong] mcd18 {year}: {len(avail)}/{len(idx)} ngay co anh; thieu {ml.date_runs(to_dates)};"
                   f" anh rong {len(empty)}", flush=True)
         prov = _check_window(path, year)
+        import rasterio
+        with rasterio.open(path) as _ds:
+            if not ml.is_modis_sphere(_ds.crs):
+                raise SystemExit(f"LOI: {path} CRS khong phai sinusoidal hinh cau MODIS - chuyen file cu ra roi xuat lai")
         rows.append({"season": year, "n_days_expected": prov["n_days_expected"], "n_images": prov["n_images"],
                      "missing_dates": ";".join(prov["missing_dates"]),
                      "n_images_without_valid_px": len(prov["images_without_valid_px"]),

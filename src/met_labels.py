@@ -31,6 +31,11 @@ FINAL_MIN_LAG_DAYS = 9
 # MCD18A1.062: 8 band DSR 3 gio (W/m2, ca dem = 0 - da kiem 2026-10-06 tai Can Tho/Ca Mau/My Tho) -> TB 8 band
 # = TB ngay (24 h) cua buc xa toi. Catalog GEE KHONG co band DSR ngay san (band `DSR` la tuc thoi luc bay qua).
 MCD18_GMT_BANDS = tuple(f"GMT_{h:02d}00_DSR" for h in range(0, 24, 3))
+# Luoi sinusoidal MODIS dinh nghia tren HINH CAU R = 6371007.181 m. GeoTIFF GEE xuat voi crs "SR-ORG:6974" lai ghi
+# WKT tren ellipsoid WGS84 -> doc bang rasterio lech ~14 km (dong-tay) + ~6 km (bac-nam) o vi do 10 do (da kiem
+# 2026-10-06: TB mua 2021 tai 25 diem, CRS file khop GEE 0/25, CRS hinh cau khop 25/25). -> ghi de CRS sau khi tai.
+MODIS_SINU_PROJ4 = "+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +R=6371007.181 +units=m +no_defs"
+
 # DSR_Quality bit 0-1: 0 = khong co phan xa be mat hop le, 1 = tu MCD43, 2 = tu khi hau (climatology).
 DSR_QUALITY_CLIM = 2
 DSR_QUALITY_MASK = 0b11
@@ -252,3 +257,27 @@ def mcd18_season_summary(path, boundary_path) -> dict:
     out.update(_desc(np.where(center, b["dsr_mean_no_dec"], np.nan), "dsr_mean_no_dec"))
     out.update(_desc(np.where(center, b["dsr_mean"] - b["dsr_mean_no_dec"], np.nan), "diff_dec"))
     return out
+
+
+def is_modis_sphere(crs) -> bool:
+    """True neu `crs` (rasterio/pyproj) la sinusoidal tren hinh cau R = 6371007.181 m."""
+    from pyproj import CRS
+    c = CRS.from_user_input(crs)
+    if c.to_dict().get("proj") != "sinu":
+        return False
+    e = c.ellipsoid
+    return e is not None and abs(e.semi_major_metre - 6371007.181) < 1e-3 and abs(e.semi_minor_metre - 6371007.181) < 1e-3
+
+
+def set_modis_sphere_crs(path) -> bool:
+    """Ghi de CRS file MODIS sang sinusoidal hinh cau (khong doi pixel/transform). Tra True neu da phai sua.
+    File khong phai sinusoidal -> ValueError (khong doan)."""
+    import rasterio
+    from rasterio.crs import CRS as RCRS
+    with rasterio.open(path, "r+") as ds:
+        if is_modis_sphere(ds.crs):
+            return False
+        if ds.crs is None or "sinu" not in ds.crs.to_proj4():
+            raise ValueError(f"{path}: CRS {ds.crs} khong phai sinusoidal")
+        ds.crs = RCRS.from_proj4(MODIS_SINU_PROJ4)
+    return True

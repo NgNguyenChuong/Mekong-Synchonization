@@ -256,3 +256,36 @@ def test_file_cu_khac_cua_so_la_loi(tmp_path):
     with open(path + ".provenance.json", "w", encoding="utf-8") as f:
         json.dump({"window": ["2020-11-01", "2021-04-29"]}, f)
     assert gf._check_window(path, 2021)["window"][1] == "2021-04-29"
+
+
+# ---------------------------------------------------------------- CRS sinusoidal MODIS (hinh cau, khong ellipsoid)
+def _tif(path, crs):
+    with rasterio.open(path, "w", driver="GTiff", height=2, width=2, count=1, dtype="float32", crs=crs,
+                       transform=from_origin(11_000_000, 1_100_000, 926.6, 926.6)) as ds:
+        ds.write(np.ones((1, 2, 2), "float32"))
+
+
+def test_crs_modis_hinh_cau(tmp_path):
+    ellip = "+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"   # nhu WKT GEE ghi
+    assert not ml.is_modis_sphere(ellip)
+    assert ml.is_modis_sphere(ml.MODIS_SINU_PROJ4)
+    p = str(tmp_path / "m.tif")
+    _tif(p, ellip)
+    assert ml.set_modis_sphere_crs(p) is True
+    with rasterio.open(p) as ds:
+        assert ml.is_modis_sphere(ds.crs)
+        assert ds.transform == from_origin(11_000_000, 1_100_000, 926.6, 926.6)   # khong doi pixel
+        assert ds.read(1).sum() == 4
+    assert ml.set_modis_sphere_crs(p) is False                                     # lan 2: khong sua nua
+    q = str(tmp_path / "w.tif")
+    _tif(q, "EPSG:4326")
+    with pytest.raises(ValueError):
+        ml.set_modis_sphere_crs(q)
+
+
+def test_crs_hinh_cau_doi_vi_tri_dung_bac():
+    # cung toa do lon/lat, ellipsoid vs hinh cau lech ~14 km x, ~6 km y o 105,5E 10N (bac do lech da do 2026-10-06)
+    from pyproj import Transformer
+    e = Transformer.from_crs("EPSG:4326", "+proj=sinu +datum=WGS84", always_xy=True).transform(105.5, 10.0)
+    s = Transformer.from_crs("EPSG:4326", ml.MODIS_SINU_PROJ4, always_xy=True).transform(105.5, 10.0)
+    assert 12_000 < e[0] - s[0] < 16_000 and 4_000 < abs(e[1] - s[1]) < 8_000

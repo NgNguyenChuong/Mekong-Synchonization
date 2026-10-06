@@ -120,6 +120,11 @@ def run_radiation(pts):
         p = settings.data_path("raw", "mcd18a1", f"mcd18a1_dsr_{s}.tif")
         if not os.path.exists(p):
             loi(f"thieu {p}")
+        import met_labels as ml
+        import rasterio
+        with rasterio.open(p) as _ds:
+            if not ml.is_modis_sphere(_ds.crs):
+                loi(f"{p}: CRS khong phai sinusoidal hinh cau MODIS (doc se lech ~15 km)")
         v = sample(p, ("dsr_mean", "dsr_mean_no_dec", "n_days_valid"), pts)
         nan_pt = int((~np.isfinite(v["dsr_mean"])).sum())
         row = {"season": s, "n_diem": len(pts), "n_diem_khong_gia_tri": nan_pt,
