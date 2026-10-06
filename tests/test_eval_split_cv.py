@@ -552,6 +552,11 @@ def test_build_model_mac_dinh_tat_early_stopping():
     assert build_model("hist_gb", 0).early_stopping is False
     assert build_model("mlp", 0).steps[-1][1].early_stopping is False
     assert build_model("mlp", 0).steps[-1][1].hidden_layer_sizes == (64, 32)
+    assert build_model("mlp", 0).steps[-1][1].max_iter == 300
+    # RF chot 2026-10-06: tai lap theo seed, n_jobs gioi han RAM
+    rf = build_model("random_forest", 7)
+    assert rf.random_state == 7 and rf.n_estimators == 200 and rf.min_samples_leaf == 5
+    assert rf.max_features == "sqrt" and rf.n_jobs == 4
 
 
 # ------------------------------------------------------------------ V3: mua giu rieng bat buoc trong CV

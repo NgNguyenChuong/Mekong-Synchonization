@@ -60,10 +60,12 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # 2026-10-03, muc 3); phai chot truoc lan chay `final` dau tien. Ghi de bang --model-params <json>.
 DEFAULT_MODEL_PARAMS = {
     "linear": {},
-    "random_forest": {"n_estimators": 200, "n_jobs": -1},
+    # RF, MLP: An chot 2026-10-06 (NHAT_KY Dot 7 (f)); MLP TAT early stopping theo V7 (khong chia ngau nhien gian
+    # tiep); n_jobs=4 vi RAM may 16 GB.
+    "random_forest": {"n_estimators": 200, "min_samples_leaf": 5, "max_features": "sqrt", "n_jobs": 4},
     "hist_gb": {"max_iter": 300, "learning_rate": 0.05, "max_leaf_nodes": 31, "min_samples_leaf": 20,
                 "l2_regularization": 1.0, "early_stopping": False},
-    "mlp": {"hidden_layer_sizes": [64, 32], "early_stopping": False, "max_iter": 500},
+    "mlp": {"hidden_layer_sizes": [64, 32], "early_stopping": False, "max_iter": 300},
     # IDW (duong co so, An chot 2026-10-04): tham so CO DINH truoc, KHONG tinh chinh tren fold dung de cham.
     # Noi suy theo TUNG MUA tu nhan o huan luyen dat tai TAM PHAN DAT cua o (scope_cx/scope_cy trong bang hop
     # nhat, EPSG:32648) toi tam phan dat cua o chua diem/o can du doan -> IDW chiu anh huong khung luoi nhu mo
@@ -75,7 +77,7 @@ NULL_MODELS = ("season_mean",)  # baseline rong CHG-18: trung binh nhan tap huan
 SPATIAL_XY = ("scope_cx", "scope_cy")
 MODEL_PARAMS_STATUS = {  # trang thai tham so mac dinh (ghi vao config)
     "hist_gb": "co_dinh_CHG-06", "linear": "mac_dinh_sklearn", "idw": "co_dinh_An_2026-10-04",
-    "random_forest": "de_xuat_CHO_AN_DUYET", "mlp": "de_xuat_CHO_AN_DUYET"}
+    "random_forest": "co_dinh_An_2026-10-06", "mlp": "co_dinh_An_2026-10-06"}
 
 
 def build_model(name: str, seed: int, params: dict | None = None):
