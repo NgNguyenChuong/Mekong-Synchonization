@@ -37,7 +37,7 @@ EXACT_MAX_G = 20          # G <= 20: liet ke du 2^G to hop dau
 DEFAULT_MC_PERM = 100_000  # G > 20: Monte Carlo
 LABELS = ("xac_nhan", "co_y_nghia_duoi_nguong", "khong_tai_lap", "khong_tai_lap_cap_ho",
           "tuong_duong", "cho_giu_rieng", "chua_phan_dinh")
-PRED_SOURCES = ("oof", "final")
+PRED_SOURCES = ("oof", "final", "oracle")  # oracle = TB nhan that cua o (khong mo hinh, src/training/oracle.py)
 
 
 # ---------------------------------------------------------
@@ -392,7 +392,8 @@ def compare_family(err_long: pd.DataFrame, point_unit: pd.Series, pairs, *,
     """So sanh tung cap (A, B) trong mot ho Holm; Delta < 0 nghia la A sai so THAP hon B.
 
     err_long: cot grid, model, seed, point_id, season, err (sai so co dau), pred_source
-      ("oof" = du doan out-of-fold cua CV khoi; "final" = mo hinh cuoi tren vung giu rieng);
+      ("oof" = du doan out-of-fold cua CV khoi; "final" = mo hinh cuoi tren vung giu rieng; "oracle" = TB nhan
+      that cua o, chi khi MOI hang la oracle);
       da loc theo common_point_set. Hai nhanh trong cap phai cung tap (point_id, season) va
       cung tap seed (assert).
     point_unit: point_id -> khoi. Moi khoi phai thuoc DUNG MOT trong cv_units / holdout_units.
@@ -479,10 +480,14 @@ def compare_family(err_long: pd.DataFrame, point_unit: pd.Series, pairs, *,
     if bad_src.any():
         raise ValueError(f"pred_source phai thuoc {PRED_SOURCES}; co {int(bad_src.sum())} hang khac")
     cv_rows = ~is_ho_all
-    if (err_long.loc[cv_rows, "pred_source"] != "oof").any():
-        raise ValueError("hang cua cv_units phai co pred_source='oof'")
-    if (err_long.loc[is_ho_all, "pred_source"] != "final").any():
-        raise ValueError("hang cua holdout_units phai co pred_source='final'")
+    is_oracle = err_long["pred_source"] == "oracle"
+    if is_oracle.any() and not is_oracle.all():
+        raise ValueError("khong tron pred_source='oracle' voi du doan mo hinh (oof/final) trong mot ho")
+    if not is_oracle.any():
+        if (err_long.loc[cv_rows, "pred_source"] != "oof").any():
+            raise ValueError("hang cua cv_units phai co pred_source='oof'")
+        if (err_long.loc[is_ho_all, "pred_source"] != "final").any():
+            raise ValueError("hang cua holdout_units phai co pred_source='final'")
     leak = cv_rows & err_long["season"].isin(holdout_seasons)
     if leak.any():
         raise ValueError(f"cv_units co {int(leak.sum())} hang thuoc mua giu rieng {holdout_seasons}")
