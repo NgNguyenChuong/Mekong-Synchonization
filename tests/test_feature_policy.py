@@ -136,3 +136,66 @@ def test_mau_cam_dong_bo_voi_check_features():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     assert FORBIDDEN_PATTERNS == mod.FORBIDDEN
+
+
+@pytest.mark.skipif(not os.path.exists(CHECK_FEATURES), reason="skill method-review khong co trong ban sao nay")
+def test_mau_cam_theo_bien_dong_bo_voi_check_features():
+    from training.features import TARGET_FORBIDDEN
+
+    spec = importlib.util.spec_from_file_location("check_features", CHECK_FEATURES)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert TARGET_FORBIDDEN == mod.TARGET_FORBIDDEN
+
+
+# ---------------- Dot 7 (d): cam theo bien muc tieu (cung dai luong vat ly) ----------------
+UNIFIED_FEATURES = ["rain_mm", "solar", "temp_c", "temp_max_c", "temp_min_c", "rh_percent", "dem_mean",
+                    "dist_main_river_km", "dist_any_water_km", "dist_coast_km", "landcover_class_Trees",
+                    "landcover_class_Water", "tch_wl_p20c", "dist_mouth_river_km", "zos_mouth_p90", "sluice_frac"]
+
+
+@pytest.mark.parametrize("target, removed", [
+    ("salinity", []),
+    ("ndwi", []),
+    ("rain_chirps", ["rain_mm"]),
+    ("dsr_mcd18", ["solar"]),
+    ("t2m_era5", ["temp_c", "temp_max_c", "temp_min_c"]),
+    ("rh_era5", ["temp_c", "temp_max_c", "temp_min_c", "rh_percent"]),
+])
+def test_cam_theo_bien_tren_cot_bang_hop_nhat(target, removed):
+    from training.features import drop_target_forbidden, find_target_leak_columns
+
+    assert [c for c, _ in find_target_leak_columns(UNIFIED_FEATURES, target)] == removed
+    keep, dropped = drop_target_forbidden(list(UNIFIED_FEATURES) + ["landcover_class_*"], target)
+    assert dropped == removed and "landcover_class_*" in keep
+
+
+def test_cam_theo_bien_bat_ten_ngoai_bang_hien_co():
+    from training.features import find_target_leak_columns
+
+    def hit(cols, t):
+        return [c for c, _ in find_target_leak_columns(cols, t)]
+    assert hit(["NDVI_dry", "sr_b5", "swir1", "landsat_b7", "salinity_lag1", "ec_dsm"], "ndwi") == \
+        ["NDVI_dry", "sr_b5", "swir1", "landsat_b7", "salinity_lag1", "ec_dsm"]
+    assert hit(["precip_era5", "n_rain_days", "rain7_max"], "rain_chirps") == ["precip_era5", "n_rain_days", "rain7_max"]
+    assert hit(["ssrd_mean", "cloud_frac", "dist_coast_km"], "dsr_mcd18") == ["ssrd_mean", "cloud_frac"]
+    assert hit(["skin_temperature", "td_mean", "dewpoint_c", "rh_percent"], "t2m_era5") == \
+        ["skin_temperature", "td_mean", "dewpoint_c"]
+    assert hit(["d2m", "vpd_kpa", "specific_humidity", "dem_mean"], "rh_era5") == ["d2m", "vpd_kpa", "specific_humidity"]
+
+
+def test_select_feature_columns_tu_choi_cot_cam_theo_bien():
+    df = pd.DataFrame({"rain_mm": [1.0, 2.0], "dem_mean": [1.0, 2.0]})
+    assert select_feature_columns(df, allowed=["rain_mm", "dem_mean"]) == ["rain_mm", "dem_mean"]   # do man: nhu cu
+    with pytest.raises(ValueError, match="rain_chirps"):
+        select_feature_columns(df, allowed=["rain_mm", "dem_mean"], target="rain_chirps")
+    assert select_feature_columns(df, allowed=["dem_mean"], target="rain_chirps") == ["dem_mean"]
+
+
+def test_cam_theo_bien_khong_bat_nham_cot_chat_luong():
+    """'rain' khong duoc bat 'train_ok*' (chong tai phat: mau 'rain' tran tung khop train_ok_scope)."""
+    from training.features import find_target_leak_columns
+
+    cols = ["train_ok", "train_ok_scope", "train_ok_10pct", "era5_cover_frac", "scope_frac", "dist_coast_km"]
+    for t in ("rain_chirps", "dsr_mcd18", "t2m_era5", "rh_era5", "ndwi"):
+        assert find_target_leak_columns(cols, t) == []

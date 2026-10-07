@@ -240,3 +240,40 @@ def test_runner_cham_phu_khong_ghi_de_lan_cham_chinh(tmp_path):
     # dap an provenance keep6090 ma yeu cau main -> loi som
     rc, out = _runner_light(tmp_path, "--prefix", "phu6090", "--label-set", "keep6090")
     assert rc != 0 and "khac --points-ref-variant 'main'" in out, out
+
+
+def test_dot7_target_khoa_meta_cu_va_ten_lan_chay(tmp_path):
+    """--target: meta CU thieu khoa target = salinity (khong chay lai do man); bien khac -> chua xong; ten lan chay
+    do man khong doi, bien khac them __t-<target>; provenance target lech -> chuoi loi."""
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import run_experiments as rx
+
+    assert rx.run_name("cv1", "h3_res_5", "hist_gb", 42, "") == "cv1__h3_res_5__hist_gb__s42"
+    assert rx.run_name("cv1", "h3_res_5", "hist_gb", 42, "", None, "salinity") == "cv1__h3_res_5__hist_gb__s42"
+    assert rx.run_name("cv1", "h3_res_5", "hist_gb", 42, "", None, "ndwi") == "cv1__h3_res_5__hist_gb__s42__t-ndwi"
+    want = {k: None for k in rx.KEY_FIELDS}
+    want.update(git_commit="c1", allow_dirty=False, allow_untagged=False, git_dirty_src_scripts=False, seeds=[42],
+                mode="cv", target="salinity")
+    old_meta = {k: v for k, v in want.items() if k != "target"}             # lan chay truoc khi co khoa target
+    (tmp_path / "config.json").write_text(json.dumps({"features": ["dem_mean"]}))
+    (tmp_path / "run_meta.json").write_text(json.dumps({**old_meta, "returncode": 0}))
+    assert rx.is_done(str(tmp_path / "run_meta.json"), str(tmp_path / "config.json"), want)
+    assert not rx.is_done(str(tmp_path / "run_meta.json"), str(tmp_path / "config.json"), {**want, "target": "ndwi"})
+    p = tmp_path / "ref.csv"
+    p.write_text("point_id\n")
+    assert rx.target_mismatch(str(p), "ndwi", default="salinity") is None    # khong provenance -> train.py kiem
+    (tmp_path / "ref.csv.provenance.json").write_text(json.dumps({"variant": "main"}))
+    assert "salinity" in rx.target_mismatch(str(p), "ndwi", default="salinity")
+    assert rx.target_mismatch(str(p), "salinity", default="salinity") is None
+    (tmp_path / "ref.csv.provenance.json").write_text(json.dumps({"target": "ndwi"}))
+    assert rx.target_mismatch(str(p), "ndwi") is None
+
+
+@need_real
+def test_dot7_runner_dap_an_target_lech_dung_som(setup):
+    tmp = setup
+    with open(tmp / "ref.csv.provenance.json", "w", encoding="utf-8") as f:
+        json.dump({"variant": "main"}, f)                                   # dap an do man (khong ghi target)
+    p = _run(tmp, "--allow-untagged", "--allow-dirty", "--target", "rain_chirps")
+    assert p.returncode != 0 and "target" in (p.stdout + p.stderr)
+    assert not (tmp / "artifacts" / "experiments" / "t__h3_res_5__linear__s42__t-rain_chirps").exists()

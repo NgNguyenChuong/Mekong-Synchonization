@@ -171,3 +171,23 @@ def test_unit_id_thieu_trong_file_fold_la_loi():
     with pytest.raises(ValueError, match="unit_id"):
         point_blocks(_points([(520000, 1020000), (570000, 1020000)]), _blocks(),
                      folds.assign(unit_id=["blk_10_20", None]))
+
+
+def test_dap_an_quy_tac_pixel_va_cot_theo_bien():
+    """Dot 7: quy tac pixel (khi tuong) - co src_px_valid phai khop gia tri huu han; quy tac 3x3 voi cot ref_ndwi."""
+    ref = pd.DataFrame({"point_id": ["a", "b", "c"], "season": [2019, 2019, 2019],
+                        "ref_rain_chirps": [100.0, np.nan, 250.0], "src_px_valid": [True, False, True]})
+    out = load_reference(ref, ref_col="ref_rain_chirps", rule="pixel")
+    assert out["point_id"].tolist() == ["a", "c"] and out["y_ref"].tolist() == [100.0, 250.0]
+    with pytest.raises(ValueError, match="src_px_valid"):
+        load_reference(ref.assign(src_px_valid=[True, True, True]), ref_col="ref_rain_chirps", rule="pixel")
+    with pytest.raises(ValueError, match="thieu cot"):
+        load_reference(ref.drop(columns="src_px_valid"), ref_col="ref_rain_chirps", rule="pixel")
+    with pytest.raises(ValueError):
+        load_reference(ref, ref_col="ref_rain_chirps", rule="3x3")      # thieu n_valid_3x3
+    nd = pd.DataFrame({"point_id": ["a", "b"], "season": [2019, 2019], "ref_ndwi": [0.2, np.nan],
+                       "n_valid_3x3": [9, 4]})
+    o2 = load_reference(nd, ref_col="ref_ndwi")
+    assert o2["y_ref"].tolist() == [0.2]
+    with pytest.raises(ValueError):
+        load_reference(nd, ref_col="ref_ndwi", rule="median")

@@ -17,11 +17,17 @@ Bien the dap an (--points-ref-variant, mac dinh main = cham chinh moi bo bang da
 cham phu (vd keep6090 tren 349 diem 60/90) PHAI dung tien to rieng - ten lan chay khong chua bien the, nen neu
 cung tien to + label_set da co lan chay bien the khac (meta thieu khoa = main) -> LOI truoc khi chay (khong ghi de,
 khong chuyen sang _cu). Dap an co provenance ma 'variant' khac yeu cau -> LOI som (train.py cung kiem).
+Bien muc tieu (--target, Dot 7; mac dinh salinity = hanh vi cu, ten lan chay va lenh KHONG doi): bien khac -> ten lan
+chay them "__t-<target>", truyen --target xuong train.py, khoa 'target' (meta cu thieu khoa = salinity); provenance
+bang / dap an co 'target' khac --target -> LOI som. Bang theo bien o --tables-dir rieng
+(<DATA_ROOT>/features/unified_dot7/<target>), dap an <DATA_ROOT>/labels/dot7/points_reference_<target>.csv.
 Tong hop -> artifacts/experiments/<prefix>_manifest.csv (gop don theo ten lan chay + mode, khong ghi de dong
 cu; KHONG in chi so sai so). run_meta ghi phien ban python/numpy/pandas/sklearn.
 
 Chay:  venv/Scripts/python.exe scripts/run_experiments.py --prefix cv1 [--grids h3_res_5 ...]
            [--models hist_gb linear idw] [--schemes 42 43 44] [--mode cv]
+       Bien Dot 7: ... --prefix cv1 --target rain_chirps --tables-dir <DATA_ROOT>/features/unified_dot7/rain_chirps
+           --points-ref <DATA_ROOT>/labels/dot7/points_reference_rain_chirps.csv
        Cham phu 60/90: ... --prefix phu6090 --label-set keep6090 --models hist_gb --points-ref-variant keep6090
            --points-subset-of-ref --points data/eval/aux_6090/eval_points_6090.geojson
            --points-ref <DATA_ROOT>/labels/points_reference_keep6090.csv
@@ -40,7 +46,9 @@ import pandas as pd
 KEY_FIELDS = ("run", "grid", "model", "scheme", "label_set", "mode", "feature_set", "features_sha256",
               "git_commit", "git_dirty_src_scripts", "allow_dirty", "allow_untagged", "seeds", "table_sha256",
               "cv_folds_sha256", "points_ref_sha256", "grid_sha256", "blocks_sha256", "points_sha256",
-              "points_ref_variant", "points_subset_of_ref")
+              "points_ref_variant", "points_subset_of_ref", "target")
+# Gia tri mac dinh khi run_meta CU thieu khoa (lan chay truoc khi them khoa) - de khong chay lai do man.
+META_DEFAULTS = {"target": "salinity"}
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
@@ -71,9 +79,10 @@ def git_state():
     return {"git_commit": commit, "git_tag": tag if rc == 0 else None, "git_dirty_src_scripts": bool(dirty)}
 
 
-def run_name(prefix, grid, model, scheme, label_set, feature_set=None):
+def run_name(prefix, grid, model, scheme, label_set, feature_set=None, target=None):
     return (f"{prefix}__{grid}__{model}__s{scheme}" + (f"__{label_set}" if label_set else "")
-            + (f"__fs-{feature_set}" if feature_set else ""))
+            + (f"__fs-{feature_set}" if feature_set else "")
+            + (f"__t-{target}" if target and target != "salinity" else ""))
 
 
 def versions():
@@ -122,11 +131,25 @@ def variant_conflicts(exp_root, prefix, label_set, variant) -> list:
 
 def ref_variant_of(points_ref):
     """'variant' trong <points_ref>.provenance.json; khong co provenance -> None (train.py xu ly tiep)."""
-    pp = f"{points_ref}.provenance.json"  # = preprocessing.provenance_path (khong import geopandas/h3 o runner)
+    return provenance_of(points_ref).get("variant")
+
+
+def provenance_of(path) -> dict:
+    """Noi dung <path>.provenance.json ({} neu khong co)."""
+    pp = f"{path}.provenance.json"  # = preprocessing.provenance_path (khong import geopandas/h3 o runner)
     if not os.path.exists(pp):
-        return None
+        return {}
     with open(pp, encoding="utf-8") as f:
-        return json.load(f).get("variant")
+        return json.load(f)
+
+
+def target_mismatch(path, target, default=None):
+    """Chuoi loi neu provenance cua `path` co 'target' (thieu -> default) khac `target`; None neu khop/khong ro."""
+    info = provenance_of(path)
+    got = info.get("target", default) if info else None
+    if got is not None and got != target:
+        return f"{os.path.basename(path)}: target '{got}' khac --target '{target}'"
+    return None
 
 
 def is_done(meta_path, cfg_path, want: dict) -> bool:
@@ -146,7 +169,7 @@ def is_done(meta_path, cfg_path, want: dict) -> bool:
         pts = "oof_points.csv" if want.get("mode") == "cv" else "final_points.csv"
         if not os.path.exists(os.path.join(os.path.dirname(cfg_path), pts)):
             return False
-    return meta.get("returncode") == 0 and all(meta.get(k) == want.get(k) for k in KEY_FIELDS)
+    return meta.get("returncode") == 0 and all(meta.get(k, META_DEFAULTS.get(k)) == want.get(k) for k in KEY_FIELDS)
 
 
 def main(a):
@@ -180,6 +203,9 @@ def main(a):
         v = ref_variant_of(a.points_ref)
         if v is not None and v != a.points_ref_variant:
             sys.exit(f"--points-ref co variant '{v}' khac --points-ref-variant '{a.points_ref_variant}'.")
+        err = target_mismatch(a.points_ref, a.target, default="salinity")   # dap an cu khong ghi target = do man
+        if err:
+            sys.exit(f"[LOI] {err}")
     conflicts = variant_conflicts(exp_root, a.prefix, a.label_set, a.points_ref_variant)
     if conflicts:
         sys.exit(f"[LOI] Tien to '{a.prefix}' (label_set {a.label_set or 'chinh'}) da co {len(conflicts)} lan chay "
@@ -191,12 +217,15 @@ def main(a):
         grid_path = os.path.join(a.grids_dir, f"{grid}.geojson")
         if not os.path.exists(table):
             sys.exit(f"Khong co bang {table}")
+        err = target_mismatch(table, a.target)
+        if err:
+            sys.exit(f"[LOI] {err}")
         table_sha, grid_sha = sha256(table), sha256(grid_path)
         for scheme in a.schemes:
             folds = os.path.join(a.folds_dir, f"cv_folds_s{scheme}.csv")
             folds_sha = sha256(folds)
             for model in a.models:
-                name = run_name(a.prefix, grid, model, scheme, a.label_set, a.feature_set)
+                name = run_name(a.prefix, grid, model, scheme, a.label_set, a.feature_set, a.target)
                 out = os.path.join(exp_root, name, a.mode)
                 meta_path = os.path.join(out, "run_meta.json")
                 want = {"run": name, "grid": grid, "model": model, "scheme": scheme, "label_set": a.label_set or "chinh",
@@ -206,7 +235,7 @@ def main(a):
                         "mode": a.mode, "table_sha256": table_sha, "cv_folds_sha256": folds_sha,
                         "points_ref_sha256": ref_sha, "grid_sha256": grid_sha, "blocks_sha256": blocks_sha,
                         "points_sha256": points_sha, "points_ref_variant": a.points_ref_variant,
-                        "points_subset_of_ref": a.points_subset_of_ref}
+                        "points_subset_of_ref": a.points_subset_of_ref, "target": a.target}
                 row = {"run": name, "grid": grid, "model": model, "scheme": scheme, "label_set": a.label_set or "chinh",
                        **want, "seeds": " ".join(map(str, a.seeds)), "git_tag": state["git_tag"]}
                 if is_done(meta_path, os.path.join(out, "config.json"), want):
@@ -224,6 +253,8 @@ def main(a):
                        "--model", model, "--seeds", *map(str, a.seeds), "--experiment-name", name]
                 if feat_file:
                     cmd += ["--features-file", feat_file]
+                if a.target != "salinity":
+                    cmd += ["--target", a.target]
                 if a.no_point_eval:
                     cmd += ["--no-point-eval"]
                 else:
@@ -269,6 +300,8 @@ if __name__ == "__main__":
     ap.add_argument("--seeds", nargs="+", type=int, default=[42], help="seed mo hinh (HistGB tat dinh)")
     ap.add_argument("--mode", choices=["cv", "final"], default="cv")
     ap.add_argument("--label-set", default="", help='"" = bo chinh; keepwater / keepmangrove / keep6090')
+    ap.add_argument("--target", default="salinity",
+                    help="Cot muc tieu (Dot 7: ndwi, rain_chirps, dsr_mcd18, t2m_era5, rh_era5); mac dinh salinity")
     ap.add_argument("--feature-set", default=None,
                     help="Ten bo dac trung trong configs/feature_sets/<ten>.txt (mac dinh: danh sach cho phep mac dinh)")
     ap.add_argument("--tables-dir", default=f"{DATA}/features/unified")

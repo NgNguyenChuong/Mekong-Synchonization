@@ -1052,3 +1052,61 @@ def test_season_mean_cv_chi_tu_o_train_cua_fold_cung_mua(c_data, tmp_path):
         cells = set(mem.loc[(mem["fold"] == fold) & (mem["role"] == "train"), "cell_id"])
         exp = tr_all.loc[tr_all["cell_id"].isin(cells) & (tr_all["season"] == season), "salinity"].mean()
         assert np.allclose(g["y_pred"], exp), (fold, season)
+
+
+@need_real
+def test_dot7_bien_khac_do_man_target_dap_an_pixel_va_cam_theo_bien(c_data, tmp_path):
+    """Dot 7: --target rain_chirps chay nguyen quy trinh phuong an C; dap an ref_rain_chirps (quy tac pixel,
+    src_px_valid); rain_mm (cung dai luong) bi bo khoi danh sach mac dinh; provenance target lech -> loi."""
+    env, tab, ref_csv, folds_csv, _, t = c_data
+    rng = np.random.default_rng(5)
+    tt = t.copy()
+    tt["rain_chirps"] = rng.uniform(100, 500, len(tt))
+    tt["rain_mm"] = tt["rain_chirps"] + rng.normal(0, 5, len(tt))
+    tab2 = tmp_path / "unified_rain.csv"
+    tt.to_csv(tab2, index=False)
+    ref = pd.read_csv(ref_csv, dtype={"point_id": str})[["point_id", "season"]]
+    ref["ref_rain_chirps"] = np.where(rng.uniform(size=len(ref)) < 0.1, np.nan, rng.uniform(100, 500, len(ref)))
+    ref["src_px_valid"] = ref["ref_rain_chirps"].notna()
+    ref2 = tmp_path / "points_reference_rain_chirps.csv"
+    ref.to_csv(ref2, index=False)
+
+    def prov(path, d):
+        with open(str(path) + ".provenance.json", "w", encoding="utf-8") as f:
+            json.dump(d, f)
+    prov(tab2, {"target": "rain_chirps", "label_set": "chinh"})
+    prov(ref2, {"target": "rain_chirps", "variant": "main", "ref_rule_kind": "pixel"})
+
+    def run(name, *extra, table=tab2, ref_path=ref2):
+        cmd = [sys.executable, os.path.join(ROOT, "src", "training", "train.py"), "--table", str(table), "--mode",
+               "cv", "--grid", GRID_H3_5, "--blocks", BLOCKS, "--cv-folds", str(folds_csv), "--points", POINTS,
+               "--points-ref", str(ref_path), "--experiment-name", name, "--model", "linear", *extra]
+        return subprocess.run(cmd, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=900)
+
+    proc = run("r1", "--target", "rain_chirps")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = tmp_path / "artifacts" / "experiments" / "r1" / "cv"
+    cfg = json.loads((out / "config.json").read_text(encoding="utf-8"))
+    assert cfg["target"] == "rain_chirps" and "rain_mm" not in cfg["features"] and "dem_mean" in cfg["features"]
+    assert "rain_mm" not in cfg["features_requested"] and "rain_mm" not in cfg["features_missing"]
+    assert cfg["point_eval"]["ref_rule_kind"] == "pixel"
+    op = pd.read_csv(out / "oof_points.csv", dtype={"point_id": str})
+    r = ref[ref["src_px_valid"]].set_index(["point_id", "season"])["ref_rain_chirps"]
+    assert np.allclose(op["y_ref"], r.reindex(pd.MultiIndex.from_frame(op[["point_id", "season"]])).to_numpy())
+    assert not op["y_ref"].isna().any()
+    # danh sach tuong minh co cot cam theo bien -> loi (khong am tham bo)
+    proc = run("r2", "--target", "rain_chirps", "--features", "rain_mm", "dem_mean")
+    assert proc.returncode == 2 and "rain_mm" in proc.stderr
+    # bang / dap an cua bien khac -> loi
+    proc = run("r3", "--target", "salinity")
+    assert proc.returncode == 2 and "target" in proc.stderr
+    prov(ref2, {"variant": "main", "ref_rule_kind": "pixel"})          # dap an thieu target = do man
+    proc = run("r4", "--target", "rain_chirps")
+    assert proc.returncode == 2 and "target" in proc.stderr
+    # co hop le lech gia tri -> loi (CHG-22)
+    prov(ref2, {"target": "rain_chirps", "variant": "main", "ref_rule_kind": "pixel"})
+    bad = ref.copy()
+    bad.loc[bad.index[0], "src_px_valid"] = not bool(bad.loc[bad.index[0], "src_px_valid"])
+    bad.to_csv(ref2, index=False)
+    proc = run("r5", "--target", "rain_chirps")
+    assert proc.returncode == 2 and "src_px_valid" in proc.stderr

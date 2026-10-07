@@ -13,6 +13,9 @@ Quy tac (An duyet; test o tests/test_point_eval.py):
   - Dap an = ref_salinity cua points_reference*.csv: median cua so 3x3 voi >= REF_MIN_VALID/9 pixel hop le
     (CHG-13). Dong n_valid_3x3 < REF_MIN_VALID phai NaN va bi bo; dong >= nguong ma NaN -> loi;
     n_valid_3x3 NaN / ngoai [0, 9] -> loi (CHG-22).
+  - Bien khac do man (Dot 7): cot dap an = ref_<cot muc tieu>. Quy tac "3x3" (NDWI, raster 30 m) nhu tren; quy tac
+    "pixel" (khi tuong: gia tri pixel nguon chua diem) can cot src_px_valid (bool): True <=> dap an huu han (lech
+    -> loi); dong khong hop le bi bo.
   - O chua diem: evaluate.assign_points_to_cells (canh chung -> cell_id nho nhat). Diem ngoai luoi -> loi.
 """
 import geopandas as gpd
@@ -61,8 +64,16 @@ def point_blocks(points: gpd.GeoDataFrame, blocks: gpd.GeoDataFrame, cv_folds: p
     return out
 
 
-def load_reference(ref: pd.DataFrame, min_valid: int = REF_MIN_VALID) -> pd.DataFrame:
-    """(point_id, season, y_ref) chi gom dong hop le theo quy tac median 3x3 >= min_valid/9."""
+def load_reference(ref: pd.DataFrame, min_valid: int = REF_MIN_VALID, ref_col: str = "ref_salinity",
+                   rule: str = "3x3") -> pd.DataFrame:
+    """(point_id, season, y_ref) chi gom dong hop le: rule "3x3" = median 3x3 >= min_valid/9 (CHG-13, mac dinh);
+    rule "pixel" = pixel nguon chua diem (cot src_px_valid)."""
+    if rule == "pixel":
+        return _load_reference_pixel(ref, ref_col)
+    if rule != "3x3":
+        raise ValueError(f"Quy tac dap an '{rule}' khong ho tro (3x3 | pixel)")
+    if ref_col != "ref_salinity":
+        ref = ref.rename(columns={ref_col: "ref_salinity"}) if ref_col in ref.columns else ref
     need = {"point_id", "season", "ref_salinity", "n_valid_3x3"}
     if not need <= set(ref.columns):
         raise ValueError(f"File dap an thieu cot {sorted(need - set(ref.columns))}")
@@ -81,6 +92,23 @@ def load_reference(ref: pd.DataFrame, min_valid: int = REF_MIN_VALID) -> pd.Data
     ok = ref[~few]
     return pd.DataFrame({"point_id": ok["point_id"].astype(str).to_numpy(), "season": ok["season"].astype(int).to_numpy(),
                          "y_ref": ok["ref_salinity"].to_numpy(dtype=float)})
+
+
+def _load_reference_pixel(ref: pd.DataFrame, ref_col: str) -> pd.DataFrame:
+    need = {"point_id", "season", ref_col, "src_px_valid"}
+    if not need <= set(ref.columns):
+        raise ValueError(f"File dap an (quy tac pixel) thieu cot {sorted(need - set(ref.columns))}")
+    if ref.duplicated(["point_id", "season"]).any():
+        raise ValueError("File dap an trung (point_id, season)")
+    from unified_table import strict_bool
+
+    ok = strict_bool(ref["src_px_valid"], "src_px_valid")
+    fin = np.isfinite(pd.to_numeric(ref[ref_col], errors="coerce").to_numpy(dtype=float))
+    if (ok.to_numpy() != fin).any():  # CHG-22: co hop le phai khop gia tri huu han
+        raise ValueError(f"{int((ok.to_numpy() != fin).sum())} dong src_px_valid khong khop {ref_col} huu han")
+    sub = ref[ok.to_numpy()]
+    return pd.DataFrame({"point_id": sub["point_id"].astype(str).to_numpy(),
+                         "season": sub["season"].astype(int).to_numpy(), "y_ref": sub[ref_col].to_numpy(dtype=float)})
 
 
 def restrict_reference(ref: pd.DataFrame, point_ids) -> tuple[pd.DataFrame, int]:
@@ -102,7 +130,7 @@ def restrict_reference(ref: pd.DataFrame, point_ids) -> tuple[pd.DataFrame, int]
 
 
 def point_frame(points: gpd.GeoDataFrame, grid: gpd.GeoDataFrame, blocks: gpd.GeoDataFrame, cv_folds: pd.DataFrame,
-                ref: pd.DataFrame, holdout_seasons) -> pd.DataFrame:
+                ref: pd.DataFrame, holdout_seasons, ref_col: str = "ref_salinity", ref_rule: str = "3x3") -> pd.DataFrame:
     """Moi (diem, mua) co dap an hop le: point_id, season, block_id, cv_fold, is_holdout, cell_id, y_ref, role.
 
     role: "cv" (khoi khong giu rieng & mua khong giu rieng) hoac nhom test "khong_gian"/"thoi_gian"/"ca_hai".
@@ -114,7 +142,7 @@ def point_frame(points: gpd.GeoDataFrame, grid: gpd.GeoDataFrame, blocks: gpd.Ge
     if cell.isna().any():
         raise ValueError(f"{int(cell.isna().sum())} diem nam ngoai luoi (vd {cell[cell.isna()].index[:3].tolist()})")
     pb["cell_id"] = pb["point_id"].map(cell.astype(str))
-    r = load_reference(ref)
+    r = load_reference(ref, ref_col=ref_col, rule=ref_rule)
     unknown = set(r["point_id"]) - set(pb["point_id"])
     if unknown:
         raise ValueError(f"{len(unknown)} point_id trong dap an khong co trong file diem")

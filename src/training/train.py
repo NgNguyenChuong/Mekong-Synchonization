@@ -33,6 +33,7 @@ from training.evaluate import compute_metrics  # noqa: E402
 from training.features import (  # noqa: E402,F401  (assert_no_leak_columns re-export cho script khac)
     DEFAULT_ALLOWED_FEATURES,
     assert_no_leak_columns,
+    drop_target_forbidden,
     prepare_matrices,
     read_feature_list,
     resolve_feature_list,
@@ -243,6 +244,13 @@ def resolve_allowed_features(args, target_col: str, columns) -> tuple[list[str],
     if target_col in allowed:
         print(f"Bo bien muc tieu '{target_col}' khoi danh sach dac trung cho phep.")
         allowed.remove(target_col)
+    # Dot 7 (d): dac trung cung dai luong vat ly voi bien muc tieu. Danh sach mac dinh -> bo (in ra); danh sach
+    # tuong minh co muc cam -> loi (khong am tham doi bo dac trung nguoi dung yeu cau). Do man: khong co muc nao.
+    allowed, dropped = drop_target_forbidden(allowed, target_col)
+    if dropped:
+        if source != "default":
+            raise ValueError(f"Danh sach dac trung ({source}) co muc cam voi bien muc tieu '{target_col}': {dropped}")
+        print(f"Bo dac trung cung dai luong vat ly voi '{target_col}' khoi danh sach mac dinh: {dropped}")
     allow_leak: tuple[str, ...] = ()
     if args.include_coords:
         coords = [c for c in COORD_COLUMNS if c in columns]
@@ -463,20 +471,22 @@ def _load_point_frame(args):
     grid["cell_id"] = grid["cell_id"].astype(str)
     folds = pd.read_csv(args.cv_folds, dtype={"block_id": str})
     ref = pd.read_csv(args.points_ref, dtype={"point_id": str})
-    ref_variant, table_set = _check_ref_variant(args)
+    ref_variant, table_set, ref_rule = _check_ref_variant(args)
     points = gpd.read_file(args.points)
     n_ref_dropped = 0
     if getattr(args, "points_subset_of_ref", False):
         from training.point_eval import restrict_reference
 
         ref, n_ref_dropped = restrict_reference(ref, points["point_id"].astype(str))
-    pf = point_frame(points, grid, gpd.read_file(args.blocks), folds, ref, tuple(args.holdout_seasons))
+    pf = point_frame(points, grid, gpd.read_file(args.blocks), folds, ref, tuple(args.holdout_seasons),
+                     ref_col=f"ref_{args.target}", ref_rule=ref_rule)
     # V-G2: cv chi giu (diem, mua) vai tro cv - khong giu dap an cua diem test trong bo nho
     pf = pf[pf["role"] == "cv"] if args.mode == "cv" else pf[pf["role"] != "cv"]
     pf = pf.reset_index(drop=True)
     info = {"enabled": True, "points": args.points, "points_sha256": _sha256(args.points),
             "points_ref": args.points_ref, "points_ref_sha256": _sha256(args.points_ref),
-            "points_ref_variant": ref_variant, "table_label_set": table_set,
+            "points_ref_variant": ref_variant, "table_label_set": table_set, "ref_col": f"ref_{args.target}",
+            "ref_rule_kind": ref_rule,
             "n_points": int(pf["point_id"].nunique()), "n_point_rows": int(len(pf)),
             "points_subset_of_ref": bool(getattr(args, "points_subset_of_ref", False)),
             "n_ref_points_not_in_points_file": n_ref_dropped,
@@ -509,6 +519,9 @@ def _check_ref_variant(args):
 
     Doc 'variant' trong <points_ref>.provenance.json; bang co provenance (label_set) thi ghi lai. Dap an CO
     provenance ma variant khac -> loi. Bang that (co provenance) ma dap an khong co provenance -> loi.
+    Dot 7: 'target' trong provenance bang / dap an (thieu = salinity o dap an cu) phai bang --target; tra them quy tac
+    dap an 'ref_rule_kind' (thieu = "3x3").
+    Tra (variant, label_set cua bang, quy tac dap an).
     """
     from preprocessing import provenance_path
 
@@ -522,15 +535,21 @@ def _check_ref_variant(args):
     rp = _read(args.points_ref)
     tp = _read(args.table) if args.table else None
     table_set = (tp or {}).get("label_set")
+    t_target = (tp or {}).get("target")
+    if t_target is not None and t_target != args.target:
+        raise ValueError(f"Bang {args.table} co target '{t_target}' khac --target '{args.target}'.")
     if rp is None:
         if tp is not None:
             raise ValueError(f"{args.points_ref}: khong co provenance - khong doi chieu duoc bien the dap an.")
-        return None, table_set
+        return None, table_set, "3x3"
+    r_target = rp.get("target", "salinity")
+    if r_target != args.target:
+        raise ValueError(f"--points-ref co target '{r_target}' khac --target '{args.target}'.")
     variant = rp.get("variant")
     if variant != args.points_ref_variant:
         raise ValueError(f"--points-ref co variant '{variant}' khac yeu cau '{args.points_ref_variant}' "
                          f"(bang: {table_set}). Cham chinh moi bo dung dap an bo chinh (--points-ref-variant main).")
-    return variant, table_set
+    return variant, table_set, rp.get("ref_rule_kind", "3x3")
 
 
 def _point_rows(p, pred, seed, model, source, grid_name, fold=None):
@@ -620,7 +639,7 @@ def run_eval_mode(args, dataset: pd.DataFrame, target_col: str) -> None:
     try:
         allowed, allow_leak, features_source = resolve_allowed_features(args, target_col, candidates.columns)
         feature_cols = select_feature_columns(candidates, allowed=allowed, allow_leak=allow_leak,
-                                              require_all=features_source != "default")
+                                              require_all=features_source != "default", target=target_col)
     except ValueError as exc:
         print(f"Loi chon dac trung: {exc}", file=sys.stderr, flush=True)
         sys.exit(2)
@@ -907,7 +926,7 @@ def main():
         allowed, allow_leak, features_source = resolve_allowed_features(args, target_col, candidates.columns)
         # Danh sach tuong minh (--features/--features-file): muc thieu -> loi. Mac dinh: canh bao + ghi config.
         feature_cols = select_feature_columns(candidates, allowed=allowed, allow_leak=allow_leak,
-                                              require_all=features_source != "default")
+                                              require_all=features_source != "default", target=target_col)
     except ValueError as exc:
         print(f"Loi chon dac trung: {exc}", file=sys.stderr, flush=True)
         sys.exit(2)
