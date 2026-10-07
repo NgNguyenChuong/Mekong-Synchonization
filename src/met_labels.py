@@ -1,14 +1,5 @@
-"""Ham thuan cho nhan khi tuong Dot 7 lay tu GEE: MUA (CHIRPS v3) va BUC XA (MCD18A1.062).
-
-Cua so mua kho = `seasons.season_window` (01/11/(s-1) .. 29/04/s, gom 2 dau) - DUNG CHUNG voi do man va
-dac trung (An chot 2026-10-06: cung quy uoc seasons.py; khong tu dinh nghia lai mua).
-  - mua 2020 (nhuan): 01/11/2019 .. 29/04/2020 = 181 ngay; mua 2021: 180 ngay.
-  - GEE filterDate loai ngay cuoi -> truyen (s-1)-11-01 .. s-04-30.
-  - MCD18 (ngay): dung dung cua so tren.
-  - CHIRPS v3 PENTAD: giu 36 pentad tron 6 thang; pentad cuoi (26-30/04) GOM 30/04 -> lech 1 ngay so voi
-    seasons.py; chap nhan (khong tach pentad), ghi trong provenance.
-
-Khong goi GEE trong module nay (test chay khong can mang).
+"""Ham thuan cho nhan khi tuong GEE Dot 7: mua CHIRPS v3 PENTAD va buc xa MCD18A1.062, cua so mua kho theo
+seasons.season_window (CHIRPS giu 36 pentad -> gom ca 30/04). Khong goi GEE (test khong can mang).
 """
 import datetime as dt
 
@@ -18,25 +9,18 @@ from seasons import season_window
 
 SEASON_MONTHS = (11, 12, 1, 2, 3, 4)
 
-# CHIRPS v3 PENTAD: moi thang 6 pentad bat dau ngay 1, 6, 11, 16, 21, 26 (pentad 6 = 26 -> het thang).
-# Ban THANG cua CHC = tong 6 pentad (README CHIRPS v3) -> tong 36 pentad = tong 6 thang 11..4.
+# Pentad CHIRPS v3 bat dau ngay 1, 6, 11, 16, 21, 26 (pentad 6 den het thang) -> 36 pentad = 6 thang.
 PENTAD_START_DAYS = (1, 6, 11, 16, 21, 26)
 
-# CHIRPS v3 final cua thang M duoc CHC phat hanh "tuan thu 3 thang sau" (README); da thay tren
-# data.chc.ucsb.edu: 2025.11 -> 11/12/2025, 2026.03 -> 10/04/2026, 2026.04 -> 15/05/2026. Prelim pentad 6
-# cua thang M ra ngay 02 thang M+1. -> anh GEE nap (system:version) truoc ngay 01/(M+1) + 9 ngay thi
-# CHUA the la final. Day chi la suy luan theo thoi diem nap; can doi chieu truc tiep voi file final cua CHC.
+# Anh nap truoc 01/(M+1) + so ngay nay chua the la ban final cua thang M (suy luan theo lich phat hanh CHC).
 FINAL_MIN_LAG_DAYS = 9
 
-# MCD18A1.062: 8 band DSR 3 gio (W/m2, ca dem = 0 - da kiem 2026-10-06 tai Can Tho/Ca Mau/My Tho) -> TB 8 band
-# = TB ngay (24 h) cua buc xa toi. Catalog GEE KHONG co band DSR ngay san (band `DSR` la tuc thoi luc bay qua).
+# TB 8 band DSR 3 gio (W/m2, dem = 0) = TB ngay; band `DSR` cua catalog la tuc thoi, khong dung.
 MCD18_GMT_BANDS = tuple(f"GMT_{h:02d}00_DSR" for h in range(0, 24, 3))
-# Luoi sinusoidal MODIS dinh nghia tren HINH CAU R = 6371007.181 m. GeoTIFF GEE xuat voi crs "SR-ORG:6974" lai ghi
-# WKT tren ellipsoid WGS84 -> doc bang rasterio lech ~14 km (dong-tay) + ~6 km (bac-nam) o vi do 10 do (da kiem
-# 2026-10-06: TB mua 2021 tai 25 diem, CRS file khop GEE 0/25, CRS hinh cau khop 25/25). -> ghi de CRS sau khi tai.
+# Sinusoidal MODIS la HINH CAU; GeoTIFF GEE (SR-ORG:6974) ghi ellipsoid WGS84 -> phai ghi de CRS (pitfall 45).
 MODIS_SINU_PROJ4 = "+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +R=6371007.181 +units=m +no_defs"
 
-# DSR_Quality bit 0-1: 0 = khong co phan xa be mat hop le, 1 = tu MCD43, 2 = tu khi hau (climatology).
+# DSR_Quality bit 0-1: 2 = phan xa be mat lay tu khi hau (climatology).
 DSR_QUALITY_CLIM = 2
 DSR_QUALITY_MASK = 0b11
 
@@ -114,8 +98,7 @@ def parse_mcd18_index(s: str) -> dt.date:
 
 
 def chirps_status_from_version(pentad_index: str, version_us: int) -> str:
-    """'final' neu anh GEE nap (system:version, micro giay UTC) tu ngay 01/(M+1) + FINAL_MIN_LAG_DAYS tro di,
-    nguoc lai 'prelim' (final chua the co luc nap). Suy luan - xem ghi chu FINAL_MIN_LAG_DAYS."""
+    """'final' neu anh nap (system:version, micro giay UTC) tu 01/(M+1) + FINAL_MIN_LAG_DAYS, nguoc lai 'prelim'."""
     y, m = int(pentad_index[:4]), int(pentad_index[4:6])
     first_next = dt.date(y + (m == 12), m % 12 + 1, 1)
     earliest_final = dt.datetime.combine(first_next, dt.time()) + dt.timedelta(days=FINAL_MIN_LAG_DAYS)
@@ -143,13 +126,8 @@ def daily_dsr(gmt_values: np.ndarray) -> np.ndarray:
 
 
 def season_dsr_stats(daily: np.ndarray, quality: np.ndarray, dates) -> dict:
-    """Ban tham chieu (numpy) cua phep gop mua MCD18 tren GEE - dung de kiem cheo diem.
-
-    daily: (n_ngay, ...) DSR ngay W/m2, NaN = khong hop le; quality: (n_ngay, ...) DSR_Quality nguyen;
-    dates: danh sach ngay tuong ung truc 0. Tra: dsr_mean (TB tren ngay hop le), n_days_valid,
-    frac_quality2 (ty le ngay hop le co bit 0-1 = 2), dsr_mean_no_dec (TB tren ngay hop le KHONG thuoc thang 12).
-    Pixel khong co ngay hop le nao -> NaN (n_days_valid = 0).
-    """
+    """Ban numpy cua phep gop mua MCD18 tren GEE (kiem cheo): dsr_mean, n_days_valid, frac_quality2,
+    dsr_mean_no_dec tren ngay hop le (truc 0 = ngay); pixel khong co ngay hop le -> NaN."""
     daily = np.asarray(daily, dtype="float64")
     q = np.asarray(quality)
     if daily.shape != q.shape or daily.shape[0] != len(dates):
@@ -172,8 +150,7 @@ def season_dsr_stats(daily: np.ndarray, quality: np.ndarray, dates) -> dict:
 
 
 def season_rain_sum(pentads: np.ndarray) -> np.ndarray:
-    """Ban tham chieu tong mua tu 36 pentad (truc 0). Pentad NoData (NaN hoac < 0, vd -9999) -> tong mua NaN
-    (khong coi la 0 mm). Gia tri 0 that duoc giu."""
+    """Tong mua tu 36 pentad (truc 0); co pentad NoData (NaN hoac < 0) -> NaN, khong coi la 0 mm."""
     p = np.asarray(pentads, dtype="float64")
     if p.shape[0] != len(SEASON_MONTHS) * len(PENTAD_START_DAYS):
         raise ValueError(f"can 36 pentad, nhan {p.shape[0]}")

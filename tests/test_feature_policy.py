@@ -159,7 +159,7 @@ UNIFIED_FEATURES = ["rain_mm", "solar", "temp_c", "temp_max_c", "temp_min_c", "r
     ("ndwi", []),
     ("rain_chirps", ["rain_mm"]),
     ("dsr_mcd18", ["solar"]),
-    ("t2m_era5", ["temp_c", "temp_max_c", "temp_min_c"]),
+    ("t2m_era5", ["temp_c", "temp_max_c", "temp_min_c", "rh_percent"]),   # RH = f(T, Td) cung pixel (An quyet)
     ("rh_era5", ["temp_c", "temp_max_c", "temp_min_c", "rh_percent"]),
 ])
 def test_cam_theo_bien_tren_cot_bang_hop_nhat(target, removed):
@@ -180,7 +180,7 @@ def test_cam_theo_bien_bat_ten_ngoai_bang_hien_co():
     assert hit(["precip_era5", "n_rain_days", "rain7_max"], "rain_chirps") == ["precip_era5", "n_rain_days", "rain7_max"]
     assert hit(["ssrd_mean", "cloud_frac", "dist_coast_km"], "dsr_mcd18") == ["ssrd_mean", "cloud_frac"]
     assert hit(["skin_temperature", "td_mean", "dewpoint_c", "rh_percent"], "t2m_era5") == \
-        ["skin_temperature", "td_mean", "dewpoint_c"]
+        ["skin_temperature", "td_mean", "dewpoint_c", "rh_percent"]
     assert hit(["d2m", "vpd_kpa", "specific_humidity", "dem_mean"], "rh_era5") == ["d2m", "vpd_kpa", "specific_humidity"]
 
 
@@ -199,3 +199,59 @@ def test_cam_theo_bien_khong_bat_nham_cot_chat_luong():
     cols = ["train_ok", "train_ok_scope", "train_ok_10pct", "era5_cover_frac", "scope_frac", "dist_coast_km"]
     for t in ("rain_chirps", "dsr_mcd18", "t2m_era5", "rh_era5", "ndwi"):
         assert find_target_leak_columns(cols, t) == []
+
+
+# ---------------- soat method-reviewer 2026-10-07 muc 2-3: mau moi + chong khop nham ----------------
+@pytest.mark.parametrize("target, cols", [
+    ("ndwi", ["ndmi_dry", "s2_ndii", "msi", "gvmi_mean", "nmdi"]),
+    ("rain_chirps", ["chirps_sum", "imerg_rain", "gsmap_mm"]),
+    ("dsr_mcd18", ["mcd18_dsr", "ghi", "era5_ghi_mean", "sw_down", "swdown_mean", "insolation", "sunshine_h"]),
+    ("t2m_era5", ["lst_day", "modis_lst", "tas", "tasmax", "chelsa_tas", "tmean", "tmax_c", "tmin",
+                  "temperature", "era5_temp_mean", "rh_percent", "rh", "humid_mean", "hurs"]),
+    ("rh_era5", ["hurs", "chelsa_hurs", "lst_night", "tas", "tmax", "temp_c", "rh_percent"]),
+])
+def test_mau_cam_theo_bien_moi_bat_ten(target, cols):
+    from training.features import find_target_leak_columns
+
+    assert [c for c, _ in find_target_leak_columns(cols, target)] == cols
+
+
+def test_mau_cam_chung_bat_chi_so_am_chua_nir():
+    """NDMI/NDII (= NDWI Gao), MSI, GVMI, NMDI chua NIR -> cam ca voi do man (mau chung)."""
+    bad = [c for c, _ in find_leak_columns(["ndmi_dry", "ndii", "msi", "gvmi", "nmdi_mean", "dem_mean"])]
+    assert bad == ["ndmi_dry", "ndii", "msi", "gvmi", "nmdi_mean"]
+
+
+@pytest.mark.parametrize("target", ["ndwi", "rain_chirps", "dsr_mcd18", "t2m_era5", "rh_era5"])
+def test_mau_cam_theo_bien_khong_khop_nham(target):
+    """Ranh gioi (^|_): 'temp' khong bat attempt/temporal_*; 'tas'/'lst'/'ghi'/'msi'/'tmax' khong bat cot khac."""
+    from training.features import find_target_leak_columns
+
+    innocent = ["attempt", "n_attempts", "temporal_lag", "temporary_flag", "task_id", "fantasy", "last_obs",
+                "list_id", "high_tide", "neighbor_km", "emsi", "dist_coast_km", "dem_mean", "landcover_class_Trees",
+                "tch_wl_p20c", "zos_mouth_p90", "sluice_frac", "dist_mouth_river_km", "train_ok_scope",
+                "scope_frac", "era5_cover_frac", "lbl_cover_frac", "thurs", "atmax"]
+    assert find_target_leak_columns(innocent, target) == []
+
+
+def test_mau_cam_tren_moi_cot_bang_hien_co_chi_khop_dung_y():
+    """Toan bo ten cot hien co (13 bang goc + 65 bang Dot 7 + configs/feature_sets, thu 2026-10-07): moi bien chi
+    khop dung tap du kien; mau chung quang hoc chi bat 'ndwi'."""
+    from training.features import find_target_leak_columns
+
+    cols = ["cell_id", "dem_mean", "dist_any_water_km", "dist_coast_km", "dist_main_river_km", "dist_mouth_river_km",
+            "dsr_mcd18", "era5_cover_frac", "era5_fill_frac", "graph_lateral_km", "landcover_class_Bareland",
+            "landcover_class_Built_up", "landcover_class_Cropland", "landcover_class_Grassland",
+            "landcover_class_Mangroves", "landcover_class_Shrubland", "landcover_class_Trees", "landcover_class_Water",
+            "landcover_class_Wetland", "lbl_cover_frac", "lbl_ok", "lbl_valid_px", "n_valid_px", "ndwi",
+            "rain_chirps", "rain_mm", "rh_era5", "rh_percent", "salinity", "scope_cx", "scope_cy", "scope_frac",
+            "scope_n_px", "season", "sluice_frac", "sluice_frac_from2021", "solar", "t2m_era5", "tch_wl_ok",
+            "tch_wl_p20c", "temp_c", "temp_max_c", "temp_min_c", "train_ok", "train_ok_10pct", "train_ok_scope",
+            "train_ok_scope_sal", "valid_frac", "zos_cmems_far_frac", "zos_coast_p90", "zos_mouth_p90", "zos_ok"]
+    temp_rh = ["rh_era5", "rh_percent", "t2m_era5", "temp_c", "temp_max_c", "temp_min_c"]
+    want = {"ndwi": ["ndwi", "salinity"], "rain_chirps": ["rain_chirps", "rain_mm"],
+            "dsr_mcd18": ["dsr_mcd18", "solar"], "t2m_era5": temp_rh, "rh_era5": temp_rh}
+    for t, w in want.items():
+        assert [c for c, _ in find_target_leak_columns(cols, t)] == w
+    optical = [c for c, why in find_leak_columns(cols) if why == FORBIDDEN_PATTERNS[0][1]]
+    assert optical == ["ndwi"]

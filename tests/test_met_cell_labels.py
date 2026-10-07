@@ -1,4 +1,5 @@
-"""Kiem thu nhan theo o (TB co trong so pham vi) + dap an diem cho 4 bien khi tuong Dot 7 - raster TONG HOP."""
+"""Kiem thu nhan theo o (cach giong dac trung tinh: TB tren tam pixel pham vi 30 m) + dap an diem cho 4 bien
+khi tuong Dot 7 - raster TONG HOP, doi chung tinh truc tiep bang numpy/shapely."""
 import json
 import os
 import subprocess
@@ -23,22 +24,23 @@ UTM = "EPSG:32648"
 X0, Y0 = 438540.0, 1219680.0
 
 
-def direct_weighted_mean(values, weights, transform, poly):
-    """Doi chung DOC LAP voi exactextract: cov = dien tich (pixel ∩ o) / dien tich pixel bang shapely;
-    TB = sum(cov*w*v)/sum(cov*w) tren pixel v huu han. Tra (TB, sum_valid(cov*w), sum_all(cov*w))."""
-    h, w = values.shape
-    rr, cc = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
-    rr, cc = rr.ravel(), cc.ravel()
-    x0 = transform.c + cc * transform.a
-    y0 = transform.f + rr * transform.e
-    px = shapely.box(x0, y0 + transform.e, x0 + transform.a, y0)
-    cov = shapely.area(shapely.intersection(px, poly)) / abs(transform.a * transform.e)
-    v, wt = values[rr, cc], weights[rr, cc]
+def direct_scope_mean(values, src_transform, scope, poly, to_src=None):
+    """Doi chung DOC LAP (khong rasterize, khong bincount): duyet tung pixel pham vi 30 m, tam nam TRONG da giac o
+    (shapely, CRS UTM) -> lay gia tri pixel nguon chua tam (floor). TB tren pixel co gia tri huu han.
+    Tra (TB, so pixel hop le, so pixel pham vi trong o). to_src: ham (x, y) UTM -> CRS nguon (mac dinh dong nhat)."""
+    rr, cc = np.nonzero(np.asarray(scope) == 1)
+    x = X0 + (cc + 0.5) * 30.0
+    y = Y0 - (rr + 0.5) * 30.0
+    inside = shapely.contains_xy(poly, x, y)
+    x, y = x[inside], y[inside]
+    if to_src is not None:
+        x, y = to_src(x, y)
+    inv = ~src_transform
+    col = np.floor(inv.a * x + inv.b * y + inv.c).astype(int)
+    row = np.floor(inv.d * x + inv.e * y + inv.f).astype(int)
+    v = values[row, col]
     ok = np.isfinite(v)
-    s_all = float((cov * wt).sum())
-    s_ok = float((cov * wt)[ok].sum())
-    mean = float((cov * wt * np.where(ok, v, 0)).sum() / s_ok) if s_ok > 0 else np.nan
-    return mean, s_ok, s_all
+    return (float(v[ok].mean()) if ok.any() else np.nan), int(ok.sum()), int(inside.sum())
 
 
 def _write(path, bands, transform, crs, names=None, dtype="float32", nodata=None):
@@ -57,65 +59,134 @@ def _scope(path, scope):
            ["scope", "zenodo_n_years", "wc_class"], dtype="uint8")
 
 
-# ---------------------------------------------------------------- trong so pham vi
-def test_scope_weights_luoi_chieu_dem_tam_pixel(tmp_path):
-    sc = np.zeros((6, 6), np.uint8)
-    sc[0:3, 0:3] = 1          # pixel nguon (0,0): 9/9
-    sc[0, 3] = 1              # pixel nguon (0,1): 1/9
-    sc[4, 4] = sc[5, 5] = 1   # pixel nguon (1,1): 2/9
-    _scope(tmp_path / "s.tif", sc)
-    w, info = mc.scope_weights(str(tmp_path / "s.tif"), UTM, from_origin(X0, Y0, 90, 90), (3, 3))
-    np.testing.assert_allclose(w[:2, :2], [[1.0, 1 / 9], [0.0, 2 / 9]], atol=1e-9)
-    assert w[2].sum() == 0 and w[:, 2].sum() == 0
-    assert info["n_scope_px"] == 12 and info["n_scope_outside"] == 0 and info["n_px_w_gt0"] == 3
-    # luoi nguon nho hon pham vi -> dem pixel scope nam ngoai (nguoi goi bao LOI)
-    _, info2 = mc.scope_weights(str(tmp_path / "s.tif"), UTM, from_origin(X0, Y0, 90, 90), (1, 1))
-    assert info2["n_scope_outside"] == 3
-
-
-def test_pixel_areas_kinh_vi_giam_theo_cos_vi_do():
-    a = mc.pixel_areas_m2("EPSG:4326", from_origin(105.0, 11.0, 0.1, 0.1), (30, 2))
-    assert a[0, 0] == pytest.approx(a[0, 1])
-    assert a[0, 0] == pytest.approx(11057 * 11119 * np.cos(np.radians(10.95)), rel=0.01)
-    assert a[29, 0] / a[0, 0] == pytest.approx(np.cos(np.radians(8.05)) / np.cos(np.radians(10.95)), rel=1e-3)
-    s = mc.pixel_areas_m2(MODIS_SINU_PROJ4, from_origin(0, 0, 926.625, 926.625), (2, 2))
-    assert (s == pytest.approx(926.625 ** 2))
-
-
-# ---------------------------------------------------------------- TB co trong so theo o
-def test_cell_weighted_labels_khop_doi_chung_doc_lap(tmp_path):
-    tr = from_origin(X0, Y0, 100, 100)
-    v = np.array([[1, 2, 3, 4], [5, np.nan, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]], float)
-    wt = np.array([[1, 0, 0.5, 1], [1, 1, 1, 1], [0, 0, 0, 0], [1, 0.3, 1, 1]], float)
-    bands, names, seasons = mc.stack_seasons({2019: v, 2020: v * 2}, nan_seasons=(2020,))
-    mc.write_raster(str(tmp_path / "st.tif"), bands, UTM, tr, names)
-    mc.write_raster(str(tmp_path / "w.tif"), [wt], UTM, tr, ["scope_weight"], nodata=None)
-    polys = {"a": box(X0, Y0 - 200, X0 + 200, Y0),            # 1,2,5,NaN -> (1*1 + 5*1) / 2 = 3
-             "c": box(X0, Y0 - 300, X0 + 400, Y0 - 200),      # trong so 0 toan bo -> NaN (khong dien 0)
-             "d": box(X0 + 150, Y0 - 250, X0 + 300, Y0),      # cat ngang pixel
-             "e": box(X0 + 30, Y0 - 390, X0 + 370, Y0 - 120)}  # da giac lech, phu nhieu hang
+def _cells(polys):
+    """(cell_ids, None, geoms EPSG:4326) tu {id: da giac UTM}."""
     g = gpd.GeoSeries(list(polys.values()), crs=UTM).to_crs(4326)
-    out = mc.cell_weighted_labels(str(tmp_path / "st.tif"), str(tmp_path / "w.tif"),
-                                  (list(polys), None, list(g)), seasons, "x")
-    assert list(out.columns) == ["cell_id", "season", "x", "lbl_cover_frac", "lbl_valid_px", "lbl_ok"]
-    o = out.set_index(["cell_id", "season"])
-    assert o.loc[("a", 2019), "x"] == pytest.approx(3.0)
-    assert o.loc[("a", 2019), "lbl_cover_frac"] == pytest.approx(2 / 3)   # pixel NaN co w = 1
-    assert np.isnan(o.loc[("c", 2019), "x"]) and o.loc[("c", 2019), "lbl_valid_px"] == 0
-    assert not o.loc[("c", 2019), "lbl_ok"]
-    for cid, poly in polys.items():
-        ref, s_ok, s_all = direct_weighted_mean(v, wt, tr, poly)
-        got = o.loc[(cid, 2019)]
-        if np.isnan(ref):
-            assert np.isnan(got["x"])
-        else:
-            # da giac di qua EPSG:4326 roi chieu lai -> sai so dinh nho
-            assert got["x"] == pytest.approx(ref, rel=1e-3)
-            assert got["lbl_valid_px"] == pytest.approx(s_ok, rel=1e-3)
-            assert got["lbl_cover_frac"] == pytest.approx(s_ok / s_all, rel=1e-3)
-    # mua NaN theo quy tac: moi o NaN, phu 0
+    return list(polys), None, list(g)
+
+
+# ---------------------------------------------------------------- ma tran dem o x pixel nguon
+def test_scope_source_counts_dem_tam_pixel_pham_vi(tmp_path):
+    sc = np.zeros((6, 6), np.uint8)
+    sc[0:3, 0:3] = 1          # pixel nguon 90 m (0,0): 9 pixel pham vi
+    sc[0, 3] = 1              # pixel nguon (0,1): 1
+    sc[4, 4] = sc[5, 5] = 1   # pixel nguon (1,1): 2
+    _scope(tmp_path / "s.tif", sc)
+    tr = from_origin(X0, Y0, 90, 90)
+    polys = {"A": box(X0, Y0 - 180, X0 + 180, Y0), "B": box(X0, Y0 - 180 - 90, X0 + 180, Y0 - 180),
+             "C": box(X0 - 90, Y0 - 90, X0, Y0)}
+    ids, counts, info = mc.scope_source_counts(str(tmp_path / "s.tif"), _cells(polys), {"k": (UTM, tr, (3, 3))})
+    assert list(ids) == ["A", "B", "C"]
+    got = {(ids[c], p): n for c, p, n in counts["k"][["cell", "px", "n"]].itertuples(index=False)}
+    # o A (hang/cot 30 m 0-5) chua ca 12 pixel pham vi; B, C nam ngoai raster pham vi -> khong co dong
+    assert got == {("A", 0): 9, ("A", 1): 1, ("A", 4): 2}
+    assert info["k"]["n_scope_in_cells"] == 12 and info["k"]["n_scope_outside"] == 0
+    # luoi nguon nho hon pham vi -> dem pixel pham vi nam ngoai (nguoi goi bao LOI)
+    _, _, info2 = mc.scope_source_counts(str(tmp_path / "s.tif"), _cells(polys), {"k": (UTM, tr, (1, 1))})
+    assert info2["k"]["n_scope_outside"] == 3
+
+
+def test_tong_dem_moi_o_trung_scope_n_px_cua_dac_trung_tinh(tmp_path):
+    """Gan pixel 30 m cho o GIONG HET scope_centroids (scope_n_px trong bang dac trung tinh)."""
+    from static_features import scope_centroids
+
+    rng = np.random.default_rng(0)
+    sc = (rng.random((40, 40)) < 0.6).astype(np.uint8)
+    _scope(tmp_path / "s.tif", sc)
+    polys = {"h": shapely.Polygon([(X0 + 37, Y0 - 11), (X0 + 610, Y0 - 140), (X0 + 500, Y0 - 900),
+                                    (X0 + 20, Y0 - 700)]),
+             "q": box(X0 + 610, Y0 - 1200, X0 + 1200, Y0 - 140)}
+    cells = _cells(polys)
+    ids, counts, _ = mc.scope_source_counts(str(tmp_path / "s.tif"), cells,
+                                            {"k": (UTM, from_origin(X0, Y0, 300, 300), (4, 4))})
+    tot = counts["k"].groupby("cell")["n"].sum()
+    ref = scope_centroids(str(tmp_path / "s.tif"), cells).set_index("cell_id")["scope_n_px"]
+    for i, cid in enumerate(ids):
+        assert tot.get(i, 0) == ref[cid]
+
+
+# ---------------------------------------------------------------- nhan o tu ma tran dem
+def _labels(tmp_path, scope, values, src_tr, polys, nan_seasons=()):
+    _scope(tmp_path / "s.tif", scope)
+    shape = next(iter(values.values())).shape
+    ids, counts, _ = mc.scope_source_counts(str(tmp_path / "s.tif"), _cells(polys), {"k": (UTM, src_tr, shape)})
+    return mc.cell_count_labels(counts["k"], ids, values, "x", nan_seasons).set_index(["cell_id", "season"])
+
+
+def test_o_khong_pham_vi_la_nan(tmp_path):
+    sc = np.zeros((6, 6), np.uint8)
+    sc[:, :3] = 1                                       # pham vi chi nua trai
+    v = np.array([[1.0, 2.0], [3.0, 4.0]])
+    o = _labels(tmp_path, sc, {2019: v}, from_origin(X0, Y0, 90, 90),
+                {"trai": box(X0, Y0 - 180, X0 + 90, Y0), "phai": box(X0 + 90, Y0 - 180, X0 + 180, Y0)})
+    assert o.loc[("trai", 2019), "x"] == pytest.approx(2.0)          # (9*1 + 9*3) / 18
+    r = o.loc[("phai", 2019)]
+    assert np.isnan(r["x"]) and np.isnan(r["lbl_cover_frac"]) and r["lbl_valid_px"] == 0 and not r["lbl_ok"]
+
+
+def test_o_pham_vi_chi_tren_pixel_nguon_nan_la_nan_khong_muon_lang_gieng(tmp_path):
+    """(iii): pham vi cua o chi nam tren pixel nguon NaN -> NaN, du pixel nguon HOP LE lang gieng cham/phu mot phan
+    o (cach exactextract weighted_mean cu se muon gia tri cua no)."""
+    sc = np.zeros((6, 6), np.uint8)
+    sc[0:3, 0:3] = 1          # pham vi o chi trong pixel nguon (0,0) = NaN
+    sc[0:3, 3:6] = 1          # pham vi o pixel lang gieng (0,1) = 7 - NHUNG nam ngoai o
+    v = np.array([[np.nan, 7.0], [5.0, 6.0]])
+    # o phu pixel (0,0) + 1/9 pixel (0,1); tam cot 30 m thu 3 (X0+105) nam ngoai o (mep X0+100)
+    o = _labels(tmp_path, sc, {2019: v}, from_origin(X0, Y0, 90, 90), {"ven": box(X0, Y0 - 90, X0 + 100, Y0)})
+    r = o.loc[("ven", 2019)]
+    assert np.isnan(r["x"]) and not r["lbl_ok"]
+    assert r["lbl_cover_frac"] == 0.0 and r["lbl_valid_px"] == 0
+    # doi chung: pixel lang gieng that su phu o va CO pham vi trong o -> chi lay phan do
+    sc2 = sc.copy()
+    o2 = _labels(tmp_path, sc2, {2019: v}, from_origin(X0, Y0, 90, 90), {"ven": box(X0, Y0 - 90, X0 + 150, Y0)})
+    assert o2.loc[("ven", 2019), "x"] == pytest.approx(7.0)          # 9 pixel NaN bi bo, 2 cot (6 px) gia tri 7
+    assert o2.loc[("ven", 2019), "lbl_cover_frac"] == pytest.approx(6 / 15)
+
+
+def test_tb_theo_dien_tich_pixel_30m_va_o_trong_mot_pixel(tmp_path):
+    """TB theo so pixel pham vi 30 m (cung dien tich), KHONG theo dien tich pixel nguon; o nam tron 1 pixel nguon
+    = gia tri pixel do; mua nan_seasons -> NaN."""
+    sc = np.zeros((6, 6), np.uint8)
+    sc[0:3, 0:3] = 1          # 9 pixel pham vi trong pixel nguon (0,0) = 10
+    sc[0, 3] = 1              # 1 pixel pham vi trong pixel nguon (0,1) = 20
+    sc[3:6, 3:6] = 1
+    v = np.array([[10.0, 20.0], [30.0, 40.0]])
+    polys = {"hai": box(X0, Y0 - 90, X0 + 180, Y0),           # TB dien tich pham vi = (9*10 + 1*20) / 10 = 11
+             "mot": box(X0 + 100, Y0 - 175, X0 + 175, Y0 - 95)}       # tron trong pixel nguon (1,1)
+    o = _labels(tmp_path, sc, {2019: v, 2020: v * 2}, from_origin(X0, Y0, 90, 90), polys, nan_seasons=(2020,))
+    assert o.loc[("hai", 2019), "x"] == pytest.approx(11.0)            # TB pixel nguon thuong = 15 -> sai
+    assert o.loc[("hai", 2019), "lbl_valid_px"] == 10 and o.loc[("hai", 2019), "lbl_cover_frac"] == 1.0
+    assert o.loc[("mot", 2019), "x"] == 40.0
     assert o.xs(2020, level="season")["x"].isna().all()
     assert (o.xs(2020, level="season")["lbl_valid_px"] == 0).all()
+
+
+def test_cell_count_labels_khop_doi_chung_truc_tiep(tmp_path):
+    """Da giac lech + pixel nguon NaN + pham vi ngau nhien: khop phep tinh truc tiep tung pixel 30 m."""
+    rng = np.random.default_rng(1)
+    sc = (rng.random((30, 30)) < 0.5).astype(np.uint8)
+    tr = from_origin(X0 - 40, Y0 + 25, 110, 110)                       # luoi nguon KHONG can voi luoi 30 m
+    v = rng.random((10, 10)) * 100
+    v[1, 2] = v[4, 4] = np.nan
+    polys = {"a": shapely.Polygon([(X0 + 17, Y0 - 3), (X0 + 433, Y0 - 61), (X0 + 380, Y0 - 512), (X0 + 9, Y0 - 470)]),
+             "b": box(X0 + 433, Y0 - 899, X0 + 899, Y0 - 300), "c": box(X0 + 100, Y0 - 899, X0 + 433, Y0 - 512)}
+    o = _labels(tmp_path, sc, {2019: v}, tr, polys)
+    for cid, poly in polys.items():
+        ref, n_ok, n_all = direct_scope_mean(v, tr, sc, poly)
+        got = o.loc[(cid, 2019)]
+        assert got["lbl_valid_px"] == n_ok and got["lbl_cover_frac"] == pytest.approx(n_ok / n_all)
+        assert got["x"] == pytest.approx(ref, rel=1e-12)
+
+
+def test_cell_count_labels_tu_choi_ma_tran_loi():
+    c = pd.DataFrame({"cell": [0, 0], "px": [1, 1], "n": [2, 3]})
+    with pytest.raises(ValueError, match="trung"):
+        mc.cell_count_labels(c, np.array(["a"]), {2019: np.ones((2, 2))}, "x")
+    with pytest.raises(ValueError, match="n <= 0"):
+        mc.cell_count_labels(c.assign(n=[0, 1], px=[0, 1]), np.array(["a"]), {2019: np.ones((2, 2))}, "x")
+    with pytest.raises(ValueError, match="vuot"):
+        mc.cell_count_labels(pd.DataFrame({"cell": [0], "px": [9], "n": [1]}), np.array(["a"]),
+                             {2019: np.ones((2, 2))}, "x")
 
 
 def test_point_pixel_values_pixel_chua_diem_va_ngoai_luoi():
@@ -214,24 +285,24 @@ def test_script_mua_buc_xa_end_to_end(tmp_path):
            "--data-root", str(data), "--scope", str(tmp_path / "scope.tif"), "--boundary", str(tmp_path / "bnd.geojson"),
            "--points", str(tmp_path / "pts.geojson"), "--points-ref-sal", str(tmp_path / "pref.csv"),
            "--n-points-expected", "2", "--grids-dir", str(gdir), "--years", "2019", "2020", "--out-dir", str(out),
-           "--work-dir", str(tmp_path / "work"), "--report-dir", str(rep)]
+           "--report-dir", str(rep)]
     r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert r.returncode == 0, r.stdout + r.stderr
 
     rain = pd.read_csv(out / "toy_labels_season_rain_chirps.csv", dtype={"cell_id": str})
     assert list(rain.columns) == ["cell_id", "season", "rain_chirps", "lbl_cover_frac", "lbl_valid_px", "lbl_ok"]
     assert len(rain) == 4 and not rain.duplicated(["cell_id", "season"]).any()
-    with rasterio.open(out / "scope_weight_chirps3.tif") as ds:
-        wt = ds.read(1).astype(float)
-    assert wt.max() <= 1.0 and wt.sum() > 0
+    assert not list(out.glob("scope_weight_*"))                  # cach cu (raster trong so) da bo
     rr = rain.set_index(["cell_id", "season"])
     for cid, poly in cells.items():
-        p_ll = gpd.GeoSeries([poly], crs=UTM).to_crs(4326).iloc[0]
         for s in (2019, 2020):
-            ref, s_ok, _ = direct_weighted_mean(vals[s], wt, tr_ll, p_ll)
+            ref, n_ok, n_all = direct_scope_mean(vals[s], tr_ll, sc, poly, to_src=to_ll.transform)
             got = rr.loc[(cid, s)]
+            if n_all == 0:                                         # o R: khong co pixel pham vi -> NaN
+                assert cid == "R" and np.isnan(got["rain_chirps"]) and np.isnan(got["lbl_cover_frac"])
+                continue
             assert got["rain_chirps"] == pytest.approx(ref, rel=1e-5)   # CSV ghi %.6g
-            assert got["lbl_valid_px"] == pytest.approx(s_ok, rel=1e-4)
+            assert got["lbl_valid_px"] == n_ok and got["lbl_cover_frac"] == pytest.approx(n_ok / n_all, rel=1e-5)
     # mua 2020 cua buc xa = NaN toan bo (o + diem), 2019 = 200 (raster hang so)
     dsr = pd.read_csv(out / "toy_labels_season_dsr_mcd18.csv", dtype={"cell_id": str}).set_index(["cell_id", "season"])
     assert dsr.xs(2020, level="season")["dsr_mcd18"].isna().all()

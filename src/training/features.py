@@ -16,7 +16,8 @@ NATIVE_NAN_MODELS = {"hist_gb"}
 # Mau ten cot CAM - PHAI GIONG HET FORBIDDEN trong
 # .claude/skills/method-review/scripts/check_features.py (test_feature_policy.py kiem dong bo).
 FORBIDDEN_PATTERNS = [
-    (r"ndvi|ndwi|savi|vssi|(^|_)nir($|_)|(^|_)b5($|_)|(^|_)b7($|_)|sr_b\d", "quang hoc cung dai luong band nhan"),
+    (r"ndvi|ndwi|ndmi|ndii|(^|_)msi($|_)|gvmi|nmdi|savi|vssi|(^|_)nir($|_)|(^|_)b5($|_)|(^|_)b7($|_)|sr_b\d",
+     "quang hoc cung dai luong band nhan"),
     (r"^salinity|(^|_)salinity|^ec_|_ec$", "chinh nhan hoac suy tu nhan"),
     (r"water_freq|n_clear|mndwi|(^|_)mask", "suy tu mask nuoc (chi de loai pixel)"),
     (r"n_land|land_px|valid_px|n_valid|frac_valid|coverage|n_px|(^|_)(scope|valid|cover|fill)_frac|train_ok", "do phu nhan sau mask / cot chat luong (thong tin cua nhan)"),
@@ -26,22 +27,27 @@ FORBIDDEN_PATTERNS = [
     (r"(^|_)n_days$|_frac_days$|_ok$|overlap_frac", "cot chat luong / do phu (khong phai dac trung)"),
 ]
 
-# Mau CAM THEM theo BIEN MUC TIEU (Dot 7, de xuat (d) - An chot): dac trung do CUNG DAI LUONG VAT LY voi nhan
-# (dua vao thi bai toan thanh ha thang/hieu chinh nguon khac, khong phai du doan bien). Khoa = ten cot muc tieu.
+# Cam them theo cot muc tieu: dac trung cung dai luong vat ly voi nhan (do man chi dung mau chung).
 # PHAI GIONG HET TARGET_FORBIDDEN trong check_features.py (test_feature_policy.py kiem dong bo).
-# Do man (salinity): khong co muc rieng - chi FORBIDDEN_PATTERNS chung (hanh vi cu).
 TARGET_FORBIDDEN = {
     "ndwi": [
-        (r"ndvi|ndwi|mndwi|savi|(^|_)evi|lswi|ndbi|(^|_)nbr|(^|_)nir($|_)|(^|_)swir|(^|_)b\d+($|_)|sr_b\d|landsat|reflect|albedo",
+        (r"ndvi|ndwi|mndwi|ndmi|ndii|(^|_)msi($|_)|gvmi|nmdi|savi|(^|_)evi|lswi|ndbi|(^|_)nbr|(^|_)nir($|_)|(^|_)swir"
+         r"|(^|_)b\d+($|_)|sr_b\d|landsat|reflect|albedo",
          "cung dai luong vat ly voi nhan NDWI (quang hoc / band Landsat)"),
         (r"salinity|(^|_)ec($|_)", "cung dai luong vat ly voi nhan NDWI (do man dung chung band NIR B5)"),
     ],
-    "rain_chirps": [(r"(^|_)rain|precip|(^|_)tp($|_)", "cung dai luong vat ly voi nhan mua (mua ERA5)")],
-    "dsr_mcd18": [(r"solar|ssrd|(^|_)ssr($|_)|(^|_)dsr|radiation|irradiance|cloud",
+    "rain_chirps": [(r"(^|_)rain|precip|(^|_)tp($|_)|chirps|imerg|gsmap",
+                     "cung dai luong vat ly voi nhan mua (mua ERA5 / san pham mua khac)")],
+    "dsr_mcd18": [(r"solar|ssrd|(^|_)ssr($|_)|(^|_)dsr|radiation|irradiance|cloud|mcd18|(^|_)ghi($|_)|sw_?down"
+                   r"|insol|sunshine",
                    "cung dai luong vat ly voi nhan buc xa (buc xa ERA5)")],
-    "t2m_era5": [(r"temp|t2m|skin|dewpoint|d2m|(^|_)td($|_)",
-                  "cung dai luong vat ly voi nhan nhiet do (T2m / nhiet do be mat / diem suong)")],
-    "rh_era5": [(r"dewpoint|d2m|(^|_)td($|_)|temp|t2m|(^|_)rh($|_)|humid|vapou?r|(^|_)q2m|specific_hum|vpd",
+    "t2m_era5": [(r"(^|_)temp(?!or)|t2m|skin|dewpoint|d2m|(^|_)td($|_)"
+                  r"|(^|_)(lst|tas|tasmax|tasmin|tmean|tmax|tmin)($|_)",
+                  "cung dai luong vat ly voi nhan nhiet do (T2m / nhiet do be mat / diem suong)"),
+                 (r"(^|_)rh($|_)|humid|(^|_)hurs",
+                  "RH tinh tu T va Td cung pixel ERA5 (doi xung cam T khi dich la RH)")],
+    "rh_era5": [(r"dewpoint|d2m|(^|_)td($|_)|(^|_)temp(?!or)|t2m|(^|_)(lst|tas|tasmax|tasmin|tmean|tmax|tmin)($|_)"
+                 r"|(^|_)rh($|_)|humid|(^|_)hurs|vapou?r|(^|_)q2m|specific_hum|vpd",
                  "cung dai luong vat ly voi nhan do am (RH = f(T, Td); moi dac trung am)")],
 }
 

@@ -1,22 +1,7 @@
 #!/usr/bin/env python
-"""E5d Dot 7: bang hop nhat theo BIEN MUC TIEU (ndwi, rain_chirps, dsr_mcd18, t2m_era5, rh_era5) cho 13 luoi.
-
-Moi bang = bang hop nhat bo chinh do man (<DATA_ROOT>/features/unified/<luoi>_unified.csv: dac trung CHUNG, ERA5
-ban lap CHG-11, tinh, thuy van, hybrid, tam phan dat cho IDW) + nhan moi (<DATA_ROOT>/labels/dot7/
-<luoi>_labels_season_<bien>.csv) - quy tac ghep: src/unified_table.target_table:
-  - bo cot nhan do man (salinity, n_valid_px, valid_frac, train_ok, train_ok_10pct); train_ok_scope goc ->
-    train_ok_scope_sal; bo cot dac trung CAM THEO BIEN (cung dai luong vat ly, training.features.TARGET_FORBIDDEN);
-  - train_ok_scope = train_ok_scope_sal VA nhan bien moi huu han.
-Kiem (LOI -> dung): khoa trung tuyet doi; NDWI: n_valid_px/train_ok trung bo do man (cung mat na); dac trung mac
-dinh sau khi bo cam deu co trong bang, khong khop mau cam chung/theo bien, khong +-inf; NaN dac trung trong dong
-huan luyen ngoai danh sach cho phep (build_unified_table.ALLOWED_TRAIN_NAN) -> LOI.
-Dau ra <out-root>/<bien>/<luoi>_unified.csv (+ .provenance.json: target, label_set chinh, sha256 nguon, dac trung
-mac dinh, cot da bo) - dung truc tiep: train.py --target <bien> --table ... / run_experiments.py --target <bien>
---tables-dir <out-root>/<bien>. Bao cao -> KE_HOACH/ket-qua/dot7_e5_bang_hop_nhat.csv (dong, dong huan luyen,
-dong/o bi loai vi nhan NaN theo luoi).
-
-Chay:  venv/Scripts/python.exe scripts/build_unified_dot7.py [--targets ndwi rain_chirps dsr_mcd18 t2m_era5 rh_era5]
-           [--grids h3_res_5 ...] [--out-root <DATA_ROOT>/features/unified_dot7]
+"""Bang hop nhat theo bien muc tieu Dot 7 (13 luoi) = bang bo chinh do man - cot nhan do man - cot cam theo bien
++ nhan moi (src/unified_table.target_table); ghi <DATA_ROOT>/features/unified_dot7/<bien>/<luoi>_unified.csv.
+Chay:  venv/Scripts/python.exe scripts/build_unified_dot7.py [--targets ndwi rain_chirps ...] [--grids ...]
 """
 import argparse
 import glob
@@ -43,7 +28,7 @@ from training.features import (DEFAULT_ALLOWED_FEATURES, drop_target_forbidden, 
 from unified_table import SAL_TRAIN_COL, TRAIN_COL, finite_or_nan, target_table  # noqa: E402
 
 DATA = data_path()
-# bien -> cot chat luong cua nhan (KHONG phai dac trung)
+# cot chat luong cua nhan (khong phai dac trung)
 TARGET_LABEL_COLS = {
     "ndwi": ("n_valid_px", "valid_frac", "train_ok", "train_ok_10pct"),
     "rain_chirps": ("lbl_cover_frac", "lbl_valid_px", "lbl_ok"),
@@ -80,7 +65,7 @@ def build_one(a, grid, target):
         table, dropped = target_table(base, lab, target, TARGET_LABEL_COLS[target])
     except ValueError as exc:
         raise SystemExit(f"[LOI] {grid}/{target}: {exc}")
-    if target == "ndwi":   # cung raster + cung mat na -> so pixel hop le va co huan luyen trung bo do man
+    if target == "ndwi":   # cung raster + mat na voi do man -> n_valid_px, train_ok phai trung
         b = base.sort_values(["cell_id", "season"]).reset_index(drop=True)
         for c in ("n_valid_px", "train_ok"):
             if not np.array_equal(b[c].to_numpy(), table[c].to_numpy()):

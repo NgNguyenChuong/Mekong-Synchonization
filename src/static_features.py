@@ -203,6 +203,38 @@ def cell_static_features(stack_path, scope_path, wc_path, cell_data, names=None)
     return out
 
 
+def iter_scope_cell_pixels(sc, gdf, chunk_rows=1024):
+    """Yield (chi so o, x, y tam pixel) cho moi pixel scope == 1 nam trong o, theo khoi hang; gdf o CRS scope,
+    index 0..n-1. Gan o theo TAM pixel (rasterize khong all_touched) - dung chung de dac trung tinh va nhan khi
+    tuong gan pixel giong het nhau."""
+    from rasterio import features
+    from rasterio.windows import Window, bounds as win_bounds
+    from shapely.geometry import box
+
+    sb = band_index(sc, "scope") if "scope" in sc.descriptions else 1
+    sindex = gdf.sindex
+    h, w = sc.height, sc.width
+    xs = sc.transform.c + sc.transform.a * (np.arange(w) + 0.5)
+    for r0 in range(0, h, chunk_rows):
+        nr = min(chunk_rows, h - r0)
+        win = Window(0, r0, w, nr)
+        m = sc.read(sb, window=win) == 1
+        if not m.any():
+            continue
+        cand = sindex.query(box(*win_bounds(win, sc.transform)), predicate="intersects")
+        if not len(cand):
+            continue
+        lab = features.rasterize(((gdf.geometry.iloc[i], int(i) + 1) for i in cand), out_shape=(nr, w),
+                                 transform=sc.window_transform(win), fill=0, dtype="int32")
+        sel = m & (lab > 0)
+        del m
+        rr, cc = np.nonzero(sel)
+        idx = lab[rr, cc] - 1
+        del lab, sel
+        ys = sc.transform.f + sc.transform.e * (r0 + rr + 0.5)
+        yield idx, xs[cc], ys
+
+
 def scope_centroids(scope_path, cell_data, chunk_rows=1024):
     """(cell_id, scope_cx, scope_cy, scope_n_px): tam cac pixel scope == 1 trong o (CRS cua scope, met).
 
@@ -212,37 +244,16 @@ def scope_centroids(scope_path, cell_data, chunk_rows=1024):
     O khong co pixel scope -> NaN.
     """
     import rasterio
-    from rasterio import features
-    from rasterio.windows import Window, bounds as win_bounds
-    from shapely.geometry import box
 
     from processing import _cells_gdf
 
     with rasterio.open(scope_path) as sc:
-        sb = band_index(sc, "scope") if "scope" in sc.descriptions else 1
         gdf = _cells_gdf(cell_data, sc.crs).reset_index(drop=True)
         n = len(gdf)
         sx, sy, cnt = np.zeros(n), np.zeros(n), np.zeros(n)
-        sindex = gdf.sindex
-        h, w = sc.height, sc.width
-        xs = sc.transform.c + sc.transform.a * (np.arange(w) + 0.5)
-        for r0 in range(0, h, chunk_rows):
-            nr = min(chunk_rows, h - r0)
-            win = Window(0, r0, w, nr)
-            m = sc.read(sb, window=win) == 1
-            if not m.any():
-                continue
-            cand = sindex.query(box(*win_bounds(win, sc.transform)), predicate="intersects")
-            if not len(cand):
-                continue
-            lab = features.rasterize(((gdf.geometry.iloc[i], int(i) + 1) for i in cand), out_shape=(nr, w),
-                                     transform=sc.window_transform(win), fill=0, dtype="int32")
-            sel = m & (lab > 0)
-            rr, cc = np.nonzero(sel)
-            idx = lab[rr, cc] - 1
-            ys = sc.transform.f + sc.transform.e * (r0 + rr + 0.5)
-            sx += np.bincount(idx, weights=xs[cc], minlength=n)
-            sy += np.bincount(idx, weights=ys, minlength=n)
+        for idx, x, y in iter_scope_cell_pixels(sc, gdf, chunk_rows):
+            sx += np.bincount(idx, weights=x, minlength=n)
+            sy += np.bincount(idx, weights=y, minlength=n)
             cnt += np.bincount(idx, minlength=n)
     with np.errstate(invalid="ignore", divide="ignore"):
         cx, cy = np.where(cnt > 0, sx / cnt, np.nan), np.where(cnt > 0, sy / cnt, np.nan)

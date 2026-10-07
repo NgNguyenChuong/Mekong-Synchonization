@@ -1,26 +1,7 @@
 #!/usr/bin/env python
-"""E5b + E5c Dot 7: nhan theo (o, mua) cho 13 luoi + dap an tai diem cho mua, buc xa, nhiet do, do am.
-
-Quy tac (src/met_cell_labels.py; An chot 2026-10-07): TB CO TRONG SO PHAM VI (trong so pixel nguon = ty le dien
-tich thuoc scope_mask_v3 30 m), exactextract weighted_mean, da giac o chieu sang CRS raster nguon (MCD18 =
-sinusoidal hinh cau), khong lay mau lai raster. Dap an tai diem = pixel nguon chua diem.
-  rain : CHIRPS v3 <DATA_ROOT>/raw/chirps3/chirps3_rain_<s>.tif band rain_sum           -> cot rain_chirps
-  dsr  : MCD18A1 <DATA_ROOT>/raw/mcd18a1/mcd18a1_dsr_<s>.tif band dsr_mean (mua 2020 NaN) -> cot dsr_mcd18
-  temp : ERA5 GOC <DATA_ROOT>/features/era5_season/temp_avg_<s>.tif band temp_c_mean     -> cot t2m_era5
-  rh   : ERA5 GOC <DATA_ROOT>/features/era5_season/humid_<s>.tif band rh_percent_mean    -> cot rh_era5
-Diem cham = eval_points ∩ co ref_salinity hop le >= 1 mua (10.454; --n-points-expected).
-
-Dau ra (--out-dir, mac dinh <DATA_ROOT>/labels/dot7), moi file kem .provenance.json:
-  scope_weight_<nguon>.tif                : trong so pham vi tren luoi nguon (chirps3 / mcd18a1 / era5)
-  <luoi>_labels_season_<cot>.csv          : cell_id, season, <cot>, lbl_cover_frac, lbl_valid_px, lbl_ok
-  points_reference_<cot>.csv              : point_id, block_id, is_holdout, season, ref_<cot>, src_px_valid,
-                                            src_row, src_col (variant main, ref_rule_kind pixel)
-Bao cao (--report-dir): dot7_e5_khi_tuong_luoi.csv (bien x luoi x mua: so o, o co nhan, o NaN, o phu mot phan),
-  dot7_e5_khi_tuong_diem.csv (bien x mua: diem, diem NaN), dot7_e5_trong_so.csv.
-Chay lai: bo qua bang/diem da co cung MET_RULES_VERSION + sha256 nguon/trong so/luoi (--force de tinh lai).
-
-Chay:  venv/Scripts/python.exe scripts/build_met_labels.py [--targets rain dsr temp rh] [--grids h3_res_5 ...]
-           [--years 2014 2026] [--out-dir <DATA_ROOT>/labels/dot7] [--work-dir <tam>] [--force]
+"""Nhan (o, mua) cho 13 luoi + dap an tai diem cua 4 bien khi tuong Dot 7 (mua CHIRPS, buc xa MCD18, T2m va RH
+ERA5 goc) - quy tac o src/met_cell_labels.py. Ghi <DATA_ROOT>/labels/dot7 + bao cao KE_HOACH/ket-qua/dot7_e5_khi_tuong_*.
+Chay:  venv/Scripts/python.exe scripts/build_met_labels.py [--targets rain dsr temp rh] [--grids ...] [--force]
 """
 import argparse
 import glob
@@ -28,7 +9,6 @@ import json
 import os
 import shutil
 import sys
-import tempfile
 import time
 
 import numpy as np
@@ -40,12 +20,14 @@ from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from met_cell_labels import (MET_RULES_VERSION, MET_TARGETS, cell_weighted_labels, check_source,  # noqa: E402
-                             grid_signature, nan_pattern_changes, point_pixel_values, scope_weights, stack_seasons,
-                             write_raster)
+from met_cell_labels import (MET_RULES_VERSION, MET_TARGETS, cell_count_labels, check_source,  # noqa: E402
+                             nan_pattern_changes, point_pixel_values, scope_source_counts)
 from preprocessing import CANONICAL_BOUNDARY, file_sha256, write_provenance  # noqa: E402
 
 DATA = data_path()
+RULE = ("giong dac trung tinh: moi pixel pham vi 30 m (scope v3) gan o theo TAM pixel, nhan gia tri pixel nguon "
+        "CHUA tam; nhan o = TB tren pixel pham vi co gia tri hop le (ma tran dem o x pixel nguon); o khong pham vi "
+        "-> NaN; o co pham vi chi tren pixel nguon NaN -> NaN (khong muon lang gieng); khong lay mau lai raster")
 
 
 def log(msg):
@@ -58,7 +40,7 @@ def read_json(p):
 
 
 def load_points(a):
-    """Diem cham duoc: eval_points ∩ co ref_salinity huu han o >= 1 mua."""
+    """Diem cham duoc = eval_points co ref_salinity huu han o >= 1 mua."""
     import geopandas as gpd
 
     pts = gpd.read_file(a.points)
@@ -77,37 +59,14 @@ def load_points(a):
 
 
 def read_values(path, band_idx):
+    """Gia tri band (float64); NoData khac NaN -> NaN."""
     import rasterio
 
     with rasterio.open(path) as ds:
-        return ds.read(band_idx).astype(np.float64), ds.crs, ds.transform
-
-
-def weights_for(a, src_key, sig, crs, transform):
-    """Raster trong so cua luoi nguon (cache trong out-dir, kiem sha scope + luoi)."""
-    import rasterio
-
-    path = os.path.join(a.out_dir, f"scope_weight_{src_key}.tif")
-    scope_sha = file_sha256(a.scope)
-    if os.path.exists(path) and os.path.exists(path + ".provenance.json") and not a.force:
-        info = read_json(path + ".provenance.json")
-        with rasterio.open(path) as ds:
-            same = grid_signature(ds) == sig
-        if same and info.get("scope_sha256") == scope_sha and info.get("rules_version") == MET_RULES_VERSION:
-            log(f"  trong so {src_key}: da co - dung lai")
-            return path, info["weights_info"]
-    t = time.time()
-    w, info = scope_weights(a.scope, crs, transform, (sig[3], sig[2]))
-    if info["n_scope_outside"]:
-        raise SystemExit(f"[LOI] {info['n_scope_outside']} pixel scope nam ngoai luoi nguon {src_key}")
-    write_raster(path, [w], crs, transform, ["scope_weight"], nodata=None)
-    write_provenance(path, a.boundary, rules_version=MET_RULES_VERSION, scope=os.path.basename(a.scope),
-                     scope_sha256=scope_sha, weights_info=info,
-                     rule="w_p = (so tam pixel scope 30 m trong p) * 900 m2 / dien tich pixel p (kinh-vi: geodesic "
-                          "WGS84; sinusoidal hinh cau: |a*e|), cat <= 1")
-    log(f"  trong so {src_key}: {info['n_px_w_gt0']} pixel w > 0, w max (truoc cat) {info['w_max_raw']:.4f}, "
-        f"{info['n_scope_px']:,} pixel scope ({time.time() - t:.0f}s)")
-    return path, info
+        v = ds.read(band_idx).astype(np.float64)
+        if ds.nodata is not None and not np.isnan(ds.nodata):
+            v[v == ds.nodata] = np.nan
+        return v, ds.crs, ds.transform
 
 
 def outputs_current(path, want):
@@ -118,12 +77,11 @@ def outputs_current(path, want):
     return all(info.get(k) == v for k, v in want.items())
 
 
-def run_target(a, key, years, grids, pts):
+def load_target(a, key, years):
+    """Kiem + doc raster nguon moi mua (cung luoi pixel)."""
     spec = MET_TARGETS[key]
-    col = spec["col"]
-    log(f"== {key} -> cot {col} ({spec['unit']})")
-    paths = {s: os.path.join(DATA if a.data_root is None else a.data_root, *spec["path"][:-1],
-                             spec["path"][-1].format(s=s)) for s in years}
+    root = DATA if a.data_root is None else a.data_root
+    paths = {s: os.path.join(root, *spec["path"][:-1], spec["path"][-1].format(s=s)) for s in years}
     sigs, band_idx = {}, None
     for s, p in paths.items():
         try:
@@ -132,41 +90,23 @@ def run_target(a, key, years, grids, pts):
             raise SystemExit(f"[LOI] {exc}")
     if len(set(sigs.values())) != 1:
         raise SystemExit(f"[LOI] {key}: luoi pixel khac nhau giua cac mua")
-    sig = sigs[years[0]]
     values, crs, transform = {}, None, None
     for s, p in paths.items():
         values[s], crs, transform = read_values(p, band_idx)
-    src_sha = {os.path.basename(p): file_sha256(p) for p in paths.values()}
-    wpath, winfo = weights_for(a, spec["source"], sig, crs, transform)
-    import rasterio
-    with rasterio.open(wpath) as ds:
-        w = ds.read(1).astype(np.float64)
-    n_change, n_always = nan_pattern_changes(values, w, spec["nan_seasons"])
-    log(f"  pixel w > 0: NaN o MOI mua {n_always}, NaN chi mot so mua {n_change}")
-    if spec["same_nan_all_seasons"] and n_change:
-        raise SystemExit(f"[LOI] {key}: {n_change} pixel co trong so thieu chi o mot so mua (quy tac E4)")
-    for s in spec["nan_seasons"]:
-        if s in values:
-            log(f"  mua {s}: NaN toan bo theo quy tac chot truoc (E4 phuong an (b))")
+    sig = sigs[years[0]]
+    return {"key": key, "spec": spec, "values": values, "crs": crs, "transform": transform,
+            "shape": (sig[3], sig[2]), "sig": sig,
+            "src_sha": {os.path.basename(p): file_sha256(p) for p in paths.values()}}
 
-    bands, names, seasons = stack_seasons(values, spec["nan_seasons"])
-    stack = os.path.join(a.work_dir, f"stack_{key}.tif")
-    write_raster(stack, bands, crs, transform, names)
-    del bands
-    want = {"rules_version": MET_RULES_VERSION, "target": col, "sources_sha256": src_sha,
-            "weights_sha256": file_sha256(wpath), "seasons": years}
-    common = dict(unit=spec["unit"], variable=key, value_band=spec["band"], weights=os.path.basename(wpath),
-                  weights_info=winfo, nan_seasons=list(spec["nan_seasons"]), scope_sha256=file_sha256(a.scope),
-                  rule="TB co trong so pham vi (exactextract weighted_mean, trong so = ty le dien tich scope v3 cua "
-                       "pixel nguon); da giac o chieu sang CRS nguon, khong lay mau lai raster; o khong co dien tich "
-                       "pham vi tren pixel hop le -> NaN", **want)
 
-    # ---- diem
+def write_points(a, t, pts, years, scope_sha):
+    key, spec = t["key"], t["spec"]
+    col = spec["col"]
     pp = os.path.join(a.out_dir, f"points_reference_{col}.csv")
-    pt_rows = []
-    pt_want = {**want, "points_sha256": file_sha256(a.points), "points_ref_sal_sha256": file_sha256(a.points_ref_sal)}
-    xy = pts.to_crs(crs)
-    pv = point_pixel_values(values, transform, xy.geometry.x.to_numpy(), xy.geometry.y.to_numpy(),
+    want = {"rules_version": MET_RULES_VERSION, "target": col, "sources_sha256": t["src_sha"], "seasons": years,
+            "points_sha256": file_sha256(a.points), "points_ref_sal_sha256": file_sha256(a.points_ref_sal)}
+    xy = pts.to_crs(t["crs"])
+    pv = point_pixel_values(t["values"], t["transform"], xy.geometry.x.to_numpy(), xy.geometry.y.to_numpy(),
                             spec["nan_seasons"])
     pref = pd.DataFrame({"point_id": pts["point_id"].to_numpy()[pv["idx"]],
                          "block_id": pts["block_id"].astype(str).to_numpy()[pv["idx"]],
@@ -177,11 +117,11 @@ def run_target(a, key, years, grids, pts):
     pref = pref.sort_values(["season", "point_id"], kind="stable").reset_index(drop=True)
     if pref.duplicated(["point_id", "season"]).any():
         raise SystemExit("[LOI] diem: khoa (point_id, season) trung")
+    rows = []
     for s, g in pref.groupby("season"):
-        nan_ids = g.loc[~g["src_px_valid"], "point_id"]
-        pt_rows.append({"variable": key, "column": col, "season": int(s), "n_points": len(g),
-                        "n_points_nan": int(len(nan_ids)), "n_points_ok": int(g["src_px_valid"].sum())})
-    if a.force or not outputs_current(pp, pt_want):
+        rows.append({"variable": key, "column": col, "season": int(s), "n_points": len(g),
+                     "n_points_nan": int((~g["src_px_valid"]).sum()), "n_points_ok": int(g["src_px_valid"].sum())})
+    if a.force or not outputs_current(pp, want):
         pref.to_csv(pp + ".part", index=False, float_format="%.6g")
         os.replace(pp + ".part", pp)
         nan_all = pref.groupby("point_id")["src_px_valid"].any()
@@ -190,53 +130,35 @@ def run_target(a, key, years, grids, pts):
                          points=os.path.basename(a.points), n_points=int(len(pts)),
                          n_points_nan_all_seasons=int((~nan_all).sum()),
                          points_nan_all_seasons=sorted(nan_all[~nan_all].index.tolist()),
-                         **{**common, **pt_want})
-        log(f"  diem: ghi {pp} ({len(pref)} dong; NaN moi mua: {int((~nan_all).sum())} diem)")
+                         unit=spec["unit"], variable=key, value_band=spec["band"],
+                         nan_seasons=list(spec["nan_seasons"]), scope_sha256=scope_sha, **want)
+        log(f"  {key} diem: ghi {pp} ({len(pref)} dong; NaN moi mua: {int((~nan_all).sum())} diem)")
     else:
-        log(f"  diem: {pp} da co - bo qua")
+        log(f"  {key} diem: {pp} da co - bo qua")
+    return rows
 
-    # ---- o theo luoi
-    import geopandas as gpd
 
-    grid_rows = []
-    for gpath in grids:
-        name = os.path.splitext(os.path.basename(gpath))[0]
-        out = os.path.join(a.out_dir, f"{name}_labels_season_{col}.csv")
-        g_want = {**want, "grid": os.path.basename(gpath), "grid_sha256": file_sha256(gpath)}
-        if not a.force and outputs_current(out, g_want):
-            log(f"  {name}: da co - bo qua")
-            tab = pd.read_csv(out, dtype={"cell_id": str})
-        else:
-            t = time.time()
-            grid = gpd.read_file(gpath)
-            grid["cell_id"] = grid["cell_id"].astype(str)
-            if grid["cell_id"].duplicated().any():
-                raise SystemExit(f"[LOI] {name}: cell_id trung")
-            tab = cell_weighted_labels(stack, wpath, (grid["cell_id"].tolist(), None, grid.geometry.tolist()),
-                                       seasons, col)
-            if len(tab) != len(grid) * len(seasons):
-                raise SystemExit(f"[LOI] {name}: {len(tab)} dong != {len(grid)} o x {len(seasons)} mua")
-            tab.to_csv(out + ".part", index=False, float_format="%.6g")
-            os.replace(out + ".part", out)
-            write_provenance(out, a.boundary, **{**common, **g_want})
-            log(f"  {name}: {len(grid)} o x {len(seasons)} mua ({time.time() - t:.0f}s)")
-        for s, g in tab.groupby("season"):
-            fin = g[col].notna()
-            grid_rows.append({"variable": key, "column": col, "grid": name, "season": int(s), "n_cells": len(g),
-                              "n_cells_label": int(fin.sum()), "n_cells_nan": int((~fin).sum()),
-                              "n_cells_partial": int((fin & (g["lbl_cover_frac"] < 1 - 1e-9)).sum()),
-                              "value_min": float(g[col].min()), "value_median": float(g[col].median()),
-                              "value_max": float(g[col].max())})
-    os.remove(stack)
-    w_row = {"variable": key, "source": spec["source"], "n_px_w_gt0_nan_all": n_always,
-             "n_px_w_gt0_nan_some": n_change, **winfo}
-    return grid_rows, pt_rows, w_row
+def grid_report_rows(t, name, tab):
+    spec = t["spec"]
+    col = spec["col"]
+    rows = []
+    for s, g in tab.groupby("season"):
+        fin = g[col].notna()
+        no_scope = g["lbl_cover_frac"].isna()
+        rows.append({"variable": t["key"], "column": col, "grid": name, "season": int(s), "n_cells": len(g),
+                     "n_cells_label": int(fin.sum()), "n_cells_nan": int((~fin).sum()),
+                     "n_cells_no_scope": int(no_scope.sum()),
+                     "n_cells_scope_all_invalid": int((~fin & ~no_scope).sum()),
+                     "n_cells_partial": int((fin & (g["lbl_cover_frac"] < 1 - 1e-12)).sum()),
+                     "value_min": float(g[col].min()), "value_median": float(g[col].median()),
+                     "value_max": float(g[col].max())})
+    return rows
 
 
 def main(a):
     t0 = time.time()
     years = list(range(a.years[0], a.years[1] + 1))
-    for d in (a.out_dir, a.work_dir, a.report_dir):
+    for d in (a.out_dir, a.report_dir):
         os.makedirs(d, exist_ok=True)
     free = shutil.disk_usage(a.out_dir).free / 1e9
     log(f"Cho trong o dich {a.out_dir}: {free:.1f} GB")
@@ -249,26 +171,115 @@ def main(a):
         raise SystemExit(f"[LOI] luoi khong ton tai: {grids}")
     pts = load_points(a)
     log(f"Diem cham duoc: {len(pts):,}")
-    grid_rows, pt_rows, w_rows = [], [], []
+    scope_sha = file_sha256(a.scope)
+
+    targets = {}
     for key in a.targets:
-        g, p, w = run_target(a, key, years, grids, pts)
-        grid_rows += g
-        pt_rows += p
-        w_rows.append(w)
-    rg, rp, rw = pd.DataFrame(grid_rows), pd.DataFrame(pt_rows), pd.DataFrame(w_rows)
+        targets[key] = load_target(a, key, years)
+        log(f"{key}: {len(years)} mua, luoi nguon {targets[key]['shape']} ({targets[key]['spec']['source']})")
+    sources = {}
+    for t in targets.values():
+        src = t["spec"]["source"]
+        if src in sources and sources[src]["sig"] != t["sig"]:
+            raise SystemExit(f"[LOI] nguon {src}: luoi pixel khac nhau giua cac bien")
+        sources.setdefault(src, t)
+
+    pt_rows = []
+    for t in targets.values():
+        pt_rows += write_points(a, t, pts, years, scope_sha)
+
+    import geopandas as gpd
+
+    grid_rows = []
+    used_px = {src: set() for src in sources}   # pixel nguon co pham vi, hop cac luoi da tinh
+    for gpath in grids:
+        name = os.path.splitext(os.path.basename(gpath))[0]
+        g_sha = file_sha256(gpath)
+        todo = {}
+        for key, t in targets.items():
+            col = t["spec"]["col"]
+            out = os.path.join(a.out_dir, f"{name}_labels_season_{col}.csv")
+            want = {"rules_version": MET_RULES_VERSION, "target": col, "sources_sha256": t["src_sha"],
+                    "seasons": years, "scope_sha256": scope_sha, "grid": os.path.basename(gpath), "grid_sha256": g_sha}
+            if not a.force and outputs_current(out, want):
+                log(f"  {name}/{key}: da co - bo qua")
+                grid_rows += grid_report_rows(t, name, pd.read_csv(out, dtype={"cell_id": str}))
+            else:
+                todo[key] = (out, want)
+        if not todo:
+            continue
+        tg = time.time()
+        grid = gpd.read_file(gpath)
+        grid["cell_id"] = grid["cell_id"].astype(str)
+        if grid["cell_id"].duplicated().any():
+            raise SystemExit(f"[LOI] {name}: cell_id trung")
+        need_src = {targets[k]["spec"]["source"] for k in todo}
+        src_args = {s: (sources[s]["crs"], sources[s]["transform"], sources[s]["shape"]) for s in need_src}
+        cell_ids, counts, cinfo = scope_source_counts(a.scope, (grid["cell_id"].tolist(), None,
+                                                                 grid.geometry.tolist()), src_args)
+        for s in need_src:
+            if cinfo[s]["n_scope_outside"]:
+                raise SystemExit(f"[LOI] {name}: {cinfo[s]['n_scope_outside']} pixel pham vi trong o nam ngoai "
+                                 f"luoi nguon {s}")
+            used_px[s].update(counts[s]["px"].tolist())
+        n_scope = next(iter(cinfo.values()))["n_scope_in_cells"]
+        log(f"  {name}: ma tran dem {len(grid)} o, {n_scope:,} pixel pham vi trong o, "
+            + ", ".join(f"{s} {len(counts[s])} cap (o, pixel)" for s in sorted(need_src))
+            + f" ({time.time() - tg:.0f}s)")
+        for key, (out, want) in todo.items():
+            t = targets[key]
+            spec, col = t["spec"], t["spec"]["col"]
+            h, w = t["shape"]
+            cnt = counts[spec["source"]]
+            wpx = np.bincount(cnt["px"].to_numpy(), weights=cnt["n"].to_numpy(), minlength=h * w).reshape(h, w)
+            n_change, n_always = nan_pattern_changes(t["values"], wpx, spec["nan_seasons"])
+            if spec["same_nan_all_seasons"] and n_change:
+                raise SystemExit(f"[LOI] {name}/{key}: {n_change} pixel nguon co pham vi thieu chi o mot so mua "
+                                 f"(quy tac E4)")
+            tab = cell_count_labels(cnt, cell_ids, t["values"], col, spec["nan_seasons"])
+            if len(tab) != len(grid) * len(years):
+                raise SystemExit(f"[LOI] {name}: {len(tab)} dong != {len(grid)} o x {len(years)} mua")
+            tab.to_csv(out + ".part", index=False, float_format="%.6g")
+            os.replace(out + ".part", out)
+            write_provenance(out, a.boundary, unit=spec["unit"], variable=key, value_band=spec["band"],
+                             nan_seasons=list(spec["nan_seasons"]), scope=os.path.basename(a.scope), rule=RULE,
+                             n_scope_px_in_cells=n_scope, n_src_px_with_scope=int((wpx > 0).sum()),
+                             n_src_px_with_scope_nan_all=n_always, n_src_px_with_scope_nan_some=n_change, **want)
+            rows = grid_report_rows(t, name, tab)
+            grid_rows += rows
+            r0 = rows[0]
+            log(f"  {name}/{key}: {len(grid)} o x {len(years)} mua; mua {r0['season']}: NaN {r0['n_cells_nan']} "
+                f"(khong pham vi {r0['n_cells_no_scope']}, pham vi chi tren pixel NaN "
+                f"{r0['n_cells_scope_all_invalid']})")
+        del counts
+
+    src_rows = []
+    for key, t in targets.items():
+        h, w = t["shape"]
+        px = np.fromiter(used_px[t["spec"]["source"]], dtype=np.int64)
+        wpx = np.zeros(h * w)
+        wpx[px] = 1
+        n_change, n_always = nan_pattern_changes(t["values"], wpx.reshape(h, w), t["spec"]["nan_seasons"])
+        src_rows.append({"variable": key, "source": t["spec"]["source"], "n_src_px_with_scope": int(px.size),
+                         "n_src_px_nan_all": n_always, "n_src_px_nan_some": n_change,
+                         "note": "" if px.size else "khong tinh (moi luoi da co - bo qua)"})
+    rg, rp, rs = pd.DataFrame(grid_rows), pd.DataFrame(pt_rows), pd.DataFrame(src_rows)
     tag = "" if a.targets == list(MET_TARGETS) else "_" + "_".join(a.targets)
-    for df, nm in ((rg, "luoi"), (rp, "diem"), (rw, "trong_so")):
+    for df, nm in ((rg, "luoi"), (rp, "diem"), (rs, "nguon")):
         p = os.path.join(a.report_dir, f"dot7_e5_khi_tuong_{nm}{tag}.csv")
         df.to_csv(p, index=False, float_format="%.6g")
         write_provenance(p, a.boundary, rules_version=MET_RULES_VERSION, targets=a.targets, seasons=years)
     with pd.option_context("display.width", 250, "display.max_columns", 30, "display.max_rows", 200):
         piv = rg.groupby(["variable", "grid"]).agg(n_cells=("n_cells", "first"), nan_min=("n_cells_nan", "min"),
                                                    nan_max=("n_cells_nan", "max"),
+                                                   no_scope=("n_cells_no_scope", "max"),
+                                                   all_invalid_max=("n_cells_scope_all_invalid", "max"),
                                                    partial_max=("n_cells_partial", "max"),
                                                    vmin=("value_min", "min"), vmax=("value_max", "max"))
         print(piv.to_string(), flush=True)
         print(rp.groupby("variable").agg(n_points=("n_points", "first"), nan_min=("n_points_nan", "min"),
                                          nan_max=("n_points_nan", "max")).to_string(), flush=True)
+        print(rs.to_string(index=False), flush=True)
     log(f"Xong trong {time.time() - t0:.0f}s")
 
 
@@ -286,7 +297,6 @@ if __name__ == "__main__":
     ap.add_argument("--grids", nargs="*")
     ap.add_argument("--years", nargs=2, type=int, default=[2014, 2026], metavar=("TU", "DEN"))
     ap.add_argument("--out-dir", default=f"{DATA}/labels/dot7")
-    ap.add_argument("--work-dir", default=os.path.join(tempfile.gettempdir(), "mekong_met_labels"))
     ap.add_argument("--report-dir", default=os.path.join(ROOT, "KE_HOACH", "ket-qua"))
     ap.add_argument("--force", action="store_true")
     main(ap.parse_args())
