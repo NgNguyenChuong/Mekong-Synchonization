@@ -40,6 +40,9 @@ from training.features import (  # noqa: E402,F401  (assert_no_leak_columns re-e
     select_feature_columns,
 )
 from training.split import (  # noqa: E402
+    DECLARABLE_EMPTY_GROUPS,
+    EMPTY_DECL_KEY,
+    EMPTY_LABEL,
     MAIN_HOLDOUT_SEASON,
     TEST_GROUPS,
     EvalSplitConfig,
@@ -48,6 +51,7 @@ from training.split import (  # noqa: E402
     block_cv_membership,
     block_cv_splits,
     block_cv_summary,
+    declared_empty_groups,
     season_sequential_split,
     split_summary,
     time_based_split,
@@ -163,6 +167,9 @@ def parse_args():
     parser.add_argument("--allow-holdout-season-override", action="store_true", default=False,
                         help=f"Cho phep --holdout-seasons KHONG chua {MAIN_HOLDOUT_SEASON} (thiet ke chinh). Ket qua "
                              "ghi config analysis_kind=phan_tich_do_nhay - khong dung de so khung chinh.")
+    parser.add_argument("--allow-empty-test-groups", nargs="+", choices=list(DECLARABLE_EMPTY_GROUPS), default=None,
+                        help=f"Nhom test rong CO CHU DICH - phai khop khai bao '{EMPTY_DECL_KEY}' trong provenance "
+                             "cua --table (runner tu truyen); khong khai bao -> LOI")
     parser.add_argument("--cv-rule", choices=["touch", "centroid"], default="touch")
     parser.add_argument("--points", default=os.path.join(ROOT, "data", "eval", "eval_points.geojson"),
                         help="Diem danh gia chung (phuong an C)")
@@ -301,6 +308,33 @@ def holdout_season_policy(holdout_seasons, allow_override: bool) -> bool:
                          f"chinh) -> {MAIN_HOLDOUT_SEASON} se vao CV/train. Phan tich do nhay: them "
                          "--allow-holdout-season-override.")
     return True
+
+
+def resolve_empty_test_groups(args) -> tuple[tuple, dict | None]:
+    """(nhom rong duoc phep, nguon khai bao) tu --allow-empty-test-groups doi chieu provenance cua --table.
+
+    Khong co co -> ((), None), khong doc provenance. Co co ma thieu --table / provenance / khai bao, hoac nhom
+    khac nhom suy tu khai bao -> ValueError.
+    """
+    want = tuple(args.allow_empty_test_groups or ())
+    if not want:
+        return (), None
+    from preprocessing import provenance_path
+
+    if not args.table:
+        raise ValueError("--allow-empty-test-groups chi dung voi --table (khai bao nam o provenance bang).")
+    pp = provenance_path(args.table)
+    if not os.path.exists(pp):
+        raise ValueError(f"--allow-empty-test-groups nhung {args.table} khong co provenance.")
+    with open(pp, encoding="utf-8") as f:
+        prov = json.load(f)
+    got = declared_empty_groups(prov, args.target, tuple(args.holdout_seasons))
+    if set(got) != set(want):
+        raise ValueError(f"--allow-empty-test-groups {list(want)} khac khai bao provenance {list(got)} "
+                         f"('{EMPTY_DECL_KEY}' trong {pp}).")
+    decl = prov[EMPTY_DECL_KEY]
+    groups = tuple(g for g in TEST_GROUPS if g in want)
+    return groups, {"provenance": pp, "seasons": decl["seasons"], "reason": decl["reason"]}
 
 
 def check_cell_table_provenance(cell_table_path, blocks_path, grid_path, cv_folds_path) -> dict:
@@ -495,10 +529,13 @@ def _load_point_frame(args):
     return pf, info
 
 
-def _check_point_folds_match_cells(pf, cell_table):
+def _check_point_folds_match_cells(pf, cell_table, no_cv_points_ok=False):
     """Fold cua diem (tu --cv-folds) phai CUNG cach chia voi fold cua o trong lan chay: voi moi khoi co ca diem va
-    o tam nam trong khoi, cv_fold phai bang nhau. Lech -> phuong an C vo (An 2026-10-04)."""
+    o tam nam trong khoi, cv_fold phai bang nhau. Lech -> phuong an C vo (An 2026-10-04).
+    no_cv_points_ok: final voi nhom thoi_gian rong khai bao truoc -> moi diem o khoi giu rieng, khong co gi de so."""
     if "block_id" not in cell_table.columns:
+        return
+    if no_cv_points_ok and not (pf["cv_fold"].astype(int) >= 0).any():
         return
     ct = cell_table[cell_table["cv_fold"].astype(int) >= 0].groupby(cell_table["block_id"].astype(str))["cv_fold"]
     if (ct.nunique() > 1).any():
@@ -606,7 +643,9 @@ def run_eval_mode(args, dataset: pd.DataFrame, target_col: str) -> None:
         cell_table, table_source = load_cell_table(args)
         labelled, train_filter = apply_train_filter(dataset, target_col,
                                                     None if args.allow_no_train_filter else args.train_col)
-        split_df = assign_eval_split(labelled, cell_table, holdout_seasons=tuple(args.holdout_seasons))
+        empty_groups, empty_source = resolve_empty_test_groups(args)
+        split_df = assign_eval_split(labelled, cell_table, holdout_seasons=tuple(args.holdout_seasons),
+                                     allowed_empty=empty_groups)
     except (FileNotFoundError, ValueError) as exc:
         print(f"Loi thiet ke danh gia: {exc}", file=sys.stderr, flush=True)
         sys.exit(2)
@@ -620,7 +659,7 @@ def run_eval_mode(args, dataset: pd.DataFrame, target_col: str) -> None:
             point_info["note"] = "--no-point-eval: KHONG cham theo diem (khong dung cho thiet ke chinh)"
         elif args.points_ref:
             pf, point_info = _load_point_frame(args)
-            _check_point_folds_match_cells(pf, cell_table)
+            _check_point_folds_match_cells(pf, cell_table, no_cv_points_ok="thoi_gian" in empty_groups)
             cell_feats = dataset.drop(columns=[target_col])
         elif args.table:
             raise ValueError("--table can --points-ref (cham theo diem, phuong an C) hoac --no-point-eval.")
@@ -679,7 +718,10 @@ def run_eval_mode(args, dataset: pd.DataFrame, target_col: str) -> None:
         grid=args.grid, blocks=args.blocks, blocks_sha256=_sha256(args.blocks),
         cv_folds=args.cv_folds, cv_folds_sha256=_sha256(args.cv_folds), cell_table=table_source,
         grid_sha256=_sha256(args.grid), holdout_season_override=holdout_override,
-        analysis_kind="phan_tich_do_nhay" if holdout_override else "thiet_ke_chinh")
+        analysis_kind="phan_tich_do_nhay" if holdout_override else "thiet_ke_chinh",
+        empty_test_groups_declared=empty_groups, empty_test_groups_source=empty_source)
+    if empty_groups:
+        print(f"Nhom test {list(empty_groups)}: {EMPTY_LABEL} - {empty_source['reason']}", flush=True)
     if holdout_override:
         print(f"[CANH BAO] Mua giu rieng {list(args.holdout_seasons)} KHONG chua {MAIN_HOLDOUT_SEASON}: phan tich do "
               "nhay (--allow-holdout-season-override), khong dung de so khung chinh.", file=sys.stderr, flush=True)
@@ -829,6 +871,14 @@ def run_eval_mode(args, dataset: pd.DataFrame, target_col: str) -> None:
         config["test_metrics_by_group"] = by_group
         config["test_metrics_by_group_mean_over_seeds"] = {g: _mean_over_seeds(v) for g, v in by_group.items()}
         config["n_test_rows_by_group"] = test_df["test_group"].value_counts().to_dict()
+        for g in empty_groups:  # metrics None (khong chia 0); danh dau ro thay vi de trong
+            config["n_test_rows_by_group"][g] = 0
+            config["test_metrics_by_group_mean_over_seeds"][g]["status"] = EMPTY_LABEL
+            if "n_point_rows_by_group" in config:
+                config["n_point_rows_by_group"][g] = 0
+        if empty_groups:
+            notes["nhom_test_rong"] = (f"{list(empty_groups)}: {EMPTY_LABEL} - {empty_source['reason']} "
+                                       f"(mua {empty_source['seasons']}).")
         if args.model in SPATIAL_MODELS:
             notes["idw"] = ("IDW noi suy theo TUNG MUA tu nhan cung mua cua tap huan luyen; mua giu rieng (nhom "
                             "thoi_gian, ca_hai) khong co nhan cung mua trong train -> NaN (khong muon mua khac).")

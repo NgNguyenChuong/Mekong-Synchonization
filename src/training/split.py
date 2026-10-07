@@ -98,6 +98,7 @@ def split_summary(train_df: pd.DataFrame, val_df: pd.DataFrame, test_df: pd.Data
 # CV 5 fold cap khoi 50 km (cv_folds.csv dung chung 13 luoi), o cat ngang khoi theo quy tac "cham".
 # -----------------------------------------------------------------------------------------------
 TEST_GROUPS = ("khong_gian", "thoi_gian", "ca_hai")
+DECLARABLE_EMPTY_GROUPS = ("thoi_gian", "ca_hai")   # chi nhom theo mua moi rong duoc do mua NaN
 
 
 @dataclass
@@ -119,10 +120,13 @@ class EvalSplitConfig:
     # --allow-holdout-season-override -> analysis_kind = "phan_tich_do_nhay" (khong dung de so khung chinh).
     holdout_season_override: bool = False
     analysis_kind: str = "thiet_ke_chinh"
+    empty_test_groups_declared: tuple = ()
+    empty_test_groups_source: dict | None = None   # {provenance, seasons, reason}
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["holdout_seasons"] = [int(s) for s in self.holdout_seasons]
+        d["empty_test_groups_declared"] = list(self.empty_test_groups_declared)
         return d
 
 
@@ -140,14 +144,17 @@ def _cell_lookup(df: pd.DataFrame, cell_table: pd.DataFrame, cols) -> pd.DataFra
 
 
 def assign_eval_split(df: pd.DataFrame, cell_table: pd.DataFrame, holdout_seasons=(2020,),
-                      season_col: str = "season") -> pd.DataFrame:
+                      season_col: str = "season", allowed_empty=()) -> pd.DataFrame:
     """Them cot `split` (train/test) va `test_group` (khong_gian/thoi_gian/ca_hai; train -> "").
 
     test = o CHAM khoi giu rieng (cell_table.touches_holdout) HOAC mua thuoc holdout_seasons:
       khong_gian = cham & mua khong giu; thoi_gian = khong cham & mua giu; ca_hai = ca hai.
-    Nhom test nao rong -> ValueError (thiet ke khong thuc hien duoc tren bang nay).
-    Khong doi thu tu/chi muc dong cua df.
+    Nhom test rong ngoai `allowed_empty` -> ValueError; nhom trong `allowed_empty` (khai bao truoc, xem
+    declared_empty_groups) phai THAT SU rong. Khong doi thu tu/chi muc dong cua df.
     """
+    bad = sorted(set(allowed_empty) - set(DECLARABLE_EMPTY_GROUPS))
+    if bad:
+        raise ValueError(f"allowed_empty {bad} ngoai {list(DECLARABLE_EMPTY_GROUPS)}.")
     if not holdout_seasons:
         raise ValueError("holdout_seasons rong - thiet ke chinh giu rieng mua 2020.")
     if df[season_col].isna().any():
@@ -162,15 +169,44 @@ def assign_eval_split(df: pd.DataFrame, cell_table: pd.DataFrame, holdout_season
     out.loc[~touch & held, "test_group"] = "thoi_gian"
     out.loc[touch & held, "test_group"] = "ca_hai"
     empty = [g for g in TEST_GROUPS if not (out["test_group"] == g).any()]
-    if empty:
-        raise ValueError(f"Nhom test rong: {empty} (mua giu rieng {list(holdout_seasons)} co trong bang? "
+    undeclared = [g for g in empty if g not in allowed_empty]
+    if undeclared:
+        raise ValueError(f"Nhom test rong: {undeclared} (mua giu rieng {list(holdout_seasons)} co trong bang? "
                          "co o cham khoi giu rieng?)")
+    stale = [g for g in TEST_GROUPS if g in allowed_empty and g not in empty]
+    if stale:  # khai bao cu khong con dung voi bang
+        raise ValueError(f"Nhom {stale} khai bao rong nhung bang co dong test.")
     if not (out["split"] == "train").any():
         raise ValueError("Tap huan luyen rong.")
     return out
 
 
 MAIN_HOLDOUT_SEASON = 2020  # mua giu rieng cua thiet ke chinh (An chot 2026-10-03)
+EMPTY_DECL_KEY = "holdout_season_nan"    # khoa khai bao trong provenance bang hop nhat
+EMPTY_LABEL = "rong (khai bao truoc)"
+
+
+def declared_empty_groups(prov: dict | None, target: str, holdout_seasons=(MAIN_HOLDOUT_SEASON,)) -> tuple:
+    """Nhom test rong CO CHU DICH theo provenance[EMPTY_DECL_KEY] = {"target", "seasons", "reason"}.
+
+    Khong khai bao -> (). Khai bao phu het holdout_seasons -> ("thoi_gian", "ca_hai"); phu mot phan / khong
+    giao -> (). Sai dang hoac target khac -> ValueError.
+    """
+    decl = (prov or {}).get(EMPTY_DECL_KEY)
+    if decl is None:
+        return ()
+    if not isinstance(decl, dict):
+        raise ValueError(f"{EMPTY_DECL_KEY} phai la dict, nhan {type(decl).__name__}.")
+    if decl.get("target") != target:
+        raise ValueError(f"{EMPTY_DECL_KEY} cho target '{decl.get('target')}' khac '{target}'.")
+    seasons = decl.get("seasons")
+    if (not isinstance(seasons, list) or not seasons
+            or any(not isinstance(x, int) or isinstance(x, bool) for x in seasons)):
+        raise ValueError(f"{EMPTY_DECL_KEY}.seasons phai la danh sach so nguyen khong rong, nhan {seasons!r}.")
+    if not isinstance(decl.get("reason"), str) or not decl["reason"].strip():
+        raise ValueError(f"{EMPTY_DECL_KEY}.reason rong - phai ghi ly do.")
+    hs = {int(s) for s in holdout_seasons}
+    return DECLARABLE_EMPTY_GROUPS if hs and hs <= set(seasons) else ()
 
 
 def _check_holdout_seasons(df: pd.DataFrame, holdout_seasons, season_col: str) -> None:

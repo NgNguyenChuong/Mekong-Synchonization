@@ -21,6 +21,9 @@ Bien muc tieu (--target, Dot 7; mac dinh salinity = hanh vi cu, ten lan chay va 
 chay them "__t-<target>", truyen --target xuong train.py, khoa 'target' (meta cu thieu khoa = salinity); provenance
 bang / dap an co 'target' khac --target -> LOI som. Bang theo bien o --tables-dir rieng
 (<DATA_ROOT>/features/unified_dot7/<target>), dap an <DATA_ROOT>/labels/dot7/points_reference_<target>.csv.
+Nhom test rong co chu dich (CHG-25 muc 4): provenance bang co khai bao 'holdout_season_nan' (target khop) -> truyen
+--allow-empty-test-groups xuong train.py + khoa 'empty_test_groups_declared'; bien Dot 7 ma bang thieu provenance -> LOI
+truoc khi chay luot nao.
 Tong hop -> artifacts/experiments/<prefix>_manifest.csv (gop don theo ten lan chay + mode, khong ghi de dong
 cu; KHONG in chi so sai so). run_meta ghi phien ban python/numpy/pandas/sklearn.
 
@@ -46,13 +49,14 @@ import pandas as pd
 KEY_FIELDS = ("run", "grid", "model", "scheme", "label_set", "mode", "feature_set", "features_sha256",
               "git_commit", "git_dirty_src_scripts", "allow_dirty", "allow_untagged", "seeds", "table_sha256",
               "cv_folds_sha256", "points_ref_sha256", "grid_sha256", "blocks_sha256", "points_sha256",
-              "points_ref_variant", "points_subset_of_ref", "target")
+              "points_ref_variant", "points_subset_of_ref", "target", "empty_test_groups_declared")
 # Gia tri mac dinh khi run_meta CU thieu khoa (lan chay truoc khi them khoa) - de khong chay lai do man.
-META_DEFAULTS = {"target": "salinity"}
+META_DEFAULTS = {"target": "salinity", "empty_test_groups_declared": []}
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
+from training.split import MAIN_HOLDOUT_SEASON, declared_empty_groups  # noqa: E402
 
 DATA = data_path()
 if sys.platform == "win32":
@@ -152,6 +156,15 @@ def target_mismatch(path, target, default=None):
     return None
 
 
+def table_empty_groups(table, target) -> list:
+    """Nhom test rong khai bao trong provenance bang (train.py mac dinh giu rieng MAIN_HOLDOUT_SEASON).
+    Bien Dot 7 (target != salinity) ma bang thieu provenance, hoac khai bao sai dang -> ValueError."""
+    prov = provenance_of(table)
+    if not prov and target != "salinity":
+        raise ValueError(f"{os.path.basename(table)}: thieu provenance (bang bien Dot 7 bat buoc co)")
+    return list(declared_empty_groups(prov, target, (MAIN_HOLDOUT_SEASON,)))
+
+
 def is_done(meta_path, cfg_path, want: dict) -> bool:
     if not (os.path.exists(meta_path) and os.path.exists(cfg_path)):
         return False
@@ -211,15 +224,23 @@ def main(a):
         sys.exit(f"[LOI] Tien to '{a.prefix}' (label_set {a.label_set or 'chinh'}) da co {len(conflicts)} lan chay "
                  f"bien the dap an khac (vd {conflicts[0][0]}: {conflicts[0][1]}) - cham phu phai dung tien to rieng "
                  "(vd --prefix phu6090), khong ghi de lan cham chinh.")
-    rows, ref_features, vers = [], {}, versions()
+    empty_by_grid = {}   # kiem moi bang truoc khi chay luot nao
     for grid in grids:
         table = os.path.join(a.tables_dir, f"{grid}_unified{suffix}.csv")
-        grid_path = os.path.join(a.grids_dir, f"{grid}.geojson")
         if not os.path.exists(table):
             sys.exit(f"Khong co bang {table}")
         err = target_mismatch(table, a.target)
         if err:
             sys.exit(f"[LOI] {err}")
+        try:
+            empty_by_grid[grid] = table_empty_groups(table, a.target)
+        except ValueError as exc:
+            sys.exit(f"[LOI] {grid}: {exc}")
+    rows, ref_features, vers = [], {}, versions()
+    for grid in grids:
+        table = os.path.join(a.tables_dir, f"{grid}_unified{suffix}.csv")
+        grid_path = os.path.join(a.grids_dir, f"{grid}.geojson")
+        empty_groups = empty_by_grid[grid]
         table_sha, grid_sha = sha256(table), sha256(grid_path)
         for scheme in a.schemes:
             folds = os.path.join(a.folds_dir, f"cv_folds_s{scheme}.csv")
@@ -235,9 +256,11 @@ def main(a):
                         "mode": a.mode, "table_sha256": table_sha, "cv_folds_sha256": folds_sha,
                         "points_ref_sha256": ref_sha, "grid_sha256": grid_sha, "blocks_sha256": blocks_sha,
                         "points_sha256": points_sha, "points_ref_variant": a.points_ref_variant,
-                        "points_subset_of_ref": a.points_subset_of_ref, "target": a.target}
+                        "points_subset_of_ref": a.points_subset_of_ref, "target": a.target,
+                        "empty_test_groups_declared": empty_groups}
                 row = {"run": name, "grid": grid, "model": model, "scheme": scheme, "label_set": a.label_set or "chinh",
-                       **want, "seeds": " ".join(map(str, a.seeds)), "git_tag": state["git_tag"]}
+                       **want, "seeds": " ".join(map(str, a.seeds)), "git_tag": state["git_tag"],
+                       "empty_test_groups_declared": " ".join(empty_groups)}
                 if is_done(meta_path, os.path.join(out, "config.json"), want):
                     err = check_features(out, model, ref_features)
                     rows.append({**row, "status": "bo_qua_da_xong" if not err else f"LOI: {err}",
@@ -255,6 +278,8 @@ def main(a):
                     cmd += ["--features-file", feat_file]
                 if a.target != "salinity":
                     cmd += ["--target", a.target]
+                if empty_groups:
+                    cmd += ["--allow-empty-test-groups", *empty_groups]
                 if a.no_point_eval:
                     cmd += ["--no-point-eval"]
                 else:
