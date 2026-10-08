@@ -2,10 +2,14 @@
 
 Du lieu gia (tmp_path): 13 luoi that (ten + dien tich nhu bang doi chieu), 10 khoi CV + 2 khoi giu rieng x 30 diem x
 2 mua; |e| HistGB = U(0,5; 1,5); season_mean = HistGB + 1 (hoc duoc ro) tru luoi BAD (chenh doi dau theo khoi ~ 0).
+Pham vi Holm: so voi analyze_cv_family + dot7_rules NGUYEN VAN o commit 114bb63f (git show), cung du lieu gia.
 """
+import hashlib
 import json
 import os
+import subprocess
 import sys
+import types
 import zlib
 
 import numpy as np
@@ -20,8 +24,10 @@ import analyze_block_size as abs_  # noqa: E402
 import analyze_cv_family as acf  # noqa: E402
 import analyze_final as afin  # noqa: E402
 import analyze_learnability as alr  # noqa: E402
+import check_sealed  # noqa: E402
 from run_experiments import run_name  # noqa: E402
-from training.dot7_rules import MO_TA, TESTED_TIERS  # noqa: E402
+from training.dot7_rules import (EXPECTED_F1_M, MO_TA, SENS_SUFFIX, TESTED_TIERS, compare_tiered,  # noqa: E402
+                                 expected_f1_m, holm_tiers, scopes_differ)
 from training.evaluate import holm_adjust  # noqa: E402
 from training.split import EMPTY_LABEL  # noqa: E402
 
@@ -176,6 +182,19 @@ def _gate(path, rows):
 def _f1(out, target, prefix="cv1"):
     r = pd.read_csv(out / acf.out_name(target, prefix))
     return r[r["family"] == "F1_chinh"].reset_index(drop=True)
+
+
+def _sens_name(target, prefix="cv1"):
+    root, ext = os.path.splitext(acf.out_name(target, prefix))
+    return f"{root}{SENS_SUFFIX}{ext}"
+
+
+def _sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _prov(path):
+    return json.loads((path.parent / f"{path.name}.provenance.json").read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------
@@ -344,12 +363,17 @@ def test_t2m_toan_mo_ta(world, learned):
 def test_cong_khong_hop_le_ep_mo_ta(world, learned):
     _run(acf, _common(world, learned, ["--target", "ndwi"]))   # cong tu learned: muc 7 khong hop le
     f = _f1(learned, "ndwi")
-    assert len(f) == 12 and (f["holm_m"][f["muc_kiem_dinh"]] == 12).all()
+    assert len(f) == 12 and f["muc_kiem_dinh"].all()
     m7 = f[f["muc"] == 7]
     assert len(m7) == 6 and (m7["label"] == MO_TA).all() and not m7["kiem_dinh"].any()
     assert (~m7["cong_hoc_duoc"].astype(bool)).all() and m7["p_holm"].isna().all()
+    assert (m7["holm_m"] == 0).all()                         # pham vi cong: muc truot cong ra khoi ho Holm
     ok = f[f["muc"] != 7]
     assert ok["kiem_dinh"].all() and ok["cong_hoc_duoc"].astype(bool).all() and (ok["label"] != MO_TA).all()
+    assert (ok["holm_m"] == 6).all()
+    s = pd.read_csv(learned / _sens_name("ndwi"))           # do nhay: ho = moi muc kiem dinh (m = 12)
+    s = s[s["family"] == "F1_chinh"]
+    assert (s["holm_m"] == 12).all() and (s.loc[s["muc"] == 7, "label"] == MO_TA).all()
 
 
 def test_thieu_cong_loi(world, tmp_path):
@@ -444,3 +468,205 @@ def test_final_nhom_rong_khong_khai_bao_loi(world, tmp_path):
 def test_tested_tiers_bang_co_dinh():
     assert TESTED_TIERS["rain_chirps"] == {5} and TESTED_TIERS["t2m_era5"] == set() == TESTED_TIERS["rh_era5"]
     assert all(TESTED_TIERS[t] == {5, 6, 7} for t in ("salinity", "ndwi", "dsr_mcd18"))
+
+
+# ---------------------------------------------------------
+# Pham vi Holm F1: cong (mac dinh) / muc_kiem_dinh (do nhay) - so voi code cu 114bb63f
+# ---------------------------------------------------------
+OLD_COMMIT = "114bb63f"
+NO_M_COLS = ["delta_hat", "ci_low", "ci_high", "ci_tost_low", "ci_tost_high", "se", "seed_deltas", "delta_min_thr",
+             "delta_ref_level"]
+
+
+def _git_show(rel):
+    r = subprocess.run(["git", "show", f"{OLD_COMMIT}:{rel}"], cwd=ROOT, capture_output=True)
+    assert r.returncode == 0, r.stderr.decode("utf-8", "replace")
+    return r.stdout.decode("utf-8")
+
+
+def _exec_module(name, rel):
+    mod = types.ModuleType(name)
+    mod.__file__ = os.path.join(ROOT, rel)  # ROOT cua script = goc repo
+    exec(compile(_git_show(rel), f"<{OLD_COMMIT}>/{rel}", "exec"), mod.__dict__)
+    return mod
+
+
+@pytest.fixture(scope="module")
+def old_acf():
+    """analyze_cv_family + dot7_rules nguyen van o commit truoc khi doi pham vi Holm."""
+    rules = _exec_module("dot7_rules_old", "src/training/dot7_rules.py")
+    assert not hasattr(rules, "holm_tiers")
+    saved = sys.modules.get("training.dot7_rules")
+    sys.modules["training.dot7_rules"] = rules
+    try:
+        mod = _exec_module("analyze_cv_family_old", "scripts/analyze_cv_family.py")
+    finally:
+        if saved is None:
+            sys.modules.pop("training.dot7_rules", None)
+        else:
+            sys.modules["training.dot7_rules"] = saved
+    assert mod.compare_tiered is rules.compare_tiered
+    mod.point_units = _fake_point_units
+    return mod
+
+
+@pytest.fixture(scope="module")
+def scoped(world, old_acf):
+    """ndwi, cong muc 7 truot: code cu va code moi (mac dinh) cung --gate (cot cong_file trung)."""
+    base = world["base"] / "scoped"
+    base.mkdir()
+    gate = base / "gate_ndwi.csv"
+    _gate(gate, [("ndwi", 5, True), ("ndwi", 6, True), ("ndwi", 7, False)])
+    out = {"gate": gate}
+    for name, mod in (("old", old_acf), ("new", acf)):
+        out[name] = base / name
+        out[name].mkdir()
+        _run(mod, _common(world, out[name], ["--target", "ndwi", "--gate", str(gate)]))
+    return out
+
+
+def test_holm_m_suy_tu_bang_cong():
+    real = {"dsr_mcd18": {5: False, 6: True, 7: True}, "ndwi": {5: True, 6: True, 7: True},
+            "rain_chirps": {5: True, 6: False, 7: False}, "t2m_era5": {5: False, 6: False, 7: False},
+            "rh_era5": {5: False, 6: False, 7: False}, "salinity": None}
+    want = {"dsr_mcd18": 9, "ndwi": 12, "rain_chirps": 3, "t2m_era5": 0, "rh_era5": 0, "salinity": 12}
+    for t, g in real.items():
+        assert expected_f1_m(holm_tiers(t, g, "cong")) == want[t], t
+        assert expected_f1_m(holm_tiers(t, g, "muc_kiem_dinh")) == EXPECTED_F1_M[t], t
+        assert scopes_differ(t, g) == (t == "dsr_mcd18"), t
+    assert holm_tiers("dsr_mcd18", real["dsr_mcd18"]) == {6, 7}
+    with pytest.raises(ValueError):
+        holm_tiers("ndwi", None, "cap_f1")
+    with pytest.raises(ValueError):  # muc Holm ngoai muc kiem dinh
+        compare_tiered(None, None, pd.DataFrame(), "rain_chirps", levels=None, holm_tiers={6})
+    pairs = pd.DataFrame({"grid_a": list("abcde"), "grid_b": list("fghij"), "tier": [7] * 5})
+    with pytest.raises(AssertionError):  # so cap trong ho khac m suy tu cong
+        compare_tiered(None, None, pairs, "ndwi", levels=None, expected_m=expected_f1_m({7}), holm_tiers={7})
+
+
+def test_do_nhay_byte_giong_code_cu(scoped):
+    """File do nhay (m = moi muc kiem dinh) = dung byte file chinh cua code cu."""
+    old = scoped["old"] / acf.out_name("ndwi", "cv1")
+    assert (scoped["new"] / _sens_name("ndwi")).read_bytes() == old.read_bytes()
+    assert not (scoped["old"] / _sens_name("ndwi")).exists()
+    assert (scoped["new"] / acf.out_name("ndwi", "cv1")).read_bytes() != old.read_bytes()
+
+
+def test_holm_cong_bo_muc_truot_cong(scoped):
+    main = pd.read_csv(scoped["new"] / acf.out_name("ndwi", "cv1"))
+    sens = pd.read_csv(scoped["new"] / _sens_name("ndwi"))
+    assert list(main.columns) == list(sens.columns)
+    assert main[["family", "cmp_id"]].equals(sens[["family", "cmp_id"]])
+    for fam in ("F1_chinh", "phu_linear", "phu_idw", "do_nhay_chi_s42", "do_nhay_chi_s43", "do_nhay_chi_s44"):
+        f = main[main["family"] == fam]
+        k = f[f["kiem_dinh"]]
+        assert len(k) == 6 and set(k["muc"]) == {5, 6} and (k["holm_m"] == 6).all(), fam
+        assert np.allclose(k["p_holm"], holm_adjust(k["p_value"].to_numpy())), fam
+        m7 = f[f["muc"] == 7]
+        assert len(m7) == 6 and (m7["label"] == MO_TA).all() and (m7["holm_m"] == 0).all(), fam
+        assert m7["muc_kiem_dinh"].all() and (~m7["cong_hoc_duoc"].astype(bool)).all(), fam
+        assert m7[["p_value", "p_holm", "tost_tuong_duong"]].isna().all().all(), fam
+        s = sens[sens["family"] == fam].set_index("cmp_id").loc[k["cmp_id"]]
+        assert np.allclose(k["p_value"], s["p_value"], rtol=0, atol=0), fam
+        assert (k["p_holm"].to_numpy() <= s["p_holm"].to_numpy()).all(), fam   # ho nho hon -> Holm khong chat hon
+    s2 = main[main["family"] == "phu_S2_ti_le_1.2-1.5"]
+    assert len(s2) and (s2["muc"] == 5).all() and s2["kiem_dinh"].all()
+    for c in NO_M_COLS:  # khong phu thuoc m
+        assert main[c].astype(str).equals(sens[c].astype(str)), c
+
+
+def test_check_sealed_cot_khong_phu_thuoc_m(scoped, capsys):
+    main = str(scoped["new"] / acf.out_name("ndwi", "cv1"))
+    sens = str(scoped["new"] / _sens_name("ndwi"))
+    assert check_sealed.main([main, sens, "--cols", *NO_M_COLS]) == 0
+    assert check_sealed.main([main, sens]) == 2
+    out = capsys.readouterr().out
+    assert "p_holm" in out and "holm_m" in out and "KHONG DAT" in out
+
+
+def test_provenance_pham_vi_holm(scoped):
+    main = scoped["new"] / acf.out_name("ndwi", "cv1")
+    sens = scoped["new"] / _sens_name("ndwi")
+    pm, ps = _prov(main), _prov(sens)
+    assert pm["holm_scope"] == "cong" and pm["holm_m_f1"] == 6 and pm["muc_holm"] == [5, 6]
+    assert pm["muc_truot_cong"] == [7] and pm["holm_scopes_khac_nhau"] is True
+    assert pm["holm_m_theo_ho"]["F1_chinh"] == 6 and pm["holm_m_theo_ho"]["phu_S2_ti_le_1.2-1.5"] == 3
+    assert ps["holm_scope"] == "muc_kiem_dinh" and ps["holm_m_f1"] == 12 and ps["holm_m_theo_ho"]["F1_chinh"] == 12
+    for p, info in ((main, pm), (sens, ps)):
+        assert info["csv_sha256"] == _sha(p) and info["gate_sha256"] == _sha(scoped["gate"])
+        assert info["gate_hop_le"] == {"5": True, "6": True, "7": False} and info["n_luot"] == 117
+
+
+@pytest.mark.parametrize("target,rows", [
+    ("ndwi", [("ndwi", 5, True), ("ndwi", 6, True), ("ndwi", 7, True)]),
+    ("rain_chirps", [("rain_chirps", 5, True), ("rain_chirps", 6, False), ("rain_chirps", 7, False)]),
+    ("t2m_era5", [("t2m_era5", m, False) for m in (5, 6, 7)]),
+    ("salinity", None),
+])
+def test_moi_muc_qua_cong_file_chinh_byte_giong_code_cu(world, old_acf, tmp_path, target, rows):
+    extra = ["--target", target]
+    if rows is not None:
+        _gate(tmp_path / "gate.csv", rows)
+        extra += ["--gate", str(tmp_path / "gate.csv")]
+    outs = {}
+    for name, mod in (("old", old_acf), ("new", acf)):
+        outs[name] = tmp_path / name
+        outs[name].mkdir()
+        _run(mod, _common(world, outs[name], extra))
+    fn = acf.out_name(target, "cv1")
+    assert (outs["new"] / fn).read_bytes() == (outs["old"] / fn).read_bytes()
+    assert not (outs["new"] / _sens_name(target)).exists()
+    pv = _prov(outs["new"] / fn)
+    assert pv["holm_scopes_khac_nhau"] is False and pv["holm_m_f1"] == EXPECTED_F1_M[target]
+
+
+def test_holm_scope_muc_kiem_dinh_chi_ghi_file_do_nhay(world, scoped, tmp_path, capsys):
+    capsys.readouterr()
+    _run(acf, _common(world, tmp_path, ["--target", "ndwi", "--gate", str(scoped["gate"]),
+                                        "--holm-scope", "muc_kiem_dinh", "--no-table"]))
+    assert not (tmp_path / acf.out_name("ndwi", "cv1")).exists()
+    assert (tmp_path / _sens_name("ndwi")).read_bytes() == (scoped["new"] / _sens_name("ndwi")).read_bytes()
+    out = capsys.readouterr().out
+    assert "delta_hat" not in out and "cho_giu_rieng" not in out and "tuong_duong" not in out
+
+
+def test_final_theo_pham_vi_holm(world, scoped):
+    d, g = scoped["new"], ["--gate", str(scoped["gate"])]
+    _run(afin, _common(world, d, ["--target", "ndwi", *g]))
+    c = pd.read_csv(d / "dot7_ndwi_cv1_final_cap.csv")
+    assert c["doi_chieu_cv"].all() and (c.loc[c["kiem_dinh"], "holm_m"] == 6).all()
+    assert (c.loc[c["muc"] == 7, "label"] == MO_TA).all() and (c.loc[c["muc"] == 7, "holm_m"] == 0).all()
+    assert _prov(d / "dot7_ndwi_cv1_final_cap.csv")["holm_scope"] == "cong"
+    _run(afin, _common(world, d, ["--target", "ndwi", *g, "--holm-scope", "muc_kiem_dinh"]))
+    s = pd.read_csv(d / f"dot7_ndwi_cv1_final_cap{SENS_SUFFIX}.csv")
+    assert (d / f"dot7_ndwi_cv1_final_nhom{SENS_SUFFIX}.csv").exists()
+    assert s["doi_chieu_cv"].all() and (s["holm_m"] == 12).all() and (s.loc[s["muc"] == 7, "label"] == MO_TA).all()
+    assert c["delta_holdout"].astype(str).equals(s["delta_holdout"].astype(str))
+
+
+def test_final_khac_pham_vi_cv_loi(world, scoped, tmp_path):
+    """CV tinh voi muc 7 truot cong, final voi cong khac -> tap cap kiem dinh khac -> LOI."""
+    _gate(tmp_path / "gate_all.csv", [("ndwi", 5, True), ("ndwi", 6, True), ("ndwi", 7, True)])
+    args = _common(world, tmp_path, ["--target", "ndwi", "--gate", str(tmp_path / "gate_all.csv"),
+                                     "--cv-dir", str(scoped["new"])])
+    with pytest.raises(SystemExit) as e:
+        _run(afin, args)
+    assert "kiem dinh" in str(e.value)
+
+
+def test_block_size_theo_pham_vi_holm(world, scoped, tmp_path):
+    d, g = scoped["new"], ["--gate", str(scoped["gate"])]
+    _run(abs_, _common(world, d, ["--target", "ndwi", *g, "--no-table"], area=False))
+    _run(abs_, _common(world, d, ["--target", "ndwi", *g, "--holm-scope", "muc_kiem_dinh"], area=False))
+    a = pd.read_csv(d / "dot7_ndwi_khoi100_cap_min.csv")
+    b = pd.read_csv(d / f"dot7_ndwi_khoi100_cap_min{SENS_SUFFIX}.csv")
+    assert not a["kiem_dinh"].any() and not b["kiem_dinh"].any()   # muc min truot cong o ca hai pham vi
+    assert a.equals(b)
+    pa, pb = _prov(d / "dot7_ndwi_khoi100_cap_min.csv"), _prov(d / f"dot7_ndwi_khoi100_cap_min{SENS_SUFFIX}.csv")
+    assert pa["cv_ref"].endswith("dot7_ndwi_cv1_kiem_dinh_khoi.csv")
+    assert pb["cv_ref"].endswith(f"dot7_ndwi_cv1_kiem_dinh_khoi{SENS_SUFFIX}.csv")
+    _gate(tmp_path / "gate_all.csv", [("ndwi", 5, True), ("ndwi", 6, True), ("ndwi", 7, True)])
+    with pytest.raises(SystemExit) as e:  # cong khac cong cua file CV
+        _run(abs_, _common(world, tmp_path, ["--target", "ndwi", "--gate", str(tmp_path / "gate_all.csv"),
+                                             "--ref-dir", str(d)], area=False))
+    assert "kiem_dinh muc min" in str(e.value)

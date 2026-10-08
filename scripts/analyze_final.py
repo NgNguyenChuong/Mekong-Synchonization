@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 """Final (CHG-25 muc 4): xac nhan chieu cap F1 tren khoi giu rieng (chi nhom khong_gian) cho cap duoc kiem dinh cua
 bien, con lai mo_ta; bang mo ta nhom test (khong_gian / thoi_gian / ca_hai) tu config final, nhom rong khai bao truoc
-in "rong (khai bao truoc)".
+in "rong (khai bao truoc)". --holm-scope nhu analyze_cv_family; doi chieu voi file CV cung pham vi (tap cap kiem
+dinh phai trung).
 
 Chay:  venv/Scripts/python.exe scripts/analyze_final.py --target ndwi [--prefix cv1] [--min-frac 0.8]
+           [--holm-scope cong|muc_kiem_dinh] [--no-table]
 """
 import argparse
 import os
@@ -21,8 +23,10 @@ if sys.platform == "win32":
 import analyze_cv_family as acf  # noqa: E402
 from run_experiments import run_name  # noqa: E402
 from training.block_stats import area_levels, family_verdict, pairs_by_area  # noqa: E402
-from training.dot7_rules import (EXPECTED_F1_M, TESTED_TIERS, apply_gate, compare_tiered, guard_frozen,  # noqa: E402
-                                 load_gate, write_csv_atomic)
+from training.dot7_rules import (HOLM_SCOPES, TESTED_TIERS, all_scoped_names, apply_gate,  # noqa: E402
+                                 compare_tiered, expected_f1_m, file_sha256, guard_frozen, holm_provenance, holm_tiers,
+                                 load_gate, provenance_path, scoped_name, scopes_differ, write_csv_atomic,
+                                 write_provenance)
 from training.split import EMPTY_LABEL, TEST_GROUPS  # noqa: E402
 
 MODEL = "hist_gb"
@@ -65,6 +69,12 @@ def check_against_cv(res, cv_path, tol=1e-9):
         return False
     cv = pd.read_csv(cv_path)
     cv = cv[cv["family"] == "F1_chinh"].set_index(["grid_a", "grid_b"])
+    if "kiem_dinh" in cv.columns:
+        k_cv = set(cv.index[cv["kiem_dinh"].astype(bool)])
+        kf = res[res["kiem_dinh"].astype(bool)]
+        k_fin = set(zip(kf["grid_a"], kf["grid_b"]))
+        if k_cv != k_fin:
+            acf.loi(f"tap cap kiem dinh final ({len(k_fin)}) khac CV ({len(k_cv)}) - khac pham vi Holm / cong?")
     for r in res[res["kiem_dinh"].astype(bool)].itertuples():
         c = cv.loc[(r.grid_a, r.grid_b)]
         if not bool(c["kiem_dinh"]):
@@ -119,14 +129,17 @@ def main(a):
     if a.target not in TESTED_TIERS:
         acf.loi(f"--target '{a.target}' khong co trong TESTED_TIERS")
     os.makedirs(a.out_dir, exist_ok=True)
-    n_cap, n_nhom = out_names(a.target, a.prefix)
-    out_cap, out_nhom = os.path.join(a.out_dir, n_cap), os.path.join(a.out_dir, n_nhom)
-    guard_frozen([out_cap, out_nhom], a.frozen_manifest)
+    cand = [p for n in out_names(a.target, a.prefix) for p in all_scoped_names(os.path.join(a.out_dir, n))]
+    guard_frozen(cand + [provenance_path(p) for p in cand], a.frozen_manifest)
     gate_path = a.gate or os.path.join(a.out_dir, acf.GATE_FILE)
     try:
         gate = load_gate(gate_path, a.target, required=a.target != "salinity")
     except ValueError as exc:
         acf.loi(str(exc))
+    differ = scopes_differ(a.target, gate)
+    out_cap, out_nhom = (os.path.join(a.out_dir, scoped_name(n, a.holm_scope, differ))
+                         for n in out_names(a.target, a.prefix))
+    ht = holm_tiers(a.target, gate, a.holm_scope)
     at = acf.area_table(a.area_table)
     main_pairs = pairs_by_area(at, max_ratio=1.2, expected_m=12)
     levels = area_levels(at, pairs=main_pairs)
@@ -139,7 +152,7 @@ def main(a):
     e_fin, n_fin = acf.common_subset(fin)
     e = pd.concat([e_cv, e_fin], ignore_index=True)
     pu, cv_units, ho_units = acf.point_units(e, a.folds_csv)
-    res = compare_tiered(e, pu, main_pairs, a.target, levels=levels, expected_m=EXPECTED_F1_M[a.target],
+    res = compare_tiered(e, pu, main_pairs, a.target, levels=levels, expected_m=expected_f1_m(ht), holm_tiers=ht,
                          cv_units=cv_units, holdout_units=ho_units, holdout_seasons=(2020,), mode="final",
                          delta_min=a.delta_min, delta_min_kind="rel", alpha=a.alpha, delta_ref="level_mean",
                          require_practical=True, model=MODEL, family="F1_chinh")
@@ -148,7 +161,8 @@ def main(a):
     res.insert(1, "n_cv_point_seasons", n_cv)
     res.insert(2, "n_final_point_seasons", n_fin)
     res["final_nhom"] = SPATIAL_GROUP
-    matched = check_against_cv(res, os.path.join(a.cv_dir or a.out_dir, acf.out_name(a.target, a.prefix)))
+    cv_path = os.path.join(a.cv_dir or a.out_dir, scoped_name(acf.out_name(a.target, a.prefix), a.holm_scope, differ))
+    matched = check_against_cv(res, cv_path)
     res["doi_chieu_cv"] = matched
 
     rows = []
@@ -161,17 +175,23 @@ def main(a):
     for t in (res, nhom):
         t["git_tag"], t["points_ref_sha256"] = same["git_tag"], same["points_ref_sha256"]
     res["cong_file"] = gate_path if gate is not None else ""
-    write_csv_atomic(res, out_cap)
-    write_csv_atomic(nhom, out_nhom)
+    hp = holm_provenance(a.target, gate, gate_path, a.holm_scope, res)
+    cv_info = {"cv_ref": os.path.abspath(cv_path).replace("\\", "/") if matched else None,
+               "cv_ref_sha256": file_sha256(cv_path) if matched else None}
+    for t, p in ((res, out_cap), (nhom, out_nhom)):
+        write_csv_atomic(t, p)
+        write_provenance(p, **hp, **cv_info, git_tag=same["git_tag"], points_ref_sha256=same["points_ref_sha256"],
+                         n_luot=len(infos))
 
-    cols = ["grid_a", "grid_b", "kiem_dinh", "delta_hat", "p_holm", "delta_holdout", "holdout_same_dir", "label"]
-    with pd.option_context("display.width", 220, "display.float_format", "{:.4f}".format):
-        print(res[cols].to_string(index=False))
-    print(f"Ho F1 final: {summ}")
+    if not a.no_table:
+        cols = ["grid_a", "grid_b", "kiem_dinh", "delta_hat", "p_holm", "delta_holdout", "holdout_same_dir", "label"]
+        with pd.option_context("display.width", 220, "display.float_format", "{:.4f}".format):
+            print(res[cols].to_string(index=False))
+        print(f"Ho F1 final: {summ}")
     empty = nhom[nhom["trang_thai"] == EMPTY_LABEL].groupby(["model", "nhom"]).size()
     for (m, g), k in empty.items():
         print(f"  {m} nhom {g}: {EMPTY_LABEL} ({k} luoi)")
-    print(f"Ghi: {out_cap}, {out_nhom} | git_tag {same['git_tag']}")
+    print(f"Ghi: {out_cap}, {out_nhom} | git_tag {same['git_tag']} | holm {a.holm_scope} m = {expected_f1_m(ht)}")
 
 
 def build_parser():
@@ -190,6 +210,8 @@ def build_parser():
     ap.add_argument("--exp-root", default=acf.EXP_ROOT)
     ap.add_argument("--folds-csv", default=os.path.join(ROOT, "data", "eval", "cv_folds.csv"))
     ap.add_argument("--frozen-manifest", default=acf.FROZEN_MANIFEST)
+    ap.add_argument("--holm-scope", choices=HOLM_SCOPES, default="cong")
+    ap.add_argument("--no-table", action="store_true", help="khong in bang so ra stdout")
     return ap
 
 

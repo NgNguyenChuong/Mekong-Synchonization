@@ -1,8 +1,13 @@
 """
 Quy tac phan tich Dot 7 (CHG-25 muc 1-4): muc kiem dinh theo bien, tach cap kiem dinh / mo ta, cong "hoc duoc"
 (HistGB vs season_mean), chan ghi de file dong bang.
+Ho Holm F1: mac dinh "cong" = muc kiem dinh hop le trong bang cong; "muc_kiem_dinh" = do nhay.
 """
+import datetime
+import hashlib
+import json
 import os
+import sys
 
 import numpy as np
 import pandas as pd
@@ -11,6 +16,7 @@ from training.block_stats import compare_family
 
 TESTED_TIERS = {"salinity": frozenset({5, 6, 7}), "ndwi": frozenset({5, 6, 7}), "dsr_mcd18": frozenset({5, 6, 7}),
                 "rain_chirps": frozenset({5}), "t2m_era5": frozenset(), "rh_era5": frozenset()}
+# m F1 pham vi muc_kiem_dinh; pham vi cong suy tu bang cong (expected_f1_m)
 EXPECTED_F1_M = {"salinity": 12, "ndwi": 12, "dsr_mcd18": 12, "rain_chirps": 3, "t2m_era5": 0, "rh_era5": 0}
 # so luoi trong ho Holm cua cong hoc duoc theo pham vi (muc_kiem_dinh: moi luoi cua muc; cap_f1: luoi trong cap F1)
 EXPECTED_GATE_M = {
@@ -18,6 +24,9 @@ EXPECTED_GATE_M = {
     "cap_f1": {"salinity": 10, "ndwi": 10, "dsr_mcd18": 10, "rain_chirps": 3, "t2m_era5": 0, "rh_era5": 0},
 }
 GATE_SCOPES = tuple(EXPECTED_GATE_M)
+F1_PAIRS_PER_TIER = {5: 3, 6: 3, 7: 6}  # ho F1 12 cap (ti le dien tich <= 1,2)
+HOLM_SCOPES = ("cong", "muc_kiem_dinh")
+SENS_SUFFIX = "__holm_muc_kiem_dinh"
 MO_TA = "mo_ta"
 DESC_NAN = ("p_value", "p_holm", "tost_tuong_duong")
 GATE_COLS = ("bien", "muc", "hop_le")
@@ -67,6 +76,83 @@ def write_csv_atomic(df: pd.DataFrame, path):
     os.replace(tmp, path)
 
 
+def file_sha256(path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def provenance_path(path) -> str:
+    return f"{path}.provenance.json"
+
+
+def write_provenance(csv_path, **info) -> str:
+    """<csv>.provenance.json (khong them cot vao CSV)."""
+    rec = {"output": os.path.basename(csv_path), "csv_sha256": file_sha256(csv_path),
+           "created": datetime.datetime.now().isoformat(timespec="seconds"),
+           "script": os.path.basename(sys.argv[0]) if sys.argv and sys.argv[0] else None, **info}
+    path = provenance_path(csv_path)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(rec, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+    return path
+
+
+# ---------------------------------------------------------
+# Pham vi ho Holm F1
+# ---------------------------------------------------------
+def holm_tiers(target: str, gate, scope: str = "cong") -> frozenset:
+    """Muc vao Holm F1. cong: muc kiem dinh co hop_le trong bang cong (gate None -> moi muc kiem dinh);
+    muc_kiem_dinh: moi muc kiem dinh (cong van ep mo_ta sau do)."""
+    if scope not in HOLM_SCOPES:
+        raise ValueError(f"holm_scope phai thuoc {HOLM_SCOPES}")
+    tiers = tested_tiers(target)
+    if scope == "muc_kiem_dinh" or gate is None:
+        return tiers
+    return frozenset(t for t in tiers if gate.get(t, False))
+
+
+def expected_f1_m(tiers) -> int:
+    return sum(F1_PAIRS_PER_TIER[t] for t in tiers)
+
+
+def scopes_differ(target: str, gate) -> bool:
+    return holm_tiers(target, gate, "cong") != holm_tiers(target, gate, "muc_kiem_dinh")
+
+
+def scoped_name(name: str, scope: str, differ: bool) -> str:
+    """Pham vi do nhay khac pham vi chinh -> them hau to truoc phan mo rong; con lai giu ten chinh."""
+    if scope not in HOLM_SCOPES:
+        raise ValueError(f"holm_scope phai thuoc {HOLM_SCOPES}")
+    if scope == "muc_kiem_dinh" and differ:
+        root, ext = os.path.splitext(name)
+        return f"{root}{SENS_SUFFIX}{ext}"
+    return name
+
+
+def all_scoped_names(name: str) -> list:
+    return [name, scoped_name(name, "muc_kiem_dinh", True)]
+
+
+def holm_provenance(target: str, gate, gate_path, scope: str, res: pd.DataFrame = None) -> dict:
+    """Thong tin pham vi Holm cho sidecar: muc, m theo ho, bang cong (duong dan + sha256)."""
+    tiers = tested_tiers(target)
+    ht = holm_tiers(target, gate, scope)
+    info = {"target": target, "holm_scope": scope, "holm_scopes_khac_nhau": scopes_differ(target, gate),
+            "muc_kiem_dinh": sorted(int(t) for t in tiers), "muc_holm": sorted(int(t) for t in ht),
+            "muc_truot_cong": sorted(int(t) for t in tiers if gate is not None and not gate.get(t, False)),
+            "holm_m_f1": expected_f1_m(ht),
+            "gate_file": os.path.abspath(gate_path).replace("\\", "/") if gate is not None else None,
+            "gate_sha256": file_sha256(gate_path) if gate is not None else None,
+            "gate_hop_le": {str(k): bool(v) for k, v in sorted(gate.items())} if gate is not None else None}
+    if res is not None and "holm_m" in res.columns:
+        info["holm_m_theo_ho"] = {str(f): int(m) for f, m in res.groupby("family", sort=False)["holm_m"].max().items()}
+    return info
+
+
 # ---------------------------------------------------------
 # Tach cap kiem dinh / mo ta
 # ---------------------------------------------------------
@@ -87,19 +173,23 @@ def mark_descriptive(out: pd.DataFrame) -> pd.DataFrame:
     return res
 
 
-def compare_tiered(err, point_unit, pairs: pd.DataFrame, target: str, *, levels, expected_m=None, **kw):
-    """compare_family rieng cho cap o muc kiem dinh (Holm tren cac cap do) va cap con lai (mo ta).
+def compare_tiered(err, point_unit, pairs: pd.DataFrame, target: str, *, levels, expected_m=None, holm_tiers=None,
+                   **kw):
+    """compare_family rieng cho cap o muc Holm (holm_tiers, mac dinh moi muc kiem dinh) va cap con lai (mo ta).
 
-    Cot them: muc, muc_kiem_dinh, kiem_dinh, holm_m. Thu tu dong = thu tu `pairs`.
+    Cot them: muc, muc_kiem_dinh (muc thuoc TESTED_TIERS), kiem_dinh, holm_m. Thu tu dong = thu tu `pairs`.
     """
     tiers = tested_tiers(target)
+    holm = tiers if holm_tiers is None else frozenset(holm_tiers)
+    if not holm <= tiers:
+        raise ValueError(f"{target}: holm_tiers {sorted(holm)} ngoai muc kiem dinh {sorted(tiers)}")
     p = pairs.reset_index(drop=True)
     tier = _tier_of_pairs(p, levels)
     if tier.isna().any():
         raise ValueError("cap khong xac dinh duoc muc (tier)")
-    is_test = tier.isin(tiers).to_numpy()
+    is_test = tier.isin(holm).to_numpy()
     if expected_m is not None and int(is_test.sum()) != expected_m:
-        raise AssertionError(f"{target}: {int(is_test.sum())} cap o muc kiem dinh, ky vong {expected_m}")
+        raise AssertionError(f"{target}: {int(is_test.sum())} cap trong ho Holm, ky vong {expected_m}")
     parts = []
     for flag in (True, False):
         sub = p[is_test == flag]
@@ -114,7 +204,7 @@ def compare_tiered(err, point_unit, pairs: pd.DataFrame, target: str, *, levels,
         else:
             o = mark_descriptive(o)
             o["holm_m"] = 0
-        o["muc_kiem_dinh"] = flag
+        o["muc_kiem_dinh"] = tier[sub.index].isin(tiers).to_numpy()
         parts.append(o)
     out = pd.concat(parts, ignore_index=True).sort_values("_ord").drop(columns="_ord").reset_index(drop=True)
     out.insert(0, "target", target)
