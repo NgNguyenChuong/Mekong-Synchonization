@@ -28,6 +28,7 @@ from training.dot7_rules import (HOLM_SCOPES, TESTED_TIERS, all_scoped_names, ap
                                  load_gate, provenance_path, scoped_name, scopes_differ, write_csv_atomic,
                                  write_provenance)
 from training.split import EMPTY_LABEL, TEST_GROUPS  # noqa: E402
+NA_DESIGN_LABEL = "khong ap dung (thiet ke mo hinh)"
 
 MODEL = "hist_gb"
 FINAL_SCHEME = 42
@@ -114,6 +115,12 @@ def group_rows(a, grid, model, level, infos):
                 acf.loi(f"{name}: nhom {g} khai bao rong nhung co {n} dong")
             rows.append({"nhom": g, "n_diem": 0, "MAE_diem": np.nan, "R2_diem": np.nan, "trang_thai": EMPTY_LABEL,
                          "ghi_chu": note})
+            continue
+        design_note = cfg.get("notes", {}).get(model, "")
+        if empty and g in ("thoi_gian", "ca_hai") and n > 0 and g in design_note:
+            # IDW/season_mean: thiet ke khong du doan mua giu rieng (ghi chu trong config cua chinh luot do)
+            rows.append({"nhom": g, "n_diem": n, "MAE_diem": np.nan, "R2_diem": np.nan,
+                         "trang_thai": NA_DESIGN_LABEL, "ghi_chu": design_note})
             continue
         if empty:
             acf.loi(f"{name}: nhom {g} rong ma khong khai bao truoc")

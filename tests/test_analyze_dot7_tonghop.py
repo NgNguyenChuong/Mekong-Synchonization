@@ -446,6 +446,45 @@ def test_final_dsr_nhom_rong_khai_bao(world, learned, capsys):
     assert EMPTY_LABEL in capsys.readouterr().out
 
 
+def _idw_khong_du_doan_mua_giu_rieng(exp, note):
+    p = exp / run_name("cv1", "h3_res_7", "idw", 42, "", None, "dsr_mcd18") / "final"
+    m = json.loads((p / "run_meta.json").read_text(encoding="utf-8"))
+    m["empty_test_groups_declared"] = []
+    (p / "run_meta.json").write_text(json.dumps(m), encoding="utf-8")
+    c = json.loads((p / "config.json").read_text(encoding="utf-8"))
+    for g in ("thoi_gian", "ca_hai"):
+        c["test_metrics_by_group_mean_over_seeds"][g].pop("status", None)
+        c["point_metrics_by_group"][g] = {}
+        c.setdefault("n_point_rows_by_group", {})[g] = 50
+    c["notes"] = {"idw": note} if note else {}
+    (p / "config.json").write_text(json.dumps(c), encoding="utf-8")
+
+
+def test_final_idw_thiet_ke_khong_du_doan_mua_giu_rieng(world, tmp_path):
+    exp = tmp_path / "exp"
+    build_exp(exp, targets=("dsr_mcd18",))
+    _idw_khong_du_doan_mua_giu_rieng(exp, "mua giu rieng (nhom thoi_gian, ca_hai) khong co nhan cung mua -> NaN")
+    _gate(tmp_path / acf.GATE_FILE, [("dsr_mcd18", 5, True), ("dsr_mcd18", 6, True), ("dsr_mcd18", 7, True)])
+    args = _common(world, tmp_path, ["--target", "dsr_mcd18"])
+    args[1] = str(exp)
+    _run(afin, args)
+    n = pd.read_csv(tmp_path / "dot7_dsr_mcd18_cv1_final_nhom.csv")
+    r = n[(n["grid"] == "h3_res_7") & (n["model"] == "idw") & n["nhom"].isin(["thoi_gian", "ca_hai"])]
+    assert len(r) == 2 and (r["trang_thai"] == afin.NA_DESIGN_LABEL).all() and r["MAE_diem"].isna().all()
+
+
+def test_final_idw_rong_khong_ghi_chu_van_loi(world, tmp_path):
+    exp = tmp_path / "exp"
+    build_exp(exp, targets=("dsr_mcd18",))
+    _idw_khong_du_doan_mua_giu_rieng(exp, "")
+    _gate(tmp_path / acf.GATE_FILE, [("dsr_mcd18", 5, True), ("dsr_mcd18", 6, True), ("dsr_mcd18", 7, True)])
+    args = _common(world, tmp_path, ["--target", "dsr_mcd18"])
+    args[1] = str(exp)
+    with pytest.raises(SystemExit) as e:
+        _run(afin, args)
+    assert "khong khai bao" in str(e.value)
+
+
 def test_final_nhom_rong_khong_khai_bao_loi(world, tmp_path):
     exp = tmp_path / "exp"
     build_exp(exp, targets=("dsr_mcd18",))
