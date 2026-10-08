@@ -2,6 +2,7 @@
 Quy tac phan tich Dot 7 (CHG-25 muc 1-4): muc kiem dinh theo bien, tach cap kiem dinh / mo ta, cong "hoc duoc"
 (HistGB vs season_mean), chan ghi de file dong bang.
 Ho Holm F1: mac dinh "cong" = muc kiem dinh hop le trong bang cong; "muc_kiem_dinh" = do nhay.
+--model rf/mlp: do nhay theo mo hinh, file ra hau to __<model>, cong rieng tung mo hinh.
 """
 import datetime
 import hashlib
@@ -31,6 +32,10 @@ MO_TA = "mo_ta"
 DESC_NAN = ("p_value", "p_holm", "tost_tuong_duong")
 GATE_COLS = ("bien", "muc", "hop_le")
 FROZEN_EXIT = 2
+MODELS = ("hist_gb", "rf", "mlp")
+RUN_MODEL = {"rf": "random_forest"}  # ten mo hinh trong ten luot cua runner
+SENS_ROLE = "do_nhay_mo_hinh"
+MULTI_TAG_REASON = "duong huan luyen e6a->e6e diff 0 dong (method-reviewer 09/10)"
 
 
 def tested_tiers(target: str) -> frozenset:
@@ -40,28 +45,76 @@ def tested_tiers(target: str) -> frozenset:
 
 
 # ---------------------------------------------------------
+# Mo hinh: ten luot, ten file, ho chinh
+# ---------------------------------------------------------
+def check_model(model: str) -> str:
+    if model not in MODELS:
+        raise ValueError(f"model '{model}' phai thuoc {MODELS}")
+    return model
+
+
+def run_model(model: str) -> str:
+    return RUN_MODEL.get(model, model)
+
+
+def model_name(name, model: str) -> str:
+    """hist_gb -> giu nguyen; rf/mlp -> hau to __<model> truoc phan mo rong (ten file hoac duong dan)."""
+    if check_model(model) == "hist_gb":
+        return name
+    root, ext = os.path.splitext(name)
+    return f"{root}__{model}{ext}"
+
+
+def main_family(model: str) -> str:
+    return "F1_chinh" if check_model(model) == "hist_gb" else f"do_nhay_{model}"
+
+
+def gate_required(target: str, model: str) -> bool:
+    """Cong bat buoc: HistGB moi bien tru do man (giu quy tac cu); rf/mlp moi bien."""
+    return check_model(model) != "hist_gb" or target != "salinity"
+
+
+def model_provenance(model: str) -> dict:
+    """Khoa provenance cho rf/mlp; hist_gb -> {} (sidecar giu nguyen)."""
+    if check_model(model) == "hist_gb":
+        return {}
+    return {"model": model, "run_model": run_model(model), "vai_tro": SENS_ROLE}
+
+
+# ---------------------------------------------------------
 # Chan ghi de file dong bang
 # ---------------------------------------------------------
-def frozen_paths(manifest_csv) -> set:
-    """Duong dan tuyet doi (normcase) trong manifest dong bang; cot 'file' tuong doi goc repo (2 cap tren manifest)."""
-    if not os.path.isfile(manifest_csv):
-        raise FileNotFoundError(f"khong co manifest dong bang {manifest_csv}")
-    m = pd.read_csv(manifest_csv, dtype=str)
-    if "file" not in m.columns:
-        raise ValueError(f"{manifest_csv}: thieu cot 'file'")
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(manifest_csv))))
-    return {os.path.normcase(os.path.abspath(os.path.join(root, f))) for f in m["file"].dropna()}
+def _manifest_list(manifests) -> list:
+    ms = [manifests] if isinstance(manifests, (str, os.PathLike)) else list(manifests or [])
+    if not ms:
+        raise FileNotFoundError("khong co manifest dong bang nao")
+    return ms
 
 
-def frozen_hits(paths, manifest_csv) -> list:
-    frozen = frozen_paths(manifest_csv)
+def frozen_paths(manifests) -> set:
+    """Hop duong dan tuyet doi (normcase) cua mot hoac nhieu manifest; cot 'file' tuong doi goc repo (2 cap tren
+    manifest). Thieu bat ky manifest nao -> FileNotFoundError."""
+    out = set()
+    for manifest_csv in _manifest_list(manifests):
+        if not os.path.isfile(manifest_csv):
+            raise FileNotFoundError(f"khong co manifest dong bang {manifest_csv}")
+        m = pd.read_csv(manifest_csv, dtype=str)
+        if "file" not in m.columns:
+            raise ValueError(f"{manifest_csv}: thieu cot 'file'")
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(manifest_csv))))
+        out |= {os.path.normcase(os.path.abspath(os.path.join(root, f))) for f in m["file"].dropna()}
+    return out
+
+
+def frozen_hits(paths, manifests) -> list:
+    frozen = frozen_paths(manifests)
     return [p for p in paths if os.path.normcase(os.path.abspath(p)) in frozen]
 
 
-def guard_frozen(paths, manifest_csv):
-    """Duong dan nao co trong manifest dong bang (hoac thieu manifest) -> SystemExit ma 2, truoc khi doc/ghi gi."""
+def guard_frozen(paths, manifests):
+    """Duong dan nao co trong mot manifest dong bang (hoac thieu manifest) -> SystemExit ma 2, truoc khi doc/ghi."""
     try:
-        hits = frozen_hits(paths, manifest_csv)
+        hits = frozen_hits(paths, manifests)
     except (FileNotFoundError, ValueError) as exc:
         print(f"LOI: {exc} - khong kiem duoc file dong bang, khong ghi", flush=True)
         raise SystemExit(FROZEN_EXIT)
@@ -123,18 +176,18 @@ def scopes_differ(target: str, gate) -> bool:
     return holm_tiers(target, gate, "cong") != holm_tiers(target, gate, "muc_kiem_dinh")
 
 
-def scoped_name(name: str, scope: str, differ: bool) -> str:
-    """Pham vi do nhay khac pham vi chinh -> them hau to truoc phan mo rong; con lai giu ten chinh."""
+def scoped_name(name: str, scope: str, differ: bool, model: str = "hist_gb") -> str:
+    """Pham vi do nhay khac pham vi chinh -> hau to __holm_muc_kiem_dinh; sau do hau to mo hinh (model_name)."""
     if scope not in HOLM_SCOPES:
         raise ValueError(f"holm_scope phai thuoc {HOLM_SCOPES}")
     if scope == "muc_kiem_dinh" and differ:
         root, ext = os.path.splitext(name)
-        return f"{root}{SENS_SUFFIX}{ext}"
-    return name
+        name = f"{root}{SENS_SUFFIX}{ext}"
+    return model_name(name, model)
 
 
-def all_scoped_names(name: str) -> list:
-    return [name, scoped_name(name, "muc_kiem_dinh", True)]
+def all_scoped_names(name: str, model: str = "hist_gb") -> list:
+    return [scoped_name(name, "cong", False, model), scoped_name(name, "muc_kiem_dinh", True, model)]
 
 
 def holm_provenance(target: str, gate, gate_path, scope: str, res: pd.DataFrame = None) -> dict:
@@ -214,8 +267,13 @@ def compare_tiered(err, point_unit, pairs: pd.DataFrame, target: str, *, levels,
 # ---------------------------------------------------------
 # Cong kiem dinh (doc / ap)
 # ---------------------------------------------------------
-def load_gate(path, target: str, required: bool):
+def _gate_models(g: pd.DataFrame) -> set:
+    return set(g["model"].astype(str)) if "model" in g.columns else {"hist_gb"}  # bang cong khong cot model = HistGB
+
+
+def load_gate(path, target: str, required: bool, model: str = None):
     """Bang cong (bien, muc, hop_le) cua target. Thieu file / thieu dong cho muc kiem dinh -> ValueError khi required.
+    model khac None: dong cua target phai thuoc dung mo hinh do (cot model; khong co cot = hist_gb).
 
     Tra ve dict muc -> bool, hoac None khi khong bat buoc va khong co.
     """
@@ -233,6 +291,8 @@ def load_gate(path, target: str, required: bool):
         if required:
             raise ValueError(f"{path}: khong co dong nao cho bien '{target}'")
         return None
+    if model is not None and _gate_models(g) != {check_model(model)}:
+        raise ValueError(f"{path}: bang cong cua mo hinh {sorted(_gate_models(g))}, can '{model}'")
     if g.duplicated("muc").any():
         raise ValueError(f"{path}: trung (bien, muc) cho '{target}'")
     hop = {}
@@ -355,9 +415,11 @@ def gate_table(hoc: pd.DataFrame, target: str, all_tiers=(5, 6, 7)) -> pd.DataFr
 
 
 def merge_gate(path, new: pd.DataFrame) -> pd.DataFrame:
-    """Thay dong cua cac bien trong `new`, giu dong bien khac."""
+    """Thay dong cua cac bien trong `new`, giu dong bien khac; khong tron cong cua hai mo hinh."""
     if os.path.isfile(path):
         old = pd.read_csv(path)
+        if len(old) and _gate_models(old) != _gate_models(new):
+            raise ValueError(f"{path}: cong mo hinh {sorted(_gate_models(old))} khac {sorted(_gate_models(new))}")
         old = old[~old["bien"].isin(set(new["bien"]))]
         new = pd.concat([old, new], ignore_index=True)
     return new.sort_values(["bien", "muc"]).reset_index(drop=True)
