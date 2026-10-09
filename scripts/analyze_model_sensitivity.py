@@ -42,8 +42,9 @@ def _abs(p):
     return os.path.abspath(p).replace("\\", "/")
 
 
-def load_side(path, target, model, gate):
-    """Cap ho chinh thuoc muc kiem dinh cua mot mo hinh: KEY + SIDE_COLS; cot cong_hoc_duoc phai khop bang cong."""
+def load_side(path, target, model, gate, extra_cols=()):
+    """Cap ho chinh thuoc muc kiem dinh cua mot mo hinh: KEY + SIDE_COLS (+ extra_cols, bat buoc co trong file);
+    cot cong_hoc_duoc phai khop bang cong."""
     if not os.path.isfile(path):
         acf.loi(f"thieu ket qua analyze_cv_family {path}")
     d = pd.read_csv(path)
@@ -75,7 +76,10 @@ def load_side(path, target, model, gate):
             acf.loi(f"{path}: cot cong_hoc_duoc khong khop bang cong dang doc")
     d["co_y_nghia"] = d["label"].isin(SIG_LABELS)
     tags = sorted(set(d["git_tag"].astype(str))) if "git_tag" in d.columns else []
-    return d[KEY + SIDE_COLS].reset_index(drop=True), tags
+    miss = [c for c in extra_cols if c not in d.columns]
+    if miss:
+        acf.loi(f"{path}: thieu cot {miss}")
+    return d[KEY + SIDE_COLS + list(extra_cols)].reset_index(drop=True), tags
 
 
 def compare_sides(h, m, target, model):
