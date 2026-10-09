@@ -11,13 +11,22 @@ Lenh con:
           median, Salinity = 28.013*exp(-13.39*SR_B5), NDWIchen = ND(SR_B5, SR_B7).
           --sensors l8l9 them Landsat 9 (khac tac gia; chi dung sau khi da doi chieu).
           -> Export len Google Drive (moi nam ~380 MB).
+  chirps3 Nhan MUA Dot 7: tong mua kho 36 pentad 11/(s-1)..04/s (het 30/04, lech 1 ngay so seasons.py) tu CHIRPS v3 PENTAD (GEE khong co ban thang;
+          ban thang CHC = tong 6 pentad) -> 1 file/mua `chirps3_rain_<s>.tif`, luoi goc 0,05 do, tai truc tiep
+          vao <DATA_ROOT>/raw/chirps3/ + bang mo ta chirps3_season_summary.csv.
+  mcd18   Nhan BUC XA Dot 7: TB mua DSR ngay (TB 8 band 3 gio, W/m2) tu MODIS/062/MCD18A1, cua so seasons.py 01/11..29/04
+          -> 1 file/mua `mcd18a1_dsr_<s>.tif` (dsr_mean, n_days_valid, frac_quality2, dsr_mean_no_dec),
+          luoi goc sinusoidal ~926 m, tai truc tiep vao <DATA_ROOT>/raw/mcd18a1/ + mcd18a1_season_summary.csv.
 
 Can: pip install earthengine-api ; earthengine authenticate ; mot Cloud project da bat EE API.
 Chay:  python scripts/gee_fetch.py era5 --project <id> --start 2000-01 --end 2026-08 --out <RAW_DIR>
        python scripts/gee_fetch.py static --project <id>
        python scripts/gee_fetch.py labels --project <id> --years 2020 2021 2022 2023
+       python scripts/gee_fetch.py chirps3 --years 2014 2015 ... 2026      (mac dinh 2014-2026; EE_PROJECT tu .env)
+       python scripts/gee_fetch.py mcd18 --years 2014 2015 ... 2026
 """
 import argparse
+import datetime as dt
 import json
 import os
 import sys
@@ -33,7 +42,8 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 import settings  # noqa: E402,F401  nap .env (EE_PROJECT, GEE_DRIVE_FOLDER)
-from preprocessing import CANONICAL_BOUNDARY  # noqa: E402
+import met_labels as ml  # noqa: E402
+from preprocessing import CANONICAL_BOUNDARY, write_provenance  # noqa: E402
 
 # Export.toDrive chi nhan TEN thu muc: neu co thu muc trung ten o bat ky cap nao thi ghi vao do
 # (trung nhieu -> thu muc sua gan nhat), khong co thi tao moi o goc Drive. "GEE" = NCKH_Source/GEE
@@ -229,6 +239,226 @@ def cmd_watermask(args):
         _export(ee, freq.addBands(n).clip(region), f"{year}_MD_dry_watermask_l8{args.name_suffix}", region, 30, args.drive_folder)
 
 
+# ---------------------------------------------------------------- nhan khi tuong Dot 7 (mua, buc xa)
+CHIRPS3_ID = "UCSB-CHC/CHIRPS/V3/PENTAD"
+MCD18_ID = "MODIS/062/MCD18A1"
+
+
+def _rect(boundary_path, buffer_km):
+    """KHUNG chu nhat (EPSG:4326) cua ranh gioi + dem `buffer_km` (nhu cmd_era5) -> [xmin, ymin, xmax, ymax].
+    Xuat ca khung (khong clip theo da giac) de pixel ria van co gia tri; pham vi ap sau khi trich."""
+    b = gpd.read_file(boundary_path).to_crs(32648).buffer(buffer_km * 1000).to_crs(4326)
+    return [round(float(v), 6) for v in b.total_bounds]
+
+
+def _native_grid(ee, image, band):
+    """(crs, crsTransform) cua LUOI GOC san pham -> xuat khong noi suy, khong lech nua pixel (pitfall 1a)."""
+    p = _retry(lambda: image.select(band).projection().getInfo(), f"luoi goc {band}")
+    return p["crs"], p["transform"]
+
+
+def _finish_download(tmp, path, band_names):
+    """File GEE: pixel bi mask ghi -inf/khong co tag nodata (pitfall 4d) -> doi moi gia tri khong huu han thanh NaN,
+    gan ten band, nodata = NaN. Giu nguyen crs/transform/kich thuoc (khong noi suy)."""
+    import numpy as np
+    import rasterio
+    with rasterio.open(tmp) as src:
+        if src.count != len(band_names):
+            raise RuntimeError(f"{tmp}: {src.count} band, can {len(band_names)} {band_names}")
+        data = src.read().astype("float32")
+        prof = src.profile.copy()
+    data[~np.isfinite(data)] = np.nan
+    prof.update(dtype="float32", nodata=np.nan, compress="deflate", driver="GTiff")
+    part = path + ".part.tif"
+    with rasterio.open(part, "w", **prof) as dst:
+        dst.write(data)
+        dst.descriptions = tuple(band_names)
+    os.replace(part, path)
+    os.remove(tmp)
+
+
+def _get_tif(ee, image, rect, crs, transform, path, band_names, what):
+    tmp = path + ".dl.tif"
+    params = {"region": ee.Geometry.Rectangle(rect, "EPSG:4326", False), "crs": crs, "crs_transform": transform,
+              "format": "GEO_TIFF"}
+    _retry(lambda: _download(image.getDownloadURL(params), tmp), what)
+    _finish_download(tmp, path, band_names)
+
+
+def _iso_us(us):
+    return (pd.Timestamp(int(us), unit="us")).isoformat(timespec="seconds")
+
+
+def _write_summary(rows, path, boundary):
+    df = pd.DataFrame(rows).sort_values("season")
+    df.to_csv(path, index=False, float_format="%.6g")
+    write_provenance(path, boundary, n_seasons=len(df), note="so mo ta trong vung: tam pixel trong ranh gioi")
+    print(f"[tom tat] {path}", flush=True)
+    with pd.option_context("display.width", 250, "display.max_columns", 40):
+        print(df.to_string(index=False), flush=True)
+
+
+def _check_window(path, year):
+    """File da co tren dia phai mang cua so mua hien tai (seasons.py); lech -> LOI, khong dung lai (CHG-22)."""
+    prov = json.load(open(path + ".provenance.json", encoding="utf-8"))
+    start, end = ml.met_season_window(year)
+    want = [start.isoformat(), end.isoformat()]
+    if prov.get("window") != want:
+        raise SystemExit(f"LOI: {path} co cua so {prov.get('window')} khac {want} - chuyen file cu ra cho khac"
+                         " roi xuat lai")
+    return prov
+
+
+def cmd_chirps3(args):
+    """Tong mua kho tu 36 pentad CHIRPS v3. Pentad NoData (mask hoac < 0, vd -9999) -> thang/mua do = NaN
+    (khong cong thieu thanh 0). Band chan doan: rain_m11..m04, rain_jfm (mat na kho), n_pentad_valid, n_pentad_neg."""
+    ee = _init(args.project)
+    out_dir = args.out or settings.data_path("raw", "chirps3")
+    os.makedirs(out_dir, exist_ok=True)
+    rect = _rect(args.boundary, args.buffer_km)
+    coll = ee.ImageCollection(CHIRPS3_ID)
+    rows = []
+    for year in args.years:
+        path = os.path.join(out_dir, ml.output_name("chirps3", year))
+        idx = ml.chirps_pentad_indices(year)
+        if not (os.path.exists(path) and os.path.exists(path + ".provenance.json")):
+            sub = coll.filter(ee.Filter.inList("system:index", idx))
+            meta = _retry(lambda: ee.Dictionary({"i": sub.aggregate_array("system:index"),
+                                                 "v": sub.aggregate_array("system:version")}).getInfo(),
+                          f"meta chirps3 {year}")
+            missing = ml.missing_indices(idx, meta["i"])
+            if missing:
+                print(f"[bo qua] mua {year}: thieu {len(missing)}/36 pentad {missing[:6]}", flush=True)
+                continue
+            version = dict(zip(meta["i"], meta["v"]))
+            status = {i: ml.chirps_status_from_version(i, version[i]) for i in idx}
+            crs, transform = _native_grid(ee, sub.first(), "precipitation")
+
+            def valid(im):
+                p = im.select("precipitation")
+                return p.updateMask(p.gte(0))
+
+            months = {}
+            for (y, m) in ml.season_year_months(year):
+                mi = [ml.chirps_pentad_index(y, m, d) for d in ml.PENTAD_START_DAYS]
+                s = sub.filter(ee.Filter.inList("system:index", mi)).map(valid)
+                months[m] = s.sum().updateMask(s.count().eq(len(mi)))   # thieu pentad -> thang NaN
+            vcoll = sub.map(valid)
+            n_valid = vcoll.count().unmask(0)
+            n_neg = sub.map(lambda im: im.select("precipitation").lt(0)).sum().unmask(0)
+            total = months[11]
+            for m in (12, 1, 2, 3, 4):
+                total = total.add(months[m])
+            total = total.updateMask(n_valid.eq(len(idx)))
+            img = ee.Image.cat([total, months[11], months[12], months[1], months[2], months[3], months[4],
+                                months[1].add(months[2]).add(months[3]), n_valid, n_neg]).toFloat()
+            img = img.rename(list(ml.CHIRPS_BANDS))
+            _get_tif(ee, img, rect, crs, transform, path, ml.CHIRPS_BANDS, f"chirps3 {year}")
+            start, end = ml.met_season_window(year)
+            n_final = sum(v == "final" for v in status.values())
+            write_provenance(
+                path, args.boundary, asset=CHIRPS3_ID, product="CHIRPS v3.0 PENTAD (GEE; khong co ban THANG tren GEE,"
+                " ban thang CHC = tong 6 pentad)", variable="precipitation (mm/pentad) -> tong mm",
+                query_date=pd.Timestamp.now().date().isoformat(), season=year,
+                window=[start.isoformat(), end.isoformat()], window_rule="seasons.season_window 01/11/(s-1)..29/04/s;"
+                " CHIRPS giu 36 pentad tron thang -> pentad cuoi 26-30/04 gom 30/04 (lech 1 ngay, chap nhan)",
+                window_data=[start.isoformat(), f"{year}-04-30"], n_images=len(idx), pentads=[idx[0], idx[-1]],
+                ingest_version_min=_iso_us(min(version.values())), ingest_version_max=_iso_us(max(version.values())),
+                final_prelim=("final" if n_final == len(idx) else f"CO PRELIM: {len(idx) - n_final}/36"),
+                final_prelim_rule=f"suy luan tu system:version >= 01/(M+1) + {ml.FINAL_MIN_LAG_DAYS} ngay; GEE"
+                " khong ghi thuoc tinh final/prelim", prelim_pentads=[i for i, s in status.items() if s != "final"],
+                crs=crs, crs_transform=transform, region_rect_4326=rect, buffer_km=args.buffer_km,
+                bands=list(ml.CHIRPS_BANDS), nodata="NaN", aggregation="tong; pentad mask hoac < 0 -> thang/mua NaN")
+            print(f"[xong] chirps3 {year}: {n_final}/36 pentad final (suy luan)", flush=True)
+        prov = _check_window(path, year)
+        rows.append({"season": year, "final_prelim": prov.get("final_prelim"),
+                     **ml.chirps_season_summary(path, args.boundary)})
+    if rows:
+        _write_summary(rows, os.path.join(out_dir, "chirps3_season_summary.csv"), args.boundary)
+
+
+def _mcd18_day(ee, im):
+    """DSR ngay = TB 8 band 3 gio (W/m2); ngay hop le tai pixel khi DU 8 band (dem = 0, khong bi mask).
+    q2 = 1 neu DSR_Quality bit 0-1 = 2 (phan xa be mat lay tu khi hau); thieu band chat luong -> 0."""
+    g = im.select(list(ml.MCD18_GMT_BANDS))
+    ok = g.mask().reduce(ee.Reducer.min()).gt(0)
+    dsr = g.reduce(ee.Reducer.sum()).divide(len(ml.MCD18_GMT_BANDS)).updateMask(ok).rename("dsr")
+    q2 = (im.select("DSR_Quality").bitwiseAnd(ml.DSR_QUALITY_MASK).eq(ml.DSR_QUALITY_CLIM)
+          .unmask(0).updateMask(ok).rename("q2"))
+    return dsr.addBands(q2).set("system:index", im.get("system:index"))
+
+
+def cmd_mcd18(args):
+    ee = _init(args.project)
+    out_dir = args.out or settings.data_path("raw", "mcd18a1")
+    os.makedirs(out_dir, exist_ok=True)
+    rect = _rect(args.boundary, args.buffer_km)
+    region = ee.Geometry.Rectangle(rect, "EPSG:4326", False)
+    coll = ee.ImageCollection(MCD18_ID)
+    rows = []
+    for year in args.years:
+        path = os.path.join(out_dir, ml.output_name("mcd18a1", year))
+        idx = ml.mcd18_indices(year)
+        idx_nd = ml.mcd18_indices(year, exclude_months=(12,))
+        if not (os.path.exists(path) and os.path.exists(path + ".provenance.json")):
+            sub = coll.filter(ee.Filter.inList("system:index", idx))
+            crs, transform = _native_grid(ee, sub.first(), "GMT_0000_DSR")
+            daily = sub.map(lambda im: _mcd18_day(ee, im))
+            # So pixel hop le tung ngay trong khung (anh co ma pixel khong co gia tri cung bi phat hien)
+            per_day = daily.map(lambda d: ee.Feature(None, {
+                "i": d.get("system:index"),
+                "n": ee.Dictionary(d.select("dsr").reduceRegion(ee.Reducer.count(), region, crs=crs,
+                                                                crsTransform=transform, maxPixels=1e9)).get("dsr", 0)}))
+            meta = _retry(lambda: ee.Dictionary({"i": per_day.aggregate_array("i"),
+                                                 "n": per_day.aggregate_array("n")}).getInfo(), f"meta mcd18 {year}")
+            avail = meta["i"]
+            missing = ml.missing_indices(idx, avail)
+            empty = [i for i, n in zip(meta["i"], meta["n"]) if not n]
+            nd = daily.filter(ee.Filter.inList("system:index", idx_nd)).select("dsr")
+            d = daily.select("dsr")
+            n = d.count().unmask(0)
+            img = ee.Image.cat([d.mean(), n, daily.select("q2").sum().divide(n).updateMask(n.gt(0)),
+                                nd.mean()]).toFloat().rename(list(ml.MCD18_BANDS))
+            _get_tif(ee, img, rect, crs, transform, path, ml.MCD18_BANDS, f"mcd18 {year}")
+            ml.set_modis_sphere_crs(path)   # WKT GEE ghi ellipsoid -> lech ~15 km (xem met_labels.MODIS_SINU_PROJ4)
+            start, end = ml.met_season_window(year)
+            to_dates = [ml.parse_mcd18_index(i) for i in missing]
+            write_provenance(
+                path, args.boundary, asset=MCD18_ID, product="MCD18A1 Collection 6.2 (062), Terra+Aqua, ngay, ~1 km",
+                variable="DSR ngay = TB(GMT_0000..GMT_2100_DSR) W/m2", units="W/m2",
+                query_date=pd.Timestamp.now().date().isoformat(), season=year,
+                window=[start.isoformat(), end.isoformat()], window_rule="seasons.season_window 01/11/(s-1)..29/04/s gom"
+                " 2 dau (cung quy uoc do man)", n_days_expected=len(idx), n_images=len(avail),
+                n_days_expected_no_dec=len(idx_nd), n_images_no_dec=len(set(idx_nd) & set(avail)),
+                missing_dates=ml.date_runs(to_dates),
+                images_without_valid_px=[ml.parse_mcd18_index(i).isoformat() for i in empty],
+                valid_px_per_image_min=min(int(v or 0) for v in meta["n"]) if meta["n"] else None,
+                valid_px_per_image_max=max(int(v or 0) for v in meta["n"]) if meta["n"] else None,
+                final_prelim="khong ap dung (MODIS 062 la ban xu ly chinh thuc, khong co prelim)",
+                crs=crs, crs_file=ml.MODIS_SINU_PROJ4, crs_note="GEE ghi WKT ellipsoid cho SR-ORG:6974; da ghi de CRS file sang hinh cau",
+                crs_transform=transform, region_rect_4326=rect, buffer_km=args.buffer_km,
+                bands=list(ml.MCD18_BANDS), nodata="NaN",
+                aggregation="dsr_mean = TB tren ngay hop le (du 8 band); n_days_valid = so ngay hop le tai pixel;"
+                " frac_quality2 = ty le ngay hop le co DSR_Quality&3 == 2; dsr_mean_no_dec = TB tren ngay hop le"
+                " khong thuoc thang 12")
+            print(f"[xong] mcd18 {year}: {len(avail)}/{len(idx)} ngay co anh; thieu {ml.date_runs(to_dates)};"
+                  f" anh rong {len(empty)}", flush=True)
+        prov = _check_window(path, year)
+        import rasterio
+        with rasterio.open(path) as _ds:
+            if not ml.is_modis_sphere(_ds.crs):
+                raise SystemExit(f"LOI: {path} CRS khong phai sinusoidal hinh cau MODIS - chuyen file cu ra roi xuat lai")
+        rows.append({"season": year, "n_days_expected": prov["n_days_expected"], "n_images": prov["n_images"],
+                     "missing_dates": ";".join(prov["missing_dates"]),
+                     "n_images_without_valid_px": len(prov["images_without_valid_px"]),
+                     "images_without_valid_px": ";".join(ml.date_runs(
+                         [dt.date.fromisoformat(d) for d in prov["images_without_valid_px"]])),
+                     "n_days_with_data": prov["n_images"] - len(prov["images_without_valid_px"]),
+                     **ml.mcd18_season_summary(path, args.boundary)})
+    if rows:
+        _write_summary(rows, os.path.join(out_dir, "mcd18a1_season_summary.csv"), args.boundary)
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--project", default=None, help="Cloud project co bat Earth Engine (hoac bien EE_PROJECT)")
@@ -258,5 +488,11 @@ if __name__ == "__main__":
     wm.add_argument("--drive-folder", default=DRIVE_FOLDER)
     wm.add_argument("--name-suffix", default="_v2",
                     help="hau to ten file; mac dinh _v2 vi --boundary mac dinh la v2 (khong hau to = ban cu theo v1)")
+    for name, sub_dir in (("chirps3", "chirps3"), ("mcd18", "mcd18a1")):
+        sp = sub.add_parser(name)
+        sp.add_argument("--years", nargs="+", type=int, default=list(range(2014, 2027)), help="mua kho s (seasons.py: 01/11/s-1..29/04/s)")
+        sp.add_argument("--buffer-km", type=float, default=15.0, help="dem quanh ranh gioi truoc khi lay khung (nhu era5)")
+        sp.add_argument("--out", default=None, help=f"mac dinh <DATA_ROOT>/raw/{sub_dir}")
     a = ap.parse_args()
-    {"era5": cmd_era5, "static": cmd_static, "static_v2": cmd_static_v2, "labels": cmd_labels, "watermask": cmd_watermask}[a.cmd](a)
+    {"era5": cmd_era5, "static": cmd_static, "static_v2": cmd_static_v2, "labels": cmd_labels, "watermask": cmd_watermask,
+     "chirps3": cmd_chirps3, "mcd18": cmd_mcd18}[a.cmd](a)

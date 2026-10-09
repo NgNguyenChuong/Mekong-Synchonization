@@ -548,3 +548,56 @@ def test_family_verdict_seed_khong_cung_chieu_va_ho_rong():
     # mode cv -> khong dung duoc
     with pytest.raises(ValueError, match="mode='final'"):
         family_verdict(out.assign(mode="cv"))
+
+
+def test_cap_co_y_nghia_khong_con_khoi_giu_rieng_la_loi():
+    """CHG-22 (An 2026-10-05 21:22): Holm dat nhung moi khoi giu rieng bi loai (< min_pts) -> n_holdout_units = 0.
+    Truoc day cap nay nhan "chua_phan_dinh" (cap) va vao mau so family_verdict -> keo ho ve "khong_tai_lap". Nay LOI."""
+    d = {f"u{i}": -0.1 - 0.01 * i for i in range(6)}
+    d["h_nho"] = -0.1
+    unit_n = {f"u{i}": 30 for i in range(6)}
+    unit_n["h_nho"] = 10  # < min_pts -> khoi giu rieng duy nhat bi loai
+    df, pu, cv, ho = _mk(unit_n, _ab(d), ho_units=("h_nho",))
+    with pytest.warns(UserWarning, match="h_nho"):
+        with pytest.raises(ValueError, match="khong con khoi giu rieng"):
+            compare_family(df, pu, [("A", "B")], cv_units=cv, holdout_units=ho, mode="final", **KW)
+    # cap KHONG co y nghia ma khong con khoi giu rieng -> khong can xac nhan chieu -> van chay
+    flat = {u: 0.0 for u in d}
+    df0, pu0, cv0, ho0 = _mk(unit_n, _ab(flat), ho_units=("h_nho",))
+    with pytest.warns(UserWarning, match="h_nho"):
+        r = compare_family(df0, pu0, [("A", "B")], cv_units=cv0, holdout_units=ho0, mode="final", **KW).iloc[0]
+    assert r["n_holdout_units"] == 0 and r["p_holm"] >= 0.05 and r["label"] in ("tuong_duong", "chua_phan_dinh")
+
+
+def test_family_verdict_cap_co_y_nghia_khong_con_khoi_giu_rieng_la_loi():
+    """CHG-22: family_verdict gap cap trong mau so co n_holdout_units == 0 -> LOI (khong dem vao mau so)."""
+    out = _family_out()
+    assert (out["p_holm"] < 0.05).all()
+    bad = out.copy()
+    bad.loc[1, "n_holdout_units"] = 0
+    with pytest.raises(ValueError, match="khong con khoi giu rieng"):
+        family_verdict(bad, min_frac=0.5)
+    # cap khong co y nghia voi n_holdout_units = 0 khong anh huong
+    flat = _family_out(d_a=0.0, d_d=0.0, ho_a=0.0, ho_d=0.0).assign(n_holdout_units=0)
+    assert family_verdict(flat)[1]["denominator"] == 0
+
+
+def test_compare_family_delta_min_va_muc_tham_chieu_khong_hop_le_la_loi(monkeypatch):
+    """CHG-22: delta_min NaN/inf/<= 0 hoac muc tham chieu NaN -> moi so sanh nguong sai lang -> LOI."""
+    import training.block_stats as bs
+
+    d = {f"u{i}": -0.1 - 0.01 * i for i in range(6)}
+    d["h0"] = -0.1
+    df, pu, cv, ho = _mk({u: 30 for u in d}, _ab(d), ho_units=("h0",))
+    for bad in (np.nan, np.inf, 0.0, -0.05):
+        with pytest.raises(ValueError, match="delta_min"):
+            compare_family(df, pu, [("A", "B")], cv_units=cv, holdout_units=ho, mode="final",
+                           **dict(KW, delta_min=bad))
+    kw = dict(KW, delta_min_kind="rel")
+    ok = compare_family(df, pu, [("A", "B")], cv_units=cv, holdout_units=ho, mode="final", levels={"A": 5, "B": 5},
+                        **kw).iloc[0]
+    assert np.isfinite(ok["delta_min_thr"]) and ok["delta_min_thr"] > 0
+    monkeypatch.setattr(bs, "_arm_level", lambda *a, **k: np.nan)
+    with pytest.raises(ValueError, match="muc tham chieu"):
+        compare_family(df, pu, [("A", "B")], cv_units=cv, holdout_units=ho, mode="final", levels={"A": 5, "B": 5},
+                       **kw)

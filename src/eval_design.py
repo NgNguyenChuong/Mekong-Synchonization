@@ -441,7 +441,8 @@ def fold_balance_objective(tot) -> float:
     """Tong chenh tuong doi (max - min) / trung binh cua tung tieu chi (tot: n_folds x n_tieu_chi)."""
     tot = np.asarray(tot, float)
     mean = tot.mean(axis=0)
-    mean[mean == 0] = 1.0
+    if not (np.isfinite(tot).all() and (mean > 0).all()):  # CHG-22: truoc day mean 0 -> 1, NaN -> muc tieu NaN "dat"
+        raise ValueError(f"fold_balance_objective: tong theo fold khong huu han hoac trung binh <= 0 ({mean})")
     return float(((tot.max(axis=0) - tot.min(axis=0)) / mean).sum())
 
 
@@ -576,7 +577,9 @@ def fold_max_rel_dev(assign, values, n_folds) -> float:
     """max_k |tong_k / trung binh cac fold - 1| cua mot cot gia tri theo don vi."""
     t = np.zeros(n_folds)
     np.add.at(t, np.asarray(assign, int), np.asarray(values, float))
-    return float(np.abs(t / t.mean() - 1).max()) if t.mean() > 0 else 0.0
+    if not (np.isfinite(t).all() and t.mean() > 0):  # CHG-22: truoc day mean 0/NaN -> 0 (= "dat" dieu kien ven bien)
+        raise ValueError(f"fold_max_rel_dev: tong theo fold khong huu han hoac trung binh <= 0 ({t})")
+    return float(np.abs(t / t.mean() - 1).max())
 
 
 def unit_pool(units: pd.DataFrame, criteria=("scope_km2", "coast_scope_km2"), n_folds=5, n_starts=3000,

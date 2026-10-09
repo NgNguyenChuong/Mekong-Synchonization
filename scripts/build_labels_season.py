@@ -26,8 +26,16 @@ Buoc:
      ven bien = tam o <= 20 km toi bo; kem so P5 cu cua bo chinh neu co bao cao cu).
   Moi dau ra kem .provenance.json.
 
+E5a Dot 7 (--target ndwi): CUNG raster nhan, CUNG quy tac NaN + mat na (label_season.label_values) - chi doi
+band (NDWIchen) va cot dich (ndwi); chi bo CHINH. Dau ra <out-dir> (mac dinh <DATA_ROOT>/labels/dot7):
+<luoi>_labels_season_ndwi.csv (cell_id, season, ndwi, n_valid_px, valid_frac, train_ok, train_ok_10pct),
+points_reference_ndwi.csv (... ref_ndwi, n_valid_3x3; median 3x3 >= 5/9 nhu CHG-13); bao cao
+dot7_e5_ndwi_phan_bo.csv, dot7_e5_ndwi_luoi.csv. work-dir rieng (raster cache ghi target, khong dung lan).
+Mac dinh --target salinity: duong do man KHONG doi (ten file, cot, bao cao nhu cu).
+
 Chay:  venv/Scripts/python.exe scripts/build_labels_season.py [--years 2014 2026] [--grids h3_res_5 ...]
            [--out-dir <DATA_ROOT>/labels] [--work-dir <tam>] [--force] [--report-dir KE_HOACH/ket-qua]
+       NDWI: venv/Scripts/python.exe scripts/build_labels_season.py --target ndwi
 """
 import argparse
 import glob
@@ -48,10 +56,10 @@ from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from label_season import (MAIN_LC, MIN_CLEAR, MIN_TRAIN_FRAC, MIN_TRAIN_PX, REF_MIN_VALID,  # noqa: E402
-                          RULES_VERSION, VARIANT_EXTRA_LC, VARIANTS, area_weighted_mean_count, cell_label_rows,
-                          clear_ok, comparison_masks, median_3x3, nan_rule, points_to_pixels, read_aligned,
-                          value_summary, variant_masks, variant_point_sets, water_mask)
+from label_season import (LABEL_TARGETS, MAIN_LC, MIN_CLEAR, MIN_TRAIN_FRAC, MIN_TRAIN_PX,  # noqa: E402
+                          REF_MIN_VALID, RULES_VERSION, VARIANT_EXTRA_LC, VARIANTS, area_weighted_mean_count,
+                          cell_label_rows, clear_ok, comparison_masks, label_values, median_3x3, points_to_pixels,
+                          read_aligned, value_summary, variant_masks, variant_point_sets, water_mask)
 from preprocessing import CANONICAL_BOUNDARY, file_sha256, write_provenance  # noqa: E402
 from scope_mask import SCOPE_BANDS_V3, SCOPE_INCLUDE_LC, band_index, wc_at_centers  # noqa: E402
 
@@ -93,6 +101,32 @@ SET_NOTE = {
 
 def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def is_salinity(a):
+    return getattr(a, "target", "salinity") == "salinity"
+
+
+def out_variants(a):
+    """Bo nhan ghi bang/diem: do man 4 bo (cu); bien khac chi bo chinh (E5a)."""
+    return VARIANTS if is_salinity(a) else ("main",)
+
+
+def out_suffix(a, v):
+    """Hau to ten file: do man giu nguyen (SUFFIX); bien khac them _<target> (vd _ndwi)."""
+    return SUFFIX[v] if is_salinity(a) else f"{SUFFIX[v]}_{a.target}"
+
+
+def target_prov(a):
+    """Khoa provenance them cho bien khac do man (do man: rong -> provenance nhu cu)."""
+    if is_salinity(a):
+        return {}
+    t = LABEL_TARGETS[a.target]
+    return {"target": t["col"], "value_band": t["band"]}
+
+
+def unit_note(a):
+    return UNIT_NOTE if is_salinity(a) else LABEL_TARGETS[a.target]["unit"]
 
 
 def label_path(a, s):
@@ -237,6 +271,7 @@ def season_raster(a, s, st, pts, chunk_rows=1024):
         stats = read_json(stats_p)
         ptab = pd.read_csv(pts_p, dtype={"point_id": str})
         if stats.get("rules_version") == RULES_VERSION and len(ptab) == len(pts) \
+                and stats.get("target", "salinity") == a.target \
                 and ptab["point_id"].tolist() == pts["point_id"].tolist():
             log(f"  mua {s}: da co raster/thong ke ({RULES_VERSION}) o work-dir - bo qua")
             return stats, ptab
@@ -252,7 +287,8 @@ def season_raster(a, s, st, pts, chunk_rows=1024):
             rasterio.open(tif + ".part", "w", **prof) as dst:
         for i, v in enumerate(VARIANTS, start=1):
             dst.set_band_description(i, v)
-        dst.update_tags(unit="EC1:5 dS/m", season=str(s), source=os.path.basename(label_path(a, s)),
+        dst.update_tags(unit="EC1:5 dS/m" if is_salinity(a) else LABEL_TARGETS[a.target]["unit"], season=str(s),
+                        source=os.path.basename(label_path(a, s)), target=a.target,
                         watermask=os.path.basename(mask_path(a, s)), rules_version=RULES_VERSION)
         for r0 in range(0, h, chunk_rows):
             n = min(chunk_rows, h - r0)
@@ -263,7 +299,7 @@ def season_raster(a, s, st, pts, chunk_rows=1024):
             wf = read_aligned(wm, "water_freq", tr, (n, w), r0, fill=0, dtype="uint8")
             ncl = read_aligned(wm, "n_clear", tr, (n, w), r0, fill=0, dtype="uint8")
             wc = st["wc"][sl]
-            S = nan_rule(ndwi, sal)
+            S = label_values(ndwi, sal, a.target)   # do man = nan_rule (cu); ndwi: cung tap pixel huu han
             fin = np.isfinite(S)
             water = water_mask(wf, wc)
             m = variant_masks(fin, st["in_v2"][sl], st["fp"][sl], wc, water, clear_ok(wf, ncl))
@@ -280,7 +316,7 @@ def season_raster(a, s, st, pts, chunk_rows=1024):
             dst.write(out, window=Window(0, r0, w, n))
     os.replace(tif + ".part", tif)
     px_km2 = abs(tr.a * tr.e) / 1e6
-    stats = {"rules_version": RULES_VERSION}
+    stats = {"rules_version": RULES_VERSION, "target": a.target}
     for bit, k in enumerate(SETS):
         v = S_full[((flags >> bit) & 1).astype(bool)]
         d = value_summary(v)
@@ -291,16 +327,17 @@ def season_raster(a, s, st, pts, chunk_rows=1024):
     stats["before"]["n_px_mask_fake0"] = n_fake0
     # tham chieu diem: median 3x3 tren tung bo, tai moi diem cua tap hop
     rows, cols = pts["row"].to_numpy(), pts["col"].to_numpy()
+    col = LABEL_TARGETS[a.target]["col"]
     ptab = pd.DataFrame({"point_id": pts["point_id"].to_numpy(), "season": s})
     with rasterio.open(tif) as ds:
         for i, v in enumerate(VARIANTS, start=1):
             med, nv = median_3x3(ds.read(i), rows, cols, REF_MIN_VALID)
-            ptab[f"ref_salinity_{v}"] = med
+            ptab[f"ref_{col}_{v}"] = med
             ptab[f"n_valid_3x3_{v}"] = nv
     for v in VARIANTS:
         mem = pts[f"in_{v}"].to_numpy()
         stats[v]["n_points"] = int(mem.sum())
-        stats[v]["n_points_ref"] = int(ptab.loc[mem, f"ref_salinity_{v}"].notna().sum())
+        stats[v]["n_points_ref"] = int(ptab.loc[mem, f"ref_{col}_{v}"].notna().sum())
     with open(stats_p, "w", encoding="utf-8") as f:
         json.dump(stats, f, indent=1)
     ptab.to_csv(pts_p, index=False, float_format="%.6g")
@@ -328,40 +365,47 @@ def coastal_flags(cells_utm_centroids, dist_path):
     return d
 
 
-def _outputs_current(paths):
+def _outputs_current(paths, target_col="salinity"):
     for p in paths:
         pp = p + ".provenance.json"
         if not (os.path.exists(p) and os.path.exists(pp)):
             return False
-        if read_json(pp).get("rules", {}).get("rules_version") != RULES_VERSION:
+        info = read_json(pp)
+        if info.get("rules", {}).get("rules_version") != RULES_VERSION:
+            return False
+        if info.get("target", "salinity") != target_col:
             return False
     return True
 
 
 def grid_tables(a, grid_path, years, st, hasher, src_prov):
     name = os.path.splitext(os.path.basename(grid_path))[0]
-    outs = {v: os.path.join(a.out_dir, f"{name}_labels_season{SUFFIX[v]}.csv") for v in VARIANTS}
+    col = LABEL_TARGETS[a.target]["col"]
+    outs = {v: os.path.join(a.out_dir, f"{name}_labels_season{out_suffix(a, v)}.csv") for v in out_variants(a)}
     grid = gpd.read_file(grid_path)
     grid["cell_id"] = grid["cell_id"].astype(str)
     if grid["cell_id"].duplicated().any():
         raise SystemExit(f"[LOI] {name}: cell_id trung.")
-    if not a.force and _outputs_current(outs.values()):
+    if not a.force and _outputs_current(outs.values(), col):
         log(f"{name}: da co {len(outs)} file ({RULES_VERSION}) - bo qua tinh lai")
         tabs = {v: pd.read_csv(p, dtype={"cell_id": str}) for v, p in outs.items()}
     else:
         t = time.time()
         cells = (grid["cell_id"].tolist(), None, grid.geometry.tolist())
         px_m2 = abs(st["transform"].a * st["transform"].e)
-        parts = {v: [] for v in VARIANTS}
+        parts = {v: [] for v in outs}
         for s in years:
             df = area_weighted_mean_count(os.path.join(a.work_dir, f"labels_{s}.tif"), cells)
             for i, v in enumerate(VARIANTS, start=1):
-                lab = cell_label_rows(df[f"b{i}_mean"], df[f"b{i}_count"], df["cell_area_m2"], px_m2)
+                if v not in outs:
+                    continue
+                lab = cell_label_rows(df[f"b{i}_mean"], df[f"b{i}_count"], df["cell_area_m2"], px_m2,
+                                      value_col=col)
                 lab.insert(0, "season", s)
                 lab.insert(0, "cell_id", df["cell_id"].to_numpy())
                 parts[v].append(lab)
         tabs = {}
-        for v in VARIANTS:
+        for v in outs:
             tab = pd.concat(parts[v], ignore_index=True)
             if tab.duplicated(["cell_id", "season"]).any():
                 raise SystemExit(f"[LOI] {name}/{v}: khoa (cell_id, season) trung.")
@@ -369,8 +413,9 @@ def grid_tables(a, grid_path, years, st, hasher, src_prov):
                 raise SystemExit(f"[LOI] {name}/{v}: {len(tab)} dong != {len(grid)} o x {len(years)} mua.")
             tab.to_csv(outs[v] + ".part", index=False, float_format="%.6g")
             os.replace(outs[v] + ".part", outs[v])
-            write_provenance(outs[v], a.boundary, variant=v, unit=UNIT_NOTE, rules=RULES, seasons=list(years),
-                             grid=os.path.basename(grid_path), grid_sha256=hasher(grid_path), **src_prov)
+            write_provenance(outs[v], a.boundary, variant=v, unit=unit_note(a), rules=RULES, seasons=list(years),
+                             grid=os.path.basename(grid_path), grid_sha256=hasher(grid_path),
+                             **{**src_prov, **target_prov(a)})
             tabs[v] = tab
         log(f"{name}: {len(grid)} o x {len(years)} mua ({time.time() - t:.0f}s)")
     cent = grid.to_crs(st["crs"]).geometry.centroid
@@ -388,7 +433,7 @@ def grid_tables(a, grid_path, years, st, hasher, src_prov):
                          "n_train_ok_coastal": int((g["train_ok"] & g["coastal"]).sum()),
                          "n_train_ok_10pct": int(g["train_ok_10pct"].sum()),
                          "n_train_ok_10pct_coastal": int((g["train_ok_10pct"] & g["coastal"]).sum()),
-                         "salinity_median_train_ok": float(g.loc[g["train_ok"], "salinity"].median())})
+                         f"{col}_median_train_ok": float(g.loc[g["train_ok"], col].median())})
     return rows
 
 
@@ -423,6 +468,28 @@ def decomposition_table(rep_year, old_year=None):
                                                    and int(o["n_gt2"]) == piv.loc[(s, "v2_old"), "n_gt2"])
         rows.append(r)
     return pd.DataFrame(rows)
+
+
+def report_other_target(a, rep_year, rep_grid, years, grids, hasher, src_prov):
+    """Bao cao cho bien khac do man (E5a): phan bo theo mua x tap pixel + bang luoi; KHONG ghi de bao cao do man."""
+    p_year = os.path.join(a.report_dir, f"dot7_e5_{a.target}_phan_bo.csv")
+    p_grid = os.path.join(a.report_dir, f"dot7_e5_{a.target}_luoi.csv")
+    rep_year.to_csv(p_year, index=False, float_format="%.6g")
+    rep_grid.to_csv(p_grid, index=False, float_format="%.6g")
+    common = dict(unit=unit_note(a), rules=RULES, seasons=years, sets=SET_NOTE, **{**src_prov, **target_prov(a)},
+                  note="nguong n_gt2/4/21 cua value_summary danh cho do man - vo nghia voi bien khac, chi giu cot")
+    write_provenance(p_year, a.boundary, **common)
+    write_provenance(p_grid, a.boundary, grids={os.path.basename(g): hasher(g) for g in grids}, **common)
+    col = LABEL_TARGETS[a.target]["col"]
+    with pd.option_context("display.width", 250, "display.max_columns", 40, "display.float_format", "{:.4f}".format):
+        print(rep_year[rep_year["set"].isin(["before", "main"])][["season", "set", "n_px", "min", "p1", "p50", "p99",
+                                                                   "max"]].to_string(index=False), flush=True)
+        piv = rep_grid.groupby("grid").agg(n_cells=("n_cells", "first"), train_ok_min=("n_train_ok", "min"),
+                                           train_ok_max=("n_train_ok", "max"),
+                                           median_min=(f"{col}_median_train_ok", "min"),
+                                           median_max=(f"{col}_median_train_ok", "max"))
+        print(piv.to_string(), flush=True)
+    log(f"Ghi {p_year}, {p_grid}")
 
 
 # ---------------------------------------------------------------- main
@@ -463,7 +530,7 @@ def main(a):
     st = load_static(a)
     pts = load_points(a, st)
 
-    log(f"Buoc 2: raster nhan theo mua -> {a.work_dir}")
+    log(f"Buoc 2: raster nhan theo mua ({a.target}) -> {a.work_dir}")
     year_rows, pt_tabs = [], []
     for s in years:
         stats, ptab = season_raster(a, s, st, pts)
@@ -477,18 +544,21 @@ def main(a):
         raise SystemExit("[LOI] diem: khoa (point_id, season) trung.")
     attrs = pts[["point_id", "block_id", "is_holdout", "wc_class", "in_main"] + [f"in_{v}" for v in VARIANTS[1:]]]
     ptab = ptab.merge(attrs, on="point_id", how="left", validate="many_to_one")
-    pt_prov = dict(unit=UNIT_NOTE, rules=RULES, seasons=years,
+    col = LABEL_TARGETS[a.target]["col"]
+    pt_prov = dict(unit=unit_note(a), rules=RULES, seasons=years,
                    ref_rule=f"median cua so 3x3 pixel hop le (cua bo) quanh pixel chua diem; < {REF_MIN_VALID}/9 -> NaN",
                    points=os.path.basename(a.points), points_sha256=hasher(a.points),
                    points_source=rel(a.points_source),
-                   points_source_sha256=hasher(a.points_source), **src_prov)
-    for v in VARIANTS:
+                   points_source_sha256=hasher(a.points_source), **{**src_prov, **target_prov(a)})
+    if not is_salinity(a):
+        pt_prov["ref_rule_kind"] = "3x3"
+    for v in out_variants(a):
         sub = ptab[ptab[f"in_{v}"]]
         cols = {"point_id": sub["point_id"], "block_id": sub["block_id"], "is_holdout": sub["is_holdout"],
                 "wc_class": sub["wc_class"], "added": ~sub["in_main"], "season": sub["season"],
-                "ref_salinity": sub[f"ref_salinity_{v}"], "n_valid_3x3": sub[f"n_valid_3x3_{v}"]}
+                f"ref_{col}": sub[f"ref_{col}_{v}"], "n_valid_3x3": sub[f"n_valid_3x3_{v}"]}
         out_df = pd.DataFrame(cols).sort_values(["season", "point_id"], kind="stable")
-        p = os.path.join(a.out_dir, f"points_reference{SUFFIX[v]}.csv")
+        p = os.path.join(a.out_dir, f"points_reference{out_suffix(a, v)}.csv")
         out_df.to_csv(p + ".part", index=False, float_format="%.6g")
         os.replace(p + ".part", p)
         note = ("diem bo chinh (--points)" if v == "main" else
@@ -503,6 +573,10 @@ def main(a):
         grid_rows += grid_tables(a, g, years, st, hasher, src_prov)
 
     rep_year = pd.DataFrame(year_rows)
+    if not is_salinity(a):
+        report_other_target(a, rep_year, pd.DataFrame(grid_rows), years, grids, hasher, src_prov)
+        log(f"Xong trong {time.time() - t0:.0f}s")
+        return
     old_year_p = os.path.join(a.report_dir, "dot4_phan_bo_nhan.csv")
     old_grid_p = os.path.join(a.report_dir, "dot4_phan_bo_nhan_luoi.csv")
     old_year = pd.read_csv(old_year_p) if os.path.exists(old_year_p) else None
@@ -558,9 +632,22 @@ if __name__ == "__main__":
     ap.add_argument("--grids-dir", default=os.path.join(ROOT, "data", "grids"))
     ap.add_argument("--grids", nargs="*", help="Ten luoi (khong .geojson); mac dinh moi luoi trong --grids-dir")
     ap.add_argument("--years", nargs=2, type=int, default=[2014, 2026], metavar=("TU", "DEN"))
-    ap.add_argument("--out-dir", default=os.environ.get("LABELS_DIR", f"{DATA}/labels"))
-    ap.add_argument("--work-dir", default=os.environ.get("LABEL_WORK_DIR",
-                                                         os.path.join(tempfile.gettempdir(), "mekong_label_season_v3")))
+    ap.add_argument("--target", choices=sorted(LABEL_TARGETS), default="salinity",
+                    help="Bien muc tieu doc tu raster nhan: salinity (mac dinh, duong cu) | ndwi (E5a Dot 7, bo chinh)")
+    ap.add_argument("--out-dir", default=None,
+                    help="Mac dinh <LABELS_DIR hoac DATA_ROOT/labels>; --target khac salinity: them /dot7")
+    ap.add_argument("--work-dir", default=None,
+                    help="Mac dinh <LABEL_WORK_DIR hoac TEMP>/mekong_label_season_v3 (+ _<target> neu khac salinity)")
     ap.add_argument("--report-dir", default=os.path.join(ROOT, "KE_HOACH", "ket-qua"))
     ap.add_argument("--force", action="store_true", help="Tinh lai raster mua va bang luoi da co")
-    main(ap.parse_args())
+    args = ap.parse_args()
+    if args.out_dir is None:
+        args.out_dir = os.environ.get("LABELS_DIR", f"{DATA}/labels")
+        if args.target != "salinity":
+            args.out_dir = os.path.join(args.out_dir, "dot7")
+    if args.work_dir is None:
+        args.work_dir = os.environ.get("LABEL_WORK_DIR",
+                                       os.path.join(tempfile.gettempdir(), "mekong_label_season_v3"))
+        if args.target != "salinity":
+            args.work_dir = f"{args.work_dir}_{args.target}"
+    main(args)

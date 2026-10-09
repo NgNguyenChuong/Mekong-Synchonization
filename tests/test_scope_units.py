@@ -738,3 +738,16 @@ def test_cli_tols_va_max_objective_loai_tru():
     assert b.resolve_rule(argparse.Namespace(tols=[0.1, 0.15], max_objective=None)).max_objective is None
     with pytest.raises(SystemExit):
         b.resolve_rule(argparse.Namespace(tols=[0.1], max_objective=0.183))
+
+
+def test_can_bang_fold_trung_binh_0_hoac_nan_la_loi():
+    """CHG-22: truoc day mean 0 -> chia cho 1 (muc tieu 0) va fold_max_rel_dev mean 0/NaN -> 0 (= "dat")."""
+    with pytest.raises(ValueError, match="trung binh"):
+        fold_balance_objective(np.array([[1.0, 0.0], [2.0, 0.0]]))
+    with pytest.raises(ValueError, match="khong huu han"):
+        fold_balance_objective(np.array([[1.0, np.nan], [2.0, 1.0]]))
+    with pytest.raises(ValueError, match="trung binh"):
+        fold_max_rel_dev([0, 1, 1], [0.0, 0.0, 0.0], 2)
+    with pytest.raises(ValueError, match="khong huu han"):
+        fold_max_rel_dev([0, 1, 1], [1.0, np.nan, 2.0], 2)
+    assert fold_balance_objective(np.array([[1.0, 2.0], [3.0, 2.0]])) == pytest.approx(1.0)

@@ -33,12 +33,16 @@ from training.evaluate import compute_metrics  # noqa: E402
 from training.features import (  # noqa: E402,F401  (assert_no_leak_columns re-export cho script khac)
     DEFAULT_ALLOWED_FEATURES,
     assert_no_leak_columns,
+    drop_target_forbidden,
     prepare_matrices,
     read_feature_list,
     resolve_feature_list,
     select_feature_columns,
 )
 from training.split import (  # noqa: E402
+    DECLARABLE_EMPTY_GROUPS,
+    EMPTY_DECL_KEY,
+    EMPTY_LABEL,
     MAIN_HOLDOUT_SEASON,
     TEST_GROUPS,
     EvalSplitConfig,
@@ -47,6 +51,7 @@ from training.split import (  # noqa: E402
     block_cv_membership,
     block_cv_splits,
     block_cv_summary,
+    declared_empty_groups,
     season_sequential_split,
     split_summary,
     time_based_split,
@@ -60,10 +65,12 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # 2026-10-03, muc 3); phai chot truoc lan chay `final` dau tien. Ghi de bang --model-params <json>.
 DEFAULT_MODEL_PARAMS = {
     "linear": {},
-    "random_forest": {"n_estimators": 200, "n_jobs": -1},
+    # RF, MLP: An chot 2026-10-06 (NHAT_KY Dot 7 (f)); MLP TAT early stopping theo V7 (khong chia ngau nhien gian
+    # tiep); n_jobs=4 vi RAM may 16 GB.
+    "random_forest": {"n_estimators": 200, "min_samples_leaf": 5, "max_features": "sqrt", "n_jobs": 4},
     "hist_gb": {"max_iter": 300, "learning_rate": 0.05, "max_leaf_nodes": 31, "min_samples_leaf": 20,
                 "l2_regularization": 1.0, "early_stopping": False},
-    "mlp": {"hidden_layer_sizes": [64, 32], "early_stopping": False, "max_iter": 500},
+    "mlp": {"hidden_layer_sizes": [64, 32], "early_stopping": False, "max_iter": 300},
     # IDW (duong co so, An chot 2026-10-04): tham so CO DINH truoc, KHONG tinh chinh tren fold dung de cham.
     # Noi suy theo TUNG MUA tu nhan o huan luyen dat tai TAM PHAN DAT cua o (scope_cx/scope_cy trong bang hop
     # nhat, EPSG:32648) toi tam phan dat cua o chua diem/o can du doan -> IDW chiu anh huong khung luoi nhu mo
@@ -75,7 +82,7 @@ NULL_MODELS = ("season_mean",)  # baseline rong CHG-18: trung binh nhan tap huan
 SPATIAL_XY = ("scope_cx", "scope_cy")
 MODEL_PARAMS_STATUS = {  # trang thai tham so mac dinh (ghi vao config)
     "hist_gb": "co_dinh_CHG-06", "linear": "mac_dinh_sklearn", "idw": "co_dinh_An_2026-10-04",
-    "random_forest": "de_xuat_CHO_AN_DUYET", "mlp": "de_xuat_CHO_AN_DUYET"}
+    "random_forest": "co_dinh_An_2026-10-06", "mlp": "co_dinh_An_2026-10-06"}
 
 
 def build_model(name: str, seed: int, params: dict | None = None):
@@ -160,6 +167,9 @@ def parse_args():
     parser.add_argument("--allow-holdout-season-override", action="store_true", default=False,
                         help=f"Cho phep --holdout-seasons KHONG chua {MAIN_HOLDOUT_SEASON} (thiet ke chinh). Ket qua "
                              "ghi config analysis_kind=phan_tich_do_nhay - khong dung de so khung chinh.")
+    parser.add_argument("--allow-empty-test-groups", nargs="+", choices=list(DECLARABLE_EMPTY_GROUPS), default=None,
+                        help=f"Nhom test rong CO CHU DICH - phai khop khai bao '{EMPTY_DECL_KEY}' trong provenance "
+                             "cua --table (runner tu truyen); khong khai bao -> LOI")
     parser.add_argument("--cv-rule", choices=["touch", "centroid"], default="touch")
     parser.add_argument("--points", default=os.path.join(ROOT, "data", "eval", "eval_points.geojson"),
                         help="Diem danh gia chung (phuong an C)")
@@ -169,6 +179,10 @@ def parse_args():
     parser.add_argument("--points-ref-variant", default="main",
                         help="Bien the (provenance 'variant') BAT BUOC cua --points-ref. Mac dinh 'main': moi bo nhan "
                              "cham chinh tren CUNG dap an bo chinh (chenh lech chi do du lieu huan luyen)")
+    parser.add_argument("--points-subset-of-ref", action="store_true", default=False,
+                        help="Cham phu: --points la TAP CON cua diem trong --points-ref (vd 349 diem 60/90 voi dap an "
+                             "keep6090); bo dap an cua diem khong co trong file diem (ghi so vao config). Mac dinh: "
+                             "dap an co diem la -> LOI")
     parser.add_argument("--no-point-eval", action="store_true", default=False,
                         help="Bo cham theo diem (chi cho bang thu nghiem; ghi vao config)")
     parser.add_argument("--min-val-cells", type=int, default=5)
@@ -237,6 +251,13 @@ def resolve_allowed_features(args, target_col: str, columns) -> tuple[list[str],
     if target_col in allowed:
         print(f"Bo bien muc tieu '{target_col}' khoi danh sach dac trung cho phep.")
         allowed.remove(target_col)
+    # Dot 7 (d): dac trung cung dai luong vat ly voi bien muc tieu. Danh sach mac dinh -> bo (in ra); danh sach
+    # tuong minh co muc cam -> loi (khong am tham doi bo dac trung nguoi dung yeu cau). Do man: khong co muc nao.
+    allowed, dropped = drop_target_forbidden(allowed, target_col)
+    if dropped:
+        if source != "default":
+            raise ValueError(f"Danh sach dac trung ({source}) co muc cam voi bien muc tieu '{target_col}': {dropped}")
+        print(f"Bo dac trung cung dai luong vat ly voi '{target_col}' khoi danh sach mac dinh: {dropped}")
     allow_leak: tuple[str, ...] = ()
     if args.include_coords:
         coords = [c for c in COORD_COLUMNS if c in columns]
@@ -287,6 +308,33 @@ def holdout_season_policy(holdout_seasons, allow_override: bool) -> bool:
                          f"chinh) -> {MAIN_HOLDOUT_SEASON} se vao CV/train. Phan tich do nhay: them "
                          "--allow-holdout-season-override.")
     return True
+
+
+def resolve_empty_test_groups(args) -> tuple[tuple, dict | None]:
+    """(nhom rong duoc phep, nguon khai bao) tu --allow-empty-test-groups doi chieu provenance cua --table.
+
+    Khong co co -> ((), None), khong doc provenance. Co co ma thieu --table / provenance / khai bao, hoac nhom
+    khac nhom suy tu khai bao -> ValueError.
+    """
+    want = tuple(args.allow_empty_test_groups or ())
+    if not want:
+        return (), None
+    from preprocessing import provenance_path
+
+    if not args.table:
+        raise ValueError("--allow-empty-test-groups chi dung voi --table (khai bao nam o provenance bang).")
+    pp = provenance_path(args.table)
+    if not os.path.exists(pp):
+        raise ValueError(f"--allow-empty-test-groups nhung {args.table} khong co provenance.")
+    with open(pp, encoding="utf-8") as f:
+        prov = json.load(f)
+    got = declared_empty_groups(prov, args.target, tuple(args.holdout_seasons))
+    if set(got) != set(want):
+        raise ValueError(f"--allow-empty-test-groups {list(want)} khac khai bao provenance {list(got)} "
+                         f"('{EMPTY_DECL_KEY}' trong {pp}).")
+    decl = prov[EMPTY_DECL_KEY]
+    groups = tuple(g for g in TEST_GROUPS if g in want)
+    return groups, {"provenance": pp, "seasons": decl["seasons"], "reason": decl["reason"]}
 
 
 def check_cell_table_provenance(cell_table_path, blocks_path, grid_path, cv_folds_path) -> dict:
@@ -382,9 +430,26 @@ def _fit_predict(model_name, params, seed, train, other, feature_cols, target_co
     return np.asarray(m.predict(X_ot), dtype=float), m, handler, _pred_extra(lambda e: m.predict(tf(e)))
 
 
-def _metrics_or_none(y, p) -> dict | None:
+STRICT_PRED_MODELS = ("hist_gb", "linear")  # du doan phai huu han o moi dong (CHG-22)
+
+
+def _metrics_or_none(y, p, model=None) -> dict | None:
+    """Chi so tren dong du doan huu han.
+
+    CHG-22: model trong STRICT_PRED_MODELS (hist_gb, linear) co du doan khong huu han -> LOI (ValueError).
+    Mo hinh khac (idw / season_mean / persistence: NaN theo thiet ke, vd mua giu rieng) giu hanh vi cu - bo dong
+    NaN - va ghi so dong bi bo vao "n_pred_bo_khong_huu_han" (chi khi > 0).
+    """
     ok = np.isfinite(np.asarray(p, dtype=float))
-    return compute_metrics(np.asarray(y)[ok], np.asarray(p)[ok]) if ok.any() else None
+    n_bad = int((~ok).sum())
+    if n_bad and model in STRICT_PRED_MODELS:
+        raise ValueError(f"{model}: {n_bad}/{len(ok)} du doan khong huu han (LOI, khong bo lang)")
+    if not ok.any():
+        return None
+    out = compute_metrics(np.asarray(y)[ok], np.asarray(p)[ok])
+    if n_bad:
+        out["n_pred_bo_khong_huu_han"] = n_bad
+    return out
 
 
 def _mean_over_seeds(per_seed: dict) -> dict:
@@ -440,25 +505,37 @@ def _load_point_frame(args):
     grid["cell_id"] = grid["cell_id"].astype(str)
     folds = pd.read_csv(args.cv_folds, dtype={"block_id": str})
     ref = pd.read_csv(args.points_ref, dtype={"point_id": str})
-    ref_variant, table_set = _check_ref_variant(args)
-    pf = point_frame(gpd.read_file(args.points), grid, gpd.read_file(args.blocks), folds, ref,
-                     tuple(args.holdout_seasons))
+    ref_variant, table_set, ref_rule = _check_ref_variant(args)
+    points = gpd.read_file(args.points)
+    n_ref_dropped = 0
+    if getattr(args, "points_subset_of_ref", False):
+        from training.point_eval import restrict_reference
+
+        ref, n_ref_dropped = restrict_reference(ref, points["point_id"].astype(str))
+    pf = point_frame(points, grid, gpd.read_file(args.blocks), folds, ref, tuple(args.holdout_seasons),
+                     ref_col=f"ref_{args.target}", ref_rule=ref_rule)
     # V-G2: cv chi giu (diem, mua) vai tro cv - khong giu dap an cua diem test trong bo nho
     pf = pf[pf["role"] == "cv"] if args.mode == "cv" else pf[pf["role"] != "cv"]
     pf = pf.reset_index(drop=True)
     info = {"enabled": True, "points": args.points, "points_sha256": _sha256(args.points),
             "points_ref": args.points_ref, "points_ref_sha256": _sha256(args.points_ref),
-            "points_ref_variant": ref_variant, "table_label_set": table_set,
+            "points_ref_variant": ref_variant, "table_label_set": table_set, "ref_col": f"ref_{args.target}",
+            "ref_rule_kind": ref_rule,
             "n_points": int(pf["point_id"].nunique()), "n_point_rows": int(len(pf)),
+            "points_subset_of_ref": bool(getattr(args, "points_subset_of_ref", False)),
+            "n_ref_points_not_in_points_file": n_ref_dropped,
             "rule": "phuong an C: mo hinh fold cua KHOI CHUA DIEM (theo vi tri diem) ap len o chua diem; "
                     "dap an median 3x3 >= 5/9"}
     return pf, info
 
 
-def _check_point_folds_match_cells(pf, cell_table):
+def _check_point_folds_match_cells(pf, cell_table, no_cv_points_ok=False):
     """Fold cua diem (tu --cv-folds) phai CUNG cach chia voi fold cua o trong lan chay: voi moi khoi co ca diem va
-    o tam nam trong khoi, cv_fold phai bang nhau. Lech -> phuong an C vo (An 2026-10-04)."""
+    o tam nam trong khoi, cv_fold phai bang nhau. Lech -> phuong an C vo (An 2026-10-04).
+    no_cv_points_ok: final voi nhom thoi_gian rong khai bao truoc -> moi diem o khoi giu rieng, khong co gi de so."""
     if "block_id" not in cell_table.columns:
+        return
+    if no_cv_points_ok and not (pf["cv_fold"].astype(int) >= 0).any():
         return
     ct = cell_table[cell_table["cv_fold"].astype(int) >= 0].groupby(cell_table["block_id"].astype(str))["cv_fold"]
     if (ct.nunique() > 1).any():
@@ -479,6 +556,9 @@ def _check_ref_variant(args):
 
     Doc 'variant' trong <points_ref>.provenance.json; bang co provenance (label_set) thi ghi lai. Dap an CO
     provenance ma variant khac -> loi. Bang that (co provenance) ma dap an khong co provenance -> loi.
+    Dot 7: 'target' trong provenance bang / dap an (thieu = salinity o dap an cu) phai bang --target; tra them quy tac
+    dap an 'ref_rule_kind' (thieu = "3x3").
+    Tra (variant, label_set cua bang, quy tac dap an).
     """
     from preprocessing import provenance_path
 
@@ -492,15 +572,21 @@ def _check_ref_variant(args):
     rp = _read(args.points_ref)
     tp = _read(args.table) if args.table else None
     table_set = (tp or {}).get("label_set")
+    t_target = (tp or {}).get("target")
+    if t_target is not None and t_target != args.target:
+        raise ValueError(f"Bang {args.table} co target '{t_target}' khac --target '{args.target}'.")
     if rp is None:
         if tp is not None:
             raise ValueError(f"{args.points_ref}: khong co provenance - khong doi chieu duoc bien the dap an.")
-        return None, table_set
+        return None, table_set, "3x3"
+    r_target = rp.get("target", "salinity")
+    if r_target != args.target:
+        raise ValueError(f"--points-ref co target '{r_target}' khac --target '{args.target}'.")
     variant = rp.get("variant")
     if variant != args.points_ref_variant:
         raise ValueError(f"--points-ref co variant '{variant}' khac yeu cau '{args.points_ref_variant}' "
                          f"(bang: {table_set}). Cham chinh moi bo dung dap an bo chinh (--points-ref-variant main).")
-    return variant, table_set
+    return variant, table_set, rp.get("ref_rule_kind", "3x3")
 
 
 def _point_rows(p, pred, seed, model, source, grid_name, fold=None):
@@ -557,7 +643,9 @@ def run_eval_mode(args, dataset: pd.DataFrame, target_col: str) -> None:
         cell_table, table_source = load_cell_table(args)
         labelled, train_filter = apply_train_filter(dataset, target_col,
                                                     None if args.allow_no_train_filter else args.train_col)
-        split_df = assign_eval_split(labelled, cell_table, holdout_seasons=tuple(args.holdout_seasons))
+        empty_groups, empty_source = resolve_empty_test_groups(args)
+        split_df = assign_eval_split(labelled, cell_table, holdout_seasons=tuple(args.holdout_seasons),
+                                     allowed_empty=empty_groups)
     except (FileNotFoundError, ValueError) as exc:
         print(f"Loi thiet ke danh gia: {exc}", file=sys.stderr, flush=True)
         sys.exit(2)
@@ -571,7 +659,7 @@ def run_eval_mode(args, dataset: pd.DataFrame, target_col: str) -> None:
             point_info["note"] = "--no-point-eval: KHONG cham theo diem (khong dung cho thiet ke chinh)"
         elif args.points_ref:
             pf, point_info = _load_point_frame(args)
-            _check_point_folds_match_cells(pf, cell_table)
+            _check_point_folds_match_cells(pf, cell_table, no_cv_points_ok="thoi_gian" in empty_groups)
             cell_feats = dataset.drop(columns=[target_col])
         elif args.table:
             raise ValueError("--table can --points-ref (cham theo diem, phuong an C) hoac --no-point-eval.")
@@ -590,7 +678,7 @@ def run_eval_mode(args, dataset: pd.DataFrame, target_col: str) -> None:
     try:
         allowed, allow_leak, features_source = resolve_allowed_features(args, target_col, candidates.columns)
         feature_cols = select_feature_columns(candidates, allowed=allowed, allow_leak=allow_leak,
-                                              require_all=features_source != "default")
+                                              require_all=features_source != "default", target=target_col)
     except ValueError as exc:
         print(f"Loi chon dac trung: {exc}", file=sys.stderr, flush=True)
         sys.exit(2)
@@ -630,7 +718,10 @@ def run_eval_mode(args, dataset: pd.DataFrame, target_col: str) -> None:
         grid=args.grid, blocks=args.blocks, blocks_sha256=_sha256(args.blocks),
         cv_folds=args.cv_folds, cv_folds_sha256=_sha256(args.cv_folds), cell_table=table_source,
         grid_sha256=_sha256(args.grid), holdout_season_override=holdout_override,
-        analysis_kind="phan_tich_do_nhay" if holdout_override else "thiet_ke_chinh")
+        analysis_kind="phan_tich_do_nhay" if holdout_override else "thiet_ke_chinh",
+        empty_test_groups_declared=empty_groups, empty_test_groups_source=empty_source)
+    if empty_groups:
+        print(f"Nhom test {list(empty_groups)}: {EMPTY_LABEL} - {empty_source['reason']}", flush=True)
     if holdout_override:
         print(f"[CANH BAO] Mua giu rieng {list(args.holdout_seasons)} KHONG chua {MAIN_HOLDOUT_SEASON}: phan tich do "
               "nhay (--allow-holdout-season-override), khong dung de so khung chinh.", file=sys.stderr, flush=True)
@@ -691,16 +782,16 @@ def run_eval_mode(args, dataset: pd.DataFrame, target_col: str) -> None:
                     "cell_id": va["cell_id"].astype(str).to_numpy(), "season": va["season"].astype(int).to_numpy(),
                     "y_true": va[target_col].to_numpy(dtype=float), "y_pred": pred, "fold": int(k),
                     "seed": seed, "model": args.model, "pred_source": "oof"}))
-                fold_metrics[str(int(k))] = _metrics_or_none(va[target_col], pred)
+                fold_metrics[str(int(k))] = _metrics_or_none(va[target_col], pred, args.model)
                 print(f"  seed {seed} fold {int(k)}: train {len(tr)} dong, val {len(va)} dong, "
                       f"MAE {fold_metrics[str(int(k))]['mae']:.4f}", flush=True)
             oof_seed = pd.concat(parts[-len(splits):])
-            cv_metrics[str(seed)] = {"oof": _metrics_or_none(oof_seed["y_true"], oof_seed["y_pred"]),
+            cv_metrics[str(seed)] = {"oof": _metrics_or_none(oof_seed["y_true"], oof_seed["y_pred"], args.model),
                                      "by_fold": fold_metrics}
             ps = [p for p in pt_parts if p["seed"].iat[0] == seed]
             if ps:
                 ps = pd.concat(ps)
-                pt_metrics[str(seed)] = _metrics_or_none(ps["y_ref"], ps["y_pred"])
+                pt_metrics[str(seed)] = _metrics_or_none(ps["y_ref"], ps["y_pred"], args.model)
         oof = pd.concat(parts, ignore_index=True)
         oof.to_csv(os.path.join(out_dir, "oof_predictions.csv"), index=False)
         if pts_cv is not None:
@@ -767,19 +858,27 @@ def run_eval_mode(args, dataset: pd.DataFrame, target_col: str) -> None:
                 "model": args.model, "test_group": test_df["test_group"].to_numpy(), "pred_source": "final"}))
             for g in TEST_GROUPS:
                 m = (test_df["test_group"] == g).to_numpy()
-                by_group[g][str(seed)] = _metrics_or_none(test_df[target_col].to_numpy()[m], pred[m])
+                by_group[g][str(seed)] = _metrics_or_none(test_df[target_col].to_numpy()[m], pred[m], args.model)
         pd.concat(parts, ignore_index=True).to_csv(os.path.join(out_dir, "final_predictions.csv"), index=False)
         if fp_parts:
             fpts = pd.concat(fp_parts, ignore_index=True)
             _check_points_once(fpts, pts_test, seeds)
             fpts.to_csv(os.path.join(out_dir, "final_points.csv"), index=False)
             config["point_metrics_by_group"] = {
-                g: {str(sd): _metrics_or_none(d["y_ref"], d["y_pred"])
+                g: {str(sd): _metrics_or_none(d["y_ref"], d["y_pred"], args.model)
                     for sd, d in fpts[fpts["test_group"] == g].groupby("seed")} for g in TEST_GROUPS}
             config["n_point_rows_by_group"] = fpts[fpts["seed"] == seeds[0]]["test_group"].value_counts().to_dict()
         config["test_metrics_by_group"] = by_group
         config["test_metrics_by_group_mean_over_seeds"] = {g: _mean_over_seeds(v) for g, v in by_group.items()}
         config["n_test_rows_by_group"] = test_df["test_group"].value_counts().to_dict()
+        for g in empty_groups:  # metrics None (khong chia 0); danh dau ro thay vi de trong
+            config["n_test_rows_by_group"][g] = 0
+            config["test_metrics_by_group_mean_over_seeds"][g]["status"] = EMPTY_LABEL
+            if "n_point_rows_by_group" in config:
+                config["n_point_rows_by_group"][g] = 0
+        if empty_groups:
+            notes["nhom_test_rong"] = (f"{list(empty_groups)}: {EMPTY_LABEL} - {empty_source['reason']} "
+                                       f"(mua {empty_source['seasons']}).")
         if args.model in SPATIAL_MODELS:
             notes["idw"] = ("IDW noi suy theo TUNG MUA tu nhan cung mua cua tap huan luyen; mua giu rieng (nhom "
                             "thoi_gian, ca_hai) khong co nhan cung mua trong train -> NaN (khong muon mua khac).")
@@ -877,7 +976,7 @@ def main():
         allowed, allow_leak, features_source = resolve_allowed_features(args, target_col, candidates.columns)
         # Danh sach tuong minh (--features/--features-file): muc thieu -> loi. Mac dinh: canh bao + ghi config.
         feature_cols = select_feature_columns(candidates, allowed=allowed, allow_leak=allow_leak,
-                                              require_all=features_source != "default")
+                                              require_all=features_source != "default", target=target_col)
     except ValueError as exc:
         print(f"Loi chon dac trung: {exc}", file=sys.stderr, flush=True)
         sys.exit(2)

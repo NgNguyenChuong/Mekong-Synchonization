@@ -37,7 +37,7 @@ EXACT_MAX_G = 20          # G <= 20: liet ke du 2^G to hop dau
 DEFAULT_MC_PERM = 100_000  # G > 20: Monte Carlo
 LABELS = ("xac_nhan", "co_y_nghia_duoi_nguong", "khong_tai_lap", "khong_tai_lap_cap_ho",
           "tuong_duong", "cho_giu_rieng", "chua_phan_dinh")
-PRED_SOURCES = ("oof", "final")
+PRED_SOURCES = ("oof", "final", "oracle")  # oracle = TB nhan that cua o (khong mo hinh, src/training/oracle.py)
 
 
 # ---------------------------------------------------------
@@ -392,7 +392,8 @@ def compare_family(err_long: pd.DataFrame, point_unit: pd.Series, pairs, *,
     """So sanh tung cap (A, B) trong mot ho Holm; Delta < 0 nghia la A sai so THAP hon B.
 
     err_long: cot grid, model, seed, point_id, season, err (sai so co dau), pred_source
-      ("oof" = du doan out-of-fold cua CV khoi; "final" = mo hinh cuoi tren vung giu rieng);
+      ("oof" = du doan out-of-fold cua CV khoi; "final" = mo hinh cuoi tren vung giu rieng; "oracle" = TB nhan
+      that cua o, chi khi MOI hang la oracle);
       da loc theo common_point_set. Hai nhanh trong cap phai cung tap (point_id, season) va
       cung tap seed (assert).
     point_unit: point_id -> khoi. Moi khoi phai thuoc DUNG MOT trong cv_units / holdout_units.
@@ -420,8 +421,9 @@ def compare_family(err_long: pd.DataFrame, point_unit: pd.Series, pairs, *,
       xac_nhan: Holm-p < alpha VA giu chieu VA moi seed (CV) cung chieu
         [VA |Delta_cv| >= nguong neu require_practical, nguoc lai co_y_nghia_duoi_nguong].
       tuong_duong: khong dat Holm, CI (1 - 2 alpha) trong (-thr, +thr) (TOST).
-      chua_phan_dinh: con lai (Holm dat + giu chieu nhung seed khong cung chieu; khong con
-        khoi giu rieng sau loc min_pts; ...).
+      chua_phan_dinh: con lai (Holm dat + giu chieu nhung seed khong cung chieu; ...).
+      CHG-22: Holm dat nhung KHONG con khoi giu rieng nao (n_holdout_units = 0, vd sau loc min_pts)
+        -> LOI (ValueError), khong quy ve chua_phan_dinh / khong_tai_lap.
     mode cv: thay xac_nhan/khong_tai_lap bang "cho_giu_rieng" (Holm dat + seed cung chieu).
     Nhan cap ho (khong_tai_lap_cap_ho) do family_verdict ghi.
     """
@@ -433,6 +435,8 @@ def compare_family(err_long: pd.DataFrame, point_unit: pd.Series, pairs, *,
         raise ValueError("metric phai la mae/rmse/mse")
     if not 0 < alpha < 0.5:
         raise ValueError("alpha phai trong (0; 0,5)")
+    if not (np.isfinite(delta_min) and delta_min > 0):  # CHG-22: NaN/am -> moi so sanh nguong sai lang
+        raise ValueError(f"delta_min phai huu han va > 0 (nhan {delta_min})")
     if confirm_min_frac is not None and not 0 <= confirm_min_frac <= 1:
         raise ValueError("confirm_min_frac phai trong [0, 1] hoac None")
     if not (isinstance(delta_ref, str) and delta_ref == "level_mean"):
@@ -476,10 +480,14 @@ def compare_family(err_long: pd.DataFrame, point_unit: pd.Series, pairs, *,
     if bad_src.any():
         raise ValueError(f"pred_source phai thuoc {PRED_SOURCES}; co {int(bad_src.sum())} hang khac")
     cv_rows = ~is_ho_all
-    if (err_long.loc[cv_rows, "pred_source"] != "oof").any():
-        raise ValueError("hang cua cv_units phai co pred_source='oof'")
-    if (err_long.loc[is_ho_all, "pred_source"] != "final").any():
-        raise ValueError("hang cua holdout_units phai co pred_source='final'")
+    is_oracle = err_long["pred_source"] == "oracle"
+    if is_oracle.any() and not is_oracle.all():
+        raise ValueError("khong tron pred_source='oracle' voi du doan mo hinh (oof/final) trong mot ho")
+    if not is_oracle.any():
+        if (err_long.loc[cv_rows, "pred_source"] != "oof").any():
+            raise ValueError("hang cua cv_units phai co pred_source='oof'")
+        if (err_long.loc[is_ho_all, "pred_source"] != "final").any():
+            raise ValueError("hang cua holdout_units phai co pred_source='final'")
     leak = cv_rows & err_long["season"].isin(holdout_seasons)
     if leak.any():
         raise ValueError(f"cv_units co {int(leak.sum())} hang thuoc mua giu rieng {holdout_seasons}")
@@ -560,6 +568,9 @@ def compare_family(err_long: pd.DataFrame, point_unit: pd.Series, pairs, *,
     # --- muc tham chieu cho nguong tuong doi: tinh MOT lan / muc, chi tren CV ---
     level_ref = {lv: float(np.mean([_arm_level(units_cv, a, metric) for a in arms_lv]))
                  for lv, arms_lv in ref_arms_by_level.items()}
+    bad_ref = {lv: v for lv, v in level_ref.items() if not (np.isfinite(v) and v > 0)}
+    if bad_ref:
+        raise ValueError(f"{family}: muc tham chieu khong huu han / <= 0: {bad_ref}")
 
     seasons_cv = ";".join(str(x) for x in sorted(sub_cv["season"].unique()))
     seasons_ho = ";".join(str(x) for x in sorted(sub_ho["season"].unique())) if mode == "final" else ""
@@ -586,6 +597,8 @@ def compare_family(err_long: pd.DataFrame, point_unit: pd.Series, pairs, *,
         else:
             ref, ref_level, ref_grids = float(delta_ref), None, ""
             thr = delta_min * ref
+        if not (np.isfinite(thr) and thr > 0):
+            raise ValueError(f"{cmp_id}: nguong delta_min_thr khong huu han / <= 0 ({thr})")
         seed_deltas = [_wmean(*_pair_d(seed_units_cv[s], arm_a, arm_b, metric)) for s in seeds]
         seed_same = bool(sgn != 0 and all(np.sign(x) == sgn for x in seed_deltas))
         k_same = int((np.sign(d) == sgn).sum()) if sgn != 0 else 0
@@ -639,6 +652,9 @@ def compare_family(err_long: pd.DataFrame, point_unit: pd.Series, pairs, *,
                 labels.append("chua_phan_dinh")
             continue
         has_ho = r.n_holdout_units > 0
+        if holm_ok and not has_ho:  # CHG-22: khong the xac nhan chieu -> LOI, khong phai chua_phan_dinh
+            raise ValueError(f"LOI: {r.cmp_id} co y nghia sau Holm nhung khong con khoi giu rieng nao "
+                             f"(n_holdout_units = 0, loai: {r.holdout_units_dropped or '-'})")
         if holm_ok and has_ho and not r.holdout_same_dir:
             labels.append("khong_tai_lap")
         elif holm_ok and r.holdout_same_dir and r.seeds_same_dir:
@@ -671,6 +687,8 @@ def family_verdict(out: pd.DataFrame, min_frac: float = 0.8,
     tu/mau < min_frac -> nhan ho "khong_tai_lap", cac cap "xac_nhan" ghi de thanh
       "khong_tai_lap_cap_ho" (cot label_cap giu nhan cap goc). Mau so = 0 -> empty_label.
       tu/mau >= min_frac -> nhan ho "tai_lap", nhan cap giu nguyen.
+    CHG-22: cap trong mau so co n_holdout_units == 0 (khong con khoi giu rieng) -> LOI (ValueError);
+      truoc day cap nay vao mau so nhung khong the vao tu so -> keo ho ve "khong_tai_lap".
     Chi dung cho output mode='final' cua MOT ho.
 
     Tra ve (out_moi, tom_tat dict: family, label, numerator, denominator, frac, min_frac).
@@ -686,6 +704,10 @@ def family_verdict(out: pd.DataFrame, min_frac: float = 0.8,
     alpha = float(out["alpha"].iloc[0])
     res = out.copy()
     sig = (res["p_holm"] < alpha) & (res["delta_hat"] != 0)
+    no_ho = sig & ~(res["n_holdout_units"] > 0)
+    if no_ho.any():
+        raise ValueError(f"LOI: {int(no_ho.sum())} cap co y nghia sau Holm nhung khong con khoi giu rieng "
+                         f"(n_holdout_units = 0): {res.loc[no_ho, 'cmp_id'].tolist()}")
     ok = sig & res["holdout_same_dir"].astype(bool)
     if seed_inconsistent_counts_as_fail:
         ok = ok & res["seeds_same_dir"].astype(bool)

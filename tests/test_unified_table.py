@@ -129,3 +129,64 @@ def test_bay_train_ok_nan_va_chuoi_false():
     labels = labels.assign(train_ok=["False", "False", "True", "False"])  # CSV doc thanh chuoi
     t = merge_sources(labels, era5, static.assign(scope_frac=[0.5, 0.5]), hydro, hybrid)
     assert t[TRAIN_COL].tolist() == [False, False, True, False]
+
+
+def test_scope_frac_nan_la_loi_khong_loai_lang():
+    """CHG-22: scope_frac NaN -> (NaN > 0) = False -> truoc day dong bi loai lang khoi tap huan luyen."""
+    labels, era5, static, hydro, hybrid = _src()
+    with pytest.raises(ValueError, match="scope_frac NaN"):
+        merge_sources(labels, era5, static.assign(scope_frac=[0.5, np.nan]), hydro, hybrid)
+
+
+def test_build_nan_dong_huan_luyen_ngoai_danh_sach_cho_phep():
+    """CHG-22: NaN trong dong huan luyen chi duoc o tch_wl_p20c mua 2015 va dem_mean; con lai (vd ERA5 thieu ca
+    mua) -> LOI khi dung bang."""
+    import importlib.util
+
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    spec = importlib.util.spec_from_file_location("build_unified_table",
+                                                  os.path.join(root, "scripts", "build_unified_table.py"))
+    bu = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bu)
+    t = pd.DataFrame({"season": [2015, 2016, 2016, 2017], "tch_wl_p20c": [np.nan, 1.0, 1.0, 1.0],
+                      "dem_mean": [1.0, np.nan, 2.0, 3.0], "rain_mm": [1.0, 2.0, 3.0, 4.0]})
+    ok = pd.Series([True, True, True, False])
+    feats = ["tch_wl_p20c", "dem_mean", "rain_mm"]
+    assert bu.unexpected_train_nan(t, feats, ok) == {}
+    assert bu.unexpected_train_nan(t.assign(tch_wl_p20c=[1.0, np.nan, 1.0, 1.0]), feats, ok) == {"tch_wl_p20c": 1}
+    assert bu.unexpected_train_nan(t.assign(rain_mm=[1.0, np.nan, np.nan, np.nan]), feats, ok) == {"rain_mm": 2}
+
+
+# ---------------------------------------------------------------- Dot 7: bang theo bien muc tieu
+def test_target_table_bo_nhan_do_man_cot_cam_va_co_huan_luyen():
+    from unified_table import SAL_TRAIN_COL, target_table
+
+    base = merge_sources(*_src()).assign(solar=1.0, temp_c=27.0, rh_percent=80.0)
+    # a/2019: sal train True, nhan moi co; a/2020: sal False; b/2019: sal False (scope 0); b/2020: nhan moi NaN
+    lab = base[["cell_id", "season"]].assign(rain_chirps=[300.0, 310.0, 250.0, np.nan], lbl_cover_frac=1.0,
+                                             lbl_valid_px=2.0, lbl_ok=[True, True, True, False])
+    t, dropped = target_table(base, lab.iloc[::-1], "rain_chirps", ("lbl_cover_frac", "lbl_valid_px", "lbl_ok"))
+    assert dropped == ["rain_mm"]
+    for c in ("salinity", "n_valid_px", "valid_frac", "train_ok", "train_ok_10pct", "rain_mm"):
+        assert c not in t.columns
+    assert list(t.columns[:3]) == ["cell_id", "season", "rain_chirps"]
+    r = t.set_index(["cell_id", "season"])
+    assert r[SAL_TRAIN_COL].tolist() == base.set_index(["cell_id", "season"])[TRAIN_COL].tolist()
+    assert r[TRAIN_COL].tolist() == [True, False, False, False]
+    assert {"solar", "temp_c", "dem_mean", "lbl_cover_frac"} <= set(t.columns)
+    assert np.isnan(r.loc[("b", 2020), "rain_chirps"])                    # NaN khong bi dien
+    t2, d2 = target_table(base, lab.rename(columns={"rain_chirps": "rh_era5"}), "rh_era5", ("lbl_ok",))
+    assert sorted(d2) == ["rh_percent", "temp_c"] and "solar" in t2.columns and "rain_mm" in t2.columns
+
+
+def test_target_table_khoa_lech_hoac_trung_bao_loi():
+    from unified_table import target_table
+
+    base = merge_sources(*_src())
+    lab = base[["cell_id", "season"]].assign(ndwi=0.1)
+    with pytest.raises(ValueError, match="Tap khoa"):
+        target_table(base, lab.iloc[:3], "ndwi")
+    with pytest.raises(ValueError, match="trung"):
+        target_table(base, pd.concat([lab, lab.iloc[:1]]), "ndwi")
+    with pytest.raises(ValueError, match="muc tieu"):
+        target_table(base, lab.rename(columns={"ndwi": "x"}), "ndwi")

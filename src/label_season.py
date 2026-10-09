@@ -55,6 +55,32 @@ def nan_rule(ndwi, sal):
     return out
 
 
+# Bien muc tieu doc tu CUNG raster nhan (E5a Dot 7): cung quy tac NaN + mat na -> cung tap pixel hop le.
+#   salinity: band Salinity (EC1:5 dS/m) - duong cu, KHONG doi;
+#   ndwi    : band NDWIchen = ND(B5, B7) (khong don vi) - chi doi band/cot dich.
+LABEL_TARGETS = {
+    "salinity": {"band": "Salinity", "col": "salinity",
+                 "unit": "EC1:5 (dS/m), do man DAT (Wang 2025 / Nguyen 2020: S = 28,013*exp(-13,39*B5))"},
+    "ndwi": {"band": "NDWIchen", "col": "ndwi",
+             "unit": "NDWIchen = ND(B5, B7) Landsat (khong don vi); cung raster + cung quy tac NaN/mat na voi do man"},
+}
+
+
+def label_values(ndwi, sal, target="salinity"):
+    """Gia tri pixel cua bien muc tieu sau quy tac NaN CHUNG (nan_rule) - moi bien cung tap pixel hop le.
+
+    salinity -> dung nan_rule(ndwi, sal) (duong cu); ndwi -> NDWIchen tai pixel nan_rule huu han, con lai NaN.
+    """
+    s = nan_rule(ndwi, sal)
+    if target == "salinity":
+        return s
+    if target == "ndwi":
+        out = np.asarray(ndwi, dtype=np.float32).copy()
+        out[~np.isfinite(s)] = np.nan
+        return out
+    raise ValueError(f"Bien muc tieu '{target}' khong thuoc {sorted(LABEL_TARGETS)}")
+
+
 def water_mask(water_freq, wc):
     """Mat nuoc bo chinh: water_freq >= 50 (255 khong tinh) HOAC WorldCover 80."""
     wf = np.asarray(water_freq)
@@ -204,12 +230,14 @@ def area_weighted_mean_count(tif_path, cell_data):
     return out
 
 
-def cell_label_rows(mean, count, cell_area_m2, px_area_m2, min_px=MIN_TRAIN_PX, min_frac=MIN_TRAIN_FRAC):
-    """Cot nhan cua o: salinity, n_valid_px (pixel tuong duong, co trong so phu), valid_frac, train_ok, train_ok_10pct."""
+def cell_label_rows(mean, count, cell_area_m2, px_area_m2, min_px=MIN_TRAIN_PX, min_frac=MIN_TRAIN_FRAC,
+                    value_col="salinity"):
+    """Cot nhan cua o: <value_col> (mac dinh salinity), n_valid_px (pixel tuong duong, co trong so phu), valid_frac,
+    train_ok, train_ok_10pct."""
     count = np.asarray(count, dtype=float)
     mean = np.where(count > 0, np.asarray(mean, dtype=float), np.nan)
     frac = count * px_area_m2 / np.asarray(cell_area_m2, dtype=float)
-    return pd.DataFrame({"salinity": mean, "n_valid_px": count, "valid_frac": frac,
+    return pd.DataFrame({value_col: mean, "n_valid_px": count, "valid_frac": frac,
                          "train_ok": count >= min_px, "train_ok_10pct": frac >= min_frac})
 
 

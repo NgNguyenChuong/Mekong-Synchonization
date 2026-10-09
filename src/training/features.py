@@ -16,7 +16,8 @@ NATIVE_NAN_MODELS = {"hist_gb"}
 # Mau ten cot CAM - PHAI GIONG HET FORBIDDEN trong
 # .claude/skills/method-review/scripts/check_features.py (test_feature_policy.py kiem dong bo).
 FORBIDDEN_PATTERNS = [
-    (r"ndvi|ndwi|savi|vssi|(^|_)nir($|_)|(^|_)b5($|_)|(^|_)b7($|_)|sr_b\d", "quang hoc cung dai luong band nhan"),
+    (r"ndvi|ndwi|ndmi|ndii|(^|_)msi($|_)|gvmi|nmdi|savi|vssi|(^|_)nir($|_)|(^|_)b5($|_)|(^|_)b7($|_)|sr_b\d",
+     "quang hoc cung dai luong band nhan"),
     (r"^salinity|(^|_)salinity|^ec_|_ec$", "chinh nhan hoac suy tu nhan"),
     (r"water_freq|n_clear|mndwi|(^|_)mask", "suy tu mask nuoc (chi de loai pixel)"),
     (r"n_land|land_px|valid_px|n_valid|frac_valid|coverage|n_px|(^|_)(scope|valid|cover|fill)_frac|train_ok", "do phu nhan sau mask / cot chat luong (thong tin cua nhan)"),
@@ -25,6 +26,58 @@ FORBIDDEN_PATTERNS = [
     (r"^(lat|lon|latitude|longitude|x_utm|y_utm)$", "toa do (chi dung nhu bien the chon bang CV)"),
     (r"(^|_)n_days$|_frac_days$|_ok$|overlap_frac", "cot chat luong / do phu (khong phai dac trung)"),
 ]
+
+# Cam them theo cot muc tieu: dac trung cung dai luong vat ly voi nhan (do man chi dung mau chung).
+# PHAI GIONG HET TARGET_FORBIDDEN trong check_features.py (test_feature_policy.py kiem dong bo).
+TARGET_FORBIDDEN = {
+    "ndwi": [
+        (r"ndvi|ndwi|mndwi|ndmi|ndii|(^|_)msi($|_)|gvmi|nmdi|savi|(^|_)evi|lswi|ndbi|(^|_)nbr|(^|_)nir($|_)|(^|_)swir"
+         r"|(^|_)b\d+($|_)|sr_b\d|landsat|reflect|albedo",
+         "cung dai luong vat ly voi nhan NDWI (quang hoc / band Landsat)"),
+        (r"salinity|(^|_)ec($|_)", "cung dai luong vat ly voi nhan NDWI (do man dung chung band NIR B5)"),
+    ],
+    "rain_chirps": [(r"(^|_)rain|precip|(^|_)tp($|_)|chirps|imerg|gsmap",
+                     "cung dai luong vat ly voi nhan mua (mua ERA5 / san pham mua khac)")],
+    "dsr_mcd18": [(r"solar|ssrd|(^|_)ssr($|_)|(^|_)dsr|radiation|irradiance|cloud|mcd18|(^|_)ghi($|_)|sw_?down"
+                   r"|insol|sunshine",
+                   "cung dai luong vat ly voi nhan buc xa (buc xa ERA5)")],
+    "t2m_era5": [(r"(^|_)temp(?!or)|t2m|skin|dewpoint|d2m|(^|_)td($|_)"
+                  r"|(^|_)(lst|tas|tasmax|tasmin|tmean|tmax|tmin)($|_)",
+                  "cung dai luong vat ly voi nhan nhiet do (T2m / nhiet do be mat / diem suong)"),
+                 (r"(^|_)rh($|_)|humid|(^|_)hurs",
+                  "RH tinh tu T va Td cung pixel ERA5 (doi xung cam T khi dich la RH)")],
+    "rh_era5": [(r"dewpoint|d2m|(^|_)td($|_)|(^|_)temp(?!or)|t2m|(^|_)(lst|tas|tasmax|tasmin|tmean|tmax|tmin)($|_)"
+                 r"|(^|_)rh($|_)|humid|(^|_)hurs|vapou?r|(^|_)q2m|specific_hum|vpd",
+                 "cung dai luong vat ly voi nhan do am (RH = f(T, Td); moi dac trung am)")],
+}
+
+
+def target_forbidden(target) -> list[tuple[str, str]]:
+    """Mau cam them cho bien muc tieu (rong voi do man / bien khong khai bao)."""
+    return list(TARGET_FORBIDDEN.get(str(target), []))
+
+
+def find_target_leak_columns(columns, target) -> list[tuple[str, str]]:
+    """[(cot, ly do)] cho cot khop mau cam THEO BIEN MUC TIEU (khong phan biet hoa thuong)."""
+    bad = []
+    for c in columns:
+        lc = str(c).lower()
+        for pat, why in target_forbidden(target):
+            if re.search(pat, lc):
+                bad.append((c, why))
+                break
+    return bad
+
+
+def drop_target_forbidden(allowed, target) -> tuple[list[str], list[str]]:
+    """Bo khoi danh sach cho phep cac muc khop mau cam theo bien muc tieu. Tra (con lai, da bo).
+    Muc tien to 'x_*' xet theo phan tien to."""
+    keep, dropped = [], []
+    for e in allowed:
+        name = str(e)[:-1] if str(e).endswith("*") else str(e)
+        (dropped if find_target_leak_columns([name], target) else keep).append(e)
+    return keep, dropped
+
 
 # Tien to DUOC PHEP dung dang 'x_*' trong danh sach cho phep (soat 2026-10-03, muc 5a): chi nhom
 # cot co so lop thay doi (WorldCover). Muc '*' don le hoac tien to khac -> loi.
@@ -115,7 +168,7 @@ def resolve_feature_list(columns, allowed) -> tuple[list[str], list[str]]:
 
 
 def select_feature_columns(df: pd.DataFrame, allowed=DEFAULT_ALLOWED_FEATURES, allow_leak=(),
-                           require_all: bool = False) -> list[str]:
+                           require_all: bool = False, target=None) -> list[str]:
     """Cot dac trung = cot cua df nam trong danh sach CHO PHEP (theo thu tu cot df), da giai tien to.
 
     Khong suy tu "moi cot so tru danh sach loai" (cach cu de lot salinity_median, is_holdout,
@@ -136,6 +189,10 @@ def select_feature_columns(df: pd.DataFrame, allowed=DEFAULT_ALLOWED_FEATURES, a
     if non_numeric:
         raise ValueError(f"Cot cho phep nhung khong phai so: {non_numeric}")
     assert_no_leak_columns(chosen, allow=allow_leak)
+    tbad = find_target_leak_columns(chosen, target) if target is not None else []
+    if tbad:  # khong co ngoai le --allow cho mau theo bien (cung dai luong vat ly)
+        raise ValueError(f"Cot cam theo bien muc tieu '{target}' ({len(tbad)}): "
+                         + "; ".join(f"{c} ({why})" for c, why in tbad))
     return chosen
 
 

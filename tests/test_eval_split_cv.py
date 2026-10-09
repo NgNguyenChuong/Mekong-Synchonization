@@ -552,6 +552,11 @@ def test_build_model_mac_dinh_tat_early_stopping():
     assert build_model("hist_gb", 0).early_stopping is False
     assert build_model("mlp", 0).steps[-1][1].early_stopping is False
     assert build_model("mlp", 0).steps[-1][1].hidden_layer_sizes == (64, 32)
+    assert build_model("mlp", 0).steps[-1][1].max_iter == 300
+    # RF chot 2026-10-06: tai lap theo seed, n_jobs gioi han RAM
+    rf = build_model("random_forest", 7)
+    assert rf.random_state == 7 and rf.n_estimators == 200 and rf.min_samples_leaf == 5
+    assert rf.max_features == "sqrt" and rf.n_jobs == 4
 
 
 # ------------------------------------------------------------------ V3: mua giu rieng bat buoc trong CV
@@ -914,6 +919,54 @@ def test_phuong_an_c_bien_the_dap_an_phai_khop(c_data, tmp_path):
         os.remove(prov)
 
 
+AUX_6090 = os.path.join(ROOT, "data", "eval", "aux_6090", "eval_points_6090.geojson")
+
+
+@need_real
+@pytest.mark.skipif(not os.path.exists(AUX_6090), reason="thieu data/eval/aux_6090 (scripts/build_aux_points_6090.py)")
+def test_cham_phu_tap_diem_con_cua_dap_an(c_data, tmp_path):
+    """S2 (2026-10-06): file diem = 349 diem 60/90 THAT, dap an (tong hop) = 10.801 diem chinh + 349 diem them (nhu
+    points_reference_keep6090.csv). Khong co --points-subset-of-ref -> LOI (dap an thua diem); co co -> chay duoc ca
+    cv lan final, chi cham dung 349 diem (moi (diem, mua) mot lan), config ghi so diem dap an bi bo. Khong co gia
+    dinh cung so diem 10.801 trong train.py."""
+    env, tab, ref_csv, folds_csv, _, _ = c_data
+    aux = gpd.read_file(AUX_6090)
+    rng = np.random.default_rng(7)
+    extra = pd.DataFrame([(p, s) for p in aux["point_id"] for s in range(2018, 2022)], columns=["point_id", "season"])
+    extra["n_valid_3x3"] = rng.choice([9, 4], size=len(extra), p=[0.8, 0.2])
+    extra["ref_salinity"] = np.where(extra["n_valid_3x3"] >= 5, rng.uniform(0, 6, len(extra)), np.nan)
+    ref_main = pd.read_csv(ref_csv, dtype={"point_id": str})
+    ref6090 = tmp_path / "ref6090.csv"
+    pd.concat([ref_main, extra], ignore_index=True).to_csv(ref6090, index=False)
+
+    def run(name, mode, *more):
+        cmd = [sys.executable, os.path.join(ROOT, "src", "training", "train.py"), "--table", str(tab), "--mode", mode,
+               "--grid", GRID_H3_5, "--blocks", BLOCKS, "--cv-folds", str(folds_csv), "--points", AUX_6090,
+               "--points-ref", str(ref6090), "--experiment-name", name, "--model", "hist_gb", *more]
+        return subprocess.run(cmd, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=900)
+
+    proc = run("aux0", "cv")
+    assert proc.returncode == 2 and "khong co trong file diem" in proc.stderr, proc.stdout + proc.stderr
+    valid = extra[extra["n_valid_3x3"] >= 5]
+    hb = valid["point_id"].map(aux.set_index("point_id")["is_holdout"].astype(bool))
+    proc = run("aux", "cv", "--points-subset-of-ref")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = tmp_path / "artifacts" / "experiments" / "aux"
+    op = pd.read_csv(out / "cv" / "oof_points.csv", dtype={"point_id": str})
+    cv_keys = valid[~hb & (valid["season"] != 2020)]
+    assert not op.duplicated(["point_id", "season"]).any()
+    assert set(zip(op["point_id"], op["season"])) == set(zip(cv_keys["point_id"], cv_keys["season"]))
+    cfg = json.loads((out / "cv" / "config.json").read_text(encoding="utf-8"))
+    assert cfg["point_eval"]["points_subset_of_ref"] is True
+    assert cfg["point_eval"]["n_ref_points_not_in_points_file"] == ref_main["point_id"].nunique()
+    proc = run("aux", "final", "--points-subset-of-ref")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    fp = pd.read_csv(out / "final" / "final_points.csv", dtype={"point_id": str})
+    fin_keys = valid[hb | (valid["season"] == 2020)]
+    assert set(zip(fp["point_id"], fp["season"])) == set(zip(fin_keys["point_id"], fin_keys["season"]))
+    assert fp.loc[fp["point_id"].map(aux.set_index("point_id")["is_holdout"].astype(bool)), "point_id"].nunique() <= 37
+
+
 
 @need_real
 def test_idw_cv_chi_noi_suy_tu_o_train_cua_fold_cung_mua(c_data, tmp_path):
@@ -999,3 +1052,61 @@ def test_season_mean_cv_chi_tu_o_train_cua_fold_cung_mua(c_data, tmp_path):
         cells = set(mem.loc[(mem["fold"] == fold) & (mem["role"] == "train"), "cell_id"])
         exp = tr_all.loc[tr_all["cell_id"].isin(cells) & (tr_all["season"] == season), "salinity"].mean()
         assert np.allclose(g["y_pred"], exp), (fold, season)
+
+
+@need_real
+def test_dot7_bien_khac_do_man_target_dap_an_pixel_va_cam_theo_bien(c_data, tmp_path):
+    """Dot 7: --target rain_chirps chay nguyen quy trinh phuong an C; dap an ref_rain_chirps (quy tac pixel,
+    src_px_valid); rain_mm (cung dai luong) bi bo khoi danh sach mac dinh; provenance target lech -> loi."""
+    env, tab, ref_csv, folds_csv, _, t = c_data
+    rng = np.random.default_rng(5)
+    tt = t.copy()
+    tt["rain_chirps"] = rng.uniform(100, 500, len(tt))
+    tt["rain_mm"] = tt["rain_chirps"] + rng.normal(0, 5, len(tt))
+    tab2 = tmp_path / "unified_rain.csv"
+    tt.to_csv(tab2, index=False)
+    ref = pd.read_csv(ref_csv, dtype={"point_id": str})[["point_id", "season"]]
+    ref["ref_rain_chirps"] = np.where(rng.uniform(size=len(ref)) < 0.1, np.nan, rng.uniform(100, 500, len(ref)))
+    ref["src_px_valid"] = ref["ref_rain_chirps"].notna()
+    ref2 = tmp_path / "points_reference_rain_chirps.csv"
+    ref.to_csv(ref2, index=False)
+
+    def prov(path, d):
+        with open(str(path) + ".provenance.json", "w", encoding="utf-8") as f:
+            json.dump(d, f)
+    prov(tab2, {"target": "rain_chirps", "label_set": "chinh"})
+    prov(ref2, {"target": "rain_chirps", "variant": "main", "ref_rule_kind": "pixel"})
+
+    def run(name, *extra, table=tab2, ref_path=ref2):
+        cmd = [sys.executable, os.path.join(ROOT, "src", "training", "train.py"), "--table", str(table), "--mode",
+               "cv", "--grid", GRID_H3_5, "--blocks", BLOCKS, "--cv-folds", str(folds_csv), "--points", POINTS,
+               "--points-ref", str(ref_path), "--experiment-name", name, "--model", "linear", *extra]
+        return subprocess.run(cmd, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=900)
+
+    proc = run("r1", "--target", "rain_chirps")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = tmp_path / "artifacts" / "experiments" / "r1" / "cv"
+    cfg = json.loads((out / "config.json").read_text(encoding="utf-8"))
+    assert cfg["target"] == "rain_chirps" and "rain_mm" not in cfg["features"] and "dem_mean" in cfg["features"]
+    assert "rain_mm" not in cfg["features_requested"] and "rain_mm" not in cfg["features_missing"]
+    assert cfg["point_eval"]["ref_rule_kind"] == "pixel"
+    op = pd.read_csv(out / "oof_points.csv", dtype={"point_id": str})
+    r = ref[ref["src_px_valid"]].set_index(["point_id", "season"])["ref_rain_chirps"]
+    assert np.allclose(op["y_ref"], r.reindex(pd.MultiIndex.from_frame(op[["point_id", "season"]])).to_numpy())
+    assert not op["y_ref"].isna().any()
+    # danh sach tuong minh co cot cam theo bien -> loi (khong am tham bo)
+    proc = run("r2", "--target", "rain_chirps", "--features", "rain_mm", "dem_mean")
+    assert proc.returncode == 2 and "rain_mm" in proc.stderr
+    # bang / dap an cua bien khac -> loi
+    proc = run("r3", "--target", "salinity")
+    assert proc.returncode == 2 and "target" in proc.stderr
+    prov(ref2, {"variant": "main", "ref_rule_kind": "pixel"})          # dap an thieu target = do man
+    proc = run("r4", "--target", "rain_chirps")
+    assert proc.returncode == 2 and "target" in proc.stderr
+    # co hop le lech gia tri -> loi (CHG-22)
+    prov(ref2, {"target": "rain_chirps", "variant": "main", "ref_rule_kind": "pixel"})
+    bad = ref.copy()
+    bad.loc[bad.index[0], "src_px_valid"] = not bool(bad.loc[bad.index[0], "src_px_valid"])
+    bad.to_csv(ref2, index=False)
+    proc = run("r5", "--target", "rain_chirps")
+    assert proc.returncode == 2 and "src_px_valid" in proc.stderr

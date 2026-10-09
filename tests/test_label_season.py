@@ -233,7 +233,9 @@ def _px_point(r, c):
     return Point(X0 + c * 30 + 15, Y0 - r * 30 - 15)
 
 
-def test_script_end_to_end(tmp_path):
+def _toy_e2e(tmp_path, ndwi_zen=None, ndwi_gee=None):
+    """Du lieu tong hop cho script (dung chung test do man va E5a NDWI). Mac dinh NDWI = 0,2 moi pixel.
+    Tra (cmd chay script, thu muc out, work, rep)."""
     n = 12
     tr = from_origin(X0, Y0, 30, 30)
     zen, gee, out, work, rep = (tmp_path / d for d in ("zen", "gee", "out", "work", "rep"))
@@ -243,15 +245,15 @@ def test_script_end_to_end(tmp_path):
     sal[:, n // 2:] = 3.0                                      # trai 1, phai 3
     sal[0, 0] = 30.0                                           # S > 28,013 -> NaN
     sal[n - 1, n - 1] = np.nan                                 # ngoai dau chan (khong co nam nao)
-    ndwi = np.full((n, n), 0.2, np.float32)
+    ndwi = np.full((n, n), 0.2, np.float32) if ndwi_zen is None else ndwi_zen.astype(np.float32)
     _write(zen / "2023_MD_dry_NDWIchen_Salinity.tif", [ndwi, sal], tr, ["NDWIchen", "Salinity"])
     # GEE 2024: luoi lech 2 cot tay, 1 hang bac; gia tri = Zenodo + 1; phu ca ngoai dau chan
     g_tr = from_origin(X0 - 60, Y0 + 30, 30, 30)
     gs = np.full((n + 2, n + 3), 9.0, np.float32)
     gs[1:n + 1, 2:n + 2] = np.where(np.isfinite(sal), sal + 1, 7.0)
     gs[1, 2] = 2.0                                             # pixel (0,0): 2024 hop le
-    _write(gee / "2024_MD_dry_NDWIchen_Salinity_l8_v2.tif", [np.full_like(gs, 0.2), gs], g_tr,
-           ["NDWIchen", "Salinity"])
+    gn = np.full_like(gs, 0.2) if ndwi_gee is None else ndwi_gee.astype(np.float32)
+    _write(gee / "2024_MD_dry_NDWIchen_Salinity_l8_v2.tif", [gn, gs], g_tr, ["NDWIchen", "Salinity"])
     for y in (2023, 2024):
         wf = np.zeros((n + 2, n + 3), np.uint8)
         ncl = np.full_like(wf, 5)
@@ -295,6 +297,11 @@ def test_script_end_to_end(tmp_path):
            "--points", str(tmp_path / "pts.geojson"), "--points-source", str(tmp_path / "pts_src.geojson"),
            "--grids-dir", str(gdir), "--years", "2023", "2024",
            "--out-dir", str(out), "--work-dir", str(work), "--report-dir", str(rep)]
+    return cmd, out, work, rep
+
+
+def test_script_end_to_end(tmp_path):
+    cmd, out, work, rep = _toy_e2e(tmp_path)
     r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert r.returncode == 0, r.stdout + r.stderr
 
@@ -407,3 +414,77 @@ def test_script_rejects_scope_v2(tmp_path):
            "--work-dir", str(tmp_path / "work"), "--report-dir", str(tmp_path / "rep")]
     r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert r.returncode != 0 and "wc_class" in (r.stdout + r.stderr)
+
+
+# ---------------------------------------------------------------- E5a Dot 7: NDWI cung raster nhan
+def test_label_values_ndwi_cung_tap_pixel_voi_do_man():
+    ndwi = np.array([0.2, np.nan, 0.2, 1.0, 0.3, -1.0, 0.2, -0.5], np.float32)
+    sal = np.array([1.5, 1.5, 28.5, 1.5, 2.0, 1.5, np.nan, 27.9], np.float32)
+    s = ls.label_values(ndwi, sal, "salinity")
+    np.testing.assert_array_equal(s, ls.nan_rule(ndwi, sal))         # duong do man khong doi
+    v = ls.label_values(ndwi, sal, "ndwi")
+    assert v.dtype == np.float32
+    np.testing.assert_array_equal(np.isfinite(v), np.isfinite(s))      # cung tap pixel hop le
+    assert v[0] == pytest.approx(0.2) and v[4] == pytest.approx(0.3) and v[7] == pytest.approx(-0.5)
+    assert not np.any(v[np.isnan(s)] == 0)                             # NaN khong bi dien 0
+    with pytest.raises(ValueError):
+        ls.label_values(ndwi, sal, "rain")
+
+
+def test_script_ndwi_khong_doi_duong_do_man(tmp_path):
+    """--target ndwi: cung mat na (n_valid_px, NaN diem giong do man), gia tri = NDWI; dau ra do man khong doi;
+    raster cache trong work-dir dung chung KHONG bi dung lan giua hai bien."""
+    n = 12
+    nz = np.full((n, n), 0.1, np.float32)
+    nz[:, n // 2:] = 0.3                                                # trai 0,1 / phai 0,3
+    ng = np.full((n + 2, n + 3), 0.5, np.float32)
+    ng[1:n + 1, 2:n + 2] = nz + 0.05                                    # 2024: trai 0,15 / phai 0,35
+    cmd, out, work, rep = _toy_e2e(tmp_path, ndwi_zen=nz, ndwi_gee=ng)
+    run = lambda c: subprocess.run(c, capture_output=True, text=True, encoding="utf-8", errors="replace")  # noqa: E731
+    r = run(cmd)
+    assert r.returncode == 0, r.stdout + r.stderr
+    files = ["toy_labels_season.csv", "points_reference.csv", "toy_labels_season_keepwater.csv"]
+    before = {f: (out / f).read_bytes() for f in files}
+    rep_before = (rep / "dot4_phan_bo_nhan_v3.csv").read_bytes()
+
+    out_n = tmp_path / "out_ndwi"
+    r = run(cmd + ["--target", "ndwi", "--out-dir", str(out_n)])       # CUNG work-dir voi lan do man
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "bo qua" not in r.stdout                                     # khong dung lai raster do man
+    for f in files:
+        assert (out / f).read_bytes() == before[f]
+    assert (rep / "dot4_phan_bo_nhan_v3.csv").read_bytes() == rep_before
+    assert (rep / "dot7_e5_ndwi_phan_bo.csv").exists() and (rep / "dot7_e5_ndwi_luoi.csv").exists()
+    assert sorted(p.name for p in out_n.glob("*.csv")) == ["points_reference_ndwi.csv", "toy_labels_season_ndwi.csv"]
+
+    sal = pd.read_csv(out / "toy_labels_season.csv", dtype={"cell_id": str}).set_index(["cell_id", "season"])
+    nd = pd.read_csv(out_n / "toy_labels_season_ndwi.csv", dtype={"cell_id": str})
+    assert list(nd.columns) == ["cell_id", "season", "ndwi", "n_valid_px", "valid_frac", "train_ok", "train_ok_10pct"]
+    nd = nd.set_index(["cell_id", "season"])
+    pd.testing.assert_series_equal(nd["n_valid_px"], sal["n_valid_px"])
+    pd.testing.assert_series_equal(nd["train_ok"], sal["train_ok"])
+    assert nd.loc[("L", 2023), "ndwi"] == pytest.approx(0.1, abs=1e-6)
+    assert nd.loc[("R", 2023), "ndwi"] == pytest.approx(0.3, abs=1e-6)
+    assert nd.loc[("L", 2024), "ndwi"] == pytest.approx(0.15, abs=1e-6)
+    assert nd.loc[("R", 2024), "ndwi"] == pytest.approx(0.35, abs=1e-6)
+
+    ps = pd.read_csv(out / "points_reference.csv", dtype={"point_id": str}).set_index(["point_id", "season"])
+    pn = pd.read_csv(out_n / "points_reference_ndwi.csv", dtype={"point_id": str})
+    assert "ref_ndwi" in pn.columns and "ref_salinity" not in pn.columns
+    pn = pn.set_index(["point_id", "season"])
+    assert (pn["n_valid_3x3"] == ps["n_valid_3x3"]).all()
+    assert (pn["ref_ndwi"].isna() == ps["ref_salinity"].isna()).all()
+    assert pn.loc[("p_mid", 2023), "ref_ndwi"] == pytest.approx(0.1, abs=1e-6)
+    prov = json.load(open(out_n / "points_reference_ndwi.csv.provenance.json", encoding="utf-8"))
+    assert prov["target"] == "ndwi" and prov["variant"] == "main" and prov["ref_rule_kind"] == "3x3"
+    assert prov["value_band"] == "NDWIchen" and "EC1:5" not in prov["unit"]
+    tprov = json.load(open(out_n / "toy_labels_season_ndwi.csv.provenance.json", encoding="utf-8"))
+    assert tprov["target"] == "ndwi"
+    assert "target" not in json.load(open(out / "toy_labels_season.csv.provenance.json", encoding="utf-8"))
+
+    # chay lai do man tren work-dir vua bi NDWI ghi: phai tinh lai raster (khong lay raster NDWI), ket qua khong doi
+    r = run(cmd)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "khac quy tac/tap diem - tinh lai" in r.stdout
+    for f in files:
+        assert (out / f).read_bytes() == before[f]

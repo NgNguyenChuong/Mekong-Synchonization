@@ -233,6 +233,35 @@ def scope_values_at_points(points, scope_path):
     return out
 
 
+def select_filtered_points(points, attrs, classes):
+    """Diem bi LOC khoi bo chinh theo DUNG quy tac scripts/filter_eval_points_scope.py (giu <=> scope == 1) VA co
+    wc_class (pixel 30 m chua diem) thuoc `classes` - tap cham phu cua bo nhan phu (CHG-15, cau V).
+
+    points: GeoDataFrame nguon (truoc khi loc); attrs: scope_values_at_points(points, scope_v3) (CUNG index).
+    Khong sinh diem, khong lay mau: tra ve cac dong cua `points` (giu cot, toa do, thu tu) + cot wc_class,
+    zenodo_n_years. Loi: attrs khong cung index; thieu cot; lop yeu cau ma diem van scope == 1 (mat na khong loai
+    lop do -> sai mat na); classes rong.
+    """
+    classes = sorted({int(c) for c in classes})
+    if not classes:
+        raise ValueError("classes rong")
+    need = {"scope", "wc_class", "zenodo_n_years"}
+    if not need <= set(attrs.columns):
+        raise ValueError(f"attrs thieu cot {sorted(need - set(attrs.columns))}")
+    if not attrs.index.equals(points.index):
+        raise ValueError("attrs khong cung index voi points")
+    in_cls = attrs["wc_class"].astype(int).isin(classes)
+    kept = attrs["scope"] == 1
+    if (in_cls & kept).any():
+        raise ValueError(f"{int((in_cls & kept).sum())} diem lop {classes} van co scope = 1 - mat na khong loai lop "
+                         "nay (sai mat na?)")
+    sel = (in_cls & ~kept).to_numpy()
+    out = points.loc[sel].copy()
+    out["wc_class"] = attrs.loc[sel, "wc_class"].astype(int).to_numpy()
+    out["zenodo_n_years"] = attrs.loc[sel, "zenodo_n_years"].astype(int).to_numpy()
+    return out
+
+
 def scope_change_by_class(old_scope, new_res):
     """So mat na pham vi cu (mang 0/1, cung luoi) voi ket qua build_scope_mask moi, theo lop wc_class moi.
 

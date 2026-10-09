@@ -121,6 +121,8 @@ def merge_sources(labels, era5, static, hydro, hybrid, hydro_cols=HYDRO_COLS) ->
         raise ValueError(f"So dong doi sau ghep: {len(labels)} -> {len(out)}")
     if "train_ok" not in out.columns or "scope_frac" not in out.columns:
         raise ValueError("Can cot train_ok (nhan) va scope_frac (tinh) de tao " + TRAIN_COL)
+    if out["scope_frac"].isna().any():  # CHG-22: NaN > 0 la False -> truoc day loai lang khoi tap huan luyen
+        raise ValueError(f"{int(out['scope_frac'].isna().sum())} dong scope_frac NaN (o khong co trong bang tinh?)")
     out[TRAIN_COL] = strict_bool(out["train_ok"], "train_ok") & (out["scope_frac"] > 0)
     if "scope_n_px" in out.columns:
         # O chi co manh dat < 1 pixel (khong tam pixel dat nao trong o, scope_frac ~1e-4): dac trung tinh tren manh
@@ -143,3 +145,47 @@ def finite_or_nan(series) -> bool:
     """True neu cot chi gom so huu han hoac NaN (khong +-inf)."""
     v = pd.to_numeric(series, errors="coerce").to_numpy(dtype=float)
     return not np.isinf(v).any()
+
+
+# ---------------------------------------------------------------- Dot 7: bang hop nhat theo bien muc tieu
+SAL_LABEL_COLS = ("salinity", "n_valid_px", "valid_frac", "train_ok", "train_ok_10pct")
+SAL_TRAIN_COL = "train_ok_scope_sal"   # co huan luyen cua bo do man (giu de doi chieu; mau 'train_ok' cam lam dac trung)
+
+
+def target_table(base: pd.DataFrame, labels: pd.DataFrame, target_col: str, label_cols=()) -> tuple[pd.DataFrame, list]:
+    """Bang hop nhat cho bien muc tieu khac do man (E5d Dot 7) tu bang hop nhat bo chinh do man.
+
+    - Tap khoa (cell_id, season) cua nhan moi phai TRUNG bang goc (thieu/thua/trung -> ValueError).
+    - Bo cot nhan do man (SAL_LABEL_COLS); TRAIN_COL goc doi ten SAL_TRAIN_COL.
+    - Bo moi cot khop mau cam THEO BIEN (training.features.TARGET_FORBIDDEN - cung dai luong vat ly).
+    - TRAIN_COL moi = SAL_TRAIN_COL VA nhan bien moi huu han (An: "train_ok_scope nhu cu ∧ nhan bien hop le").
+    Tra (bang, danh sach cot da bo vi cam theo bien).
+    """
+    from training.features import find_target_leak_columns
+
+    base, labels = _normalize(base), _normalize(labels)
+    _check_keys(base, KEY_COLS, "bang goc")
+    _check_keys(labels, KEY_COLS, "nhan moi")
+    _same_keyset(base, labels, "bang goc", "nhan moi")
+    if target_col not in labels.columns:
+        raise ValueError(f"nhan moi thieu cot muc tieu '{target_col}'")
+    miss = [c for c in (*SAL_LABEL_COLS, TRAIN_COL) if c not in base.columns]
+    if miss:
+        raise ValueError(f"bang goc thieu cot {miss} (can bang hop nhat bo chinh do man)")
+    keep_lab = [*KEY_COLS, target_col, *label_cols]
+    clash = [c for c in keep_lab[2:] if c in base.columns and c not in SAL_LABEL_COLS]
+    if clash:
+        raise ValueError(f"Cot nhan moi trung ten cot bang goc: {clash}")
+    b = base.drop(columns=list(SAL_LABEL_COLS)).rename(columns={TRAIN_COL: SAL_TRAIN_COL})
+    cand = [c for c in b.columns if c not in (*KEY_COLS, SAL_TRAIN_COL)]
+    dropped = [c for c, _ in find_target_leak_columns(cand, target_col)]
+    b = b.drop(columns=dropped)
+    out = b.merge(labels[keep_lab], on=list(KEY_COLS), how="left", validate="one_to_one")
+    if len(out) != len(base):
+        raise ValueError(f"So dong doi sau ghep: {len(base)} -> {len(out)}")
+    out[TRAIN_COL] = strict_bool(out[SAL_TRAIN_COL], SAL_TRAIN_COL) & out[target_col].notna()
+    quality = [*label_cols, TRAIN_COL, SAL_TRAIN_COL] + [c for c in QUALITY_COLS if c in out.columns
+                                                         and c not in (*label_cols, TRAIN_COL)]
+    rest = [c for c in out.columns if c not in (*KEY_COLS, target_col, *quality)]
+    out = out[[*KEY_COLS, target_col, *quality, *rest]].sort_values(list(KEY_COLS)).reset_index(drop=True)
+    return out, dropped
