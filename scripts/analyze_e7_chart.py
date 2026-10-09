@@ -1,6 +1,7 @@
 #!/usr/bin/env python
-"""E7 (MO TA): bang tam/canh o 13 luoi x 6 bien, bang + hinh bieu do chinh (Moran trung vi x max|Delta_hat|/Delta_min
-cua cap F1 HistGB theo muc). Khong tinh lai Moran; chi doc dot7_e7_moran_bien.csv va ket qua HistGB da mo.
+"""E7 (MO TA): bang tam/canh o + nguon/canh o 13 luoi x 6 bien, bang + hinh bieu do chinh (Moran trung vi x
+max|Delta_hat|/Delta_min cua cap F1 HistGB theo muc; truc phu do phan giai nguon / canh o).
+Khong tinh lai Moran; chi doc dot7_e7_moran_bien.csv va ket qua HistGB da mo.
 
 Chay:  venv/Scripts/python.exe scripts/analyze_e7_chart.py [--out-dir KE_HOACH/ket-qua]
 """
@@ -27,7 +28,9 @@ TAM_FILE = "dot7_e7_tam_canh_o.csv"
 MAIN_FILE = "dot7_e7_bieu_do_chinh.csv"
 FIG = "dot7_e7_bieu_do_chinh"
 FIGS = {"": dict(x="moran_median"), "_bo_ndwi": dict(x="moran_median", drop=("ndwi",)),
-        "_tam_canh_o": dict(x="tam_tren_canh_median", logx=True)}
+        "_nguon_canh_o": dict(x="nguon_tren_canh_median", logx=True)}
+XLABEL = {"moran_median": "Moran's I trung vị theo mùa (dải 10 km)",
+          "nguon_tren_canh_median": "độ phân giải nguồn / cạnh ô (trung vị các lưới cùng mức, log)"}
 NAMES = {"salinity": "Độ mặn", "ndwi": "NDWI", "rain_chirps": "Mưa (CHIRPS)", "dsr_mcd18": "Bức xạ (MCD18)",
          "t2m_era5": "Nhiệt độ (ERA5-Land)", "rh_era5": "Độ ẩm (ERA5-Land)"}
 COLORS = {"salinity": "#2a78d6", "ndwi": "#2a78d6", "rain_chirps": "#1baf7a", "dsr_mcd18": "#eda100",
@@ -57,9 +60,11 @@ def grid_table(path) -> pd.DataFrame:
 
 
 def tam_canh_o(grids: pd.DataFrame, moran: pd.DataFrame) -> pd.DataFrame:
-    out = moran[["variable", "range_median_km"]].merge(grids, how="cross")
+    out = moran[["variable", "range_median_km", "do_phan_giai_nguon_km"]].merge(grids, how="cross")
     out["ti_le_tam_tren_canh"] = out["range_median_km"] / out["canh_o_km"]  # inf / canh = inf
-    return out[["variable", "grid", "muc", "mean_area_km2", "canh_o_km", "range_median_km", "ti_le_tam_tren_canh"]]
+    out["nguon_tren_canh"] = out["do_phan_giai_nguon_km"] / out["canh_o_km"]
+    return out[["variable", "grid", "muc", "mean_area_km2", "canh_o_km", "range_median_km", "ti_le_tam_tren_canh",
+                "do_phan_giai_nguon_km", "nguon_tren_canh"]]
 
 
 def _bool(s: pd.Series) -> pd.Series:
@@ -93,13 +98,15 @@ def framework_effect(kd: pd.DataFrame, t: str, grids: pd.DataFrame) -> pd.DataFr
 
 
 def main_table(moran: pd.DataFrame, eff: pd.DataFrame, tam: pd.DataFrame) -> pd.DataFrame:
-    tm = (tam.groupby(["variable", "muc"], as_index=False)["ti_le_tam_tren_canh"].median()
-          .rename(columns={"ti_le_tam_tren_canh": "tam_tren_canh_median"}))
+    tm = (tam.groupby(["variable", "muc"], as_index=False)[["ti_le_tam_tren_canh", "nguon_tren_canh"]].median()
+          .rename(columns={"ti_le_tam_tren_canh": "tam_tren_canh_median",
+                           "nguon_tren_canh": "nguon_tren_canh_median"}))
     out = (eff.merge(moran[["variable", "moran_median"]], on="variable", how="left", validate="many_to_one")
            .merge(tm, on=["variable", "muc"], how="left", validate="one_to_one"))
-    if out[["moran_median", "tam_tren_canh_median"]].isna().any().any():
-        loi("thieu Moran / tam cho mot (bien, muc)")
-    return out[["variable", "muc", "moran_median", "anh_huong_khung", "kiem_dinh", "tam_tren_canh_median", "n_cap"]]
+    if out[["moran_median", "tam_tren_canh_median", "nguon_tren_canh_median"]].isna().any().any():
+        loi("thieu Moran / tam / nguon cho mot (bien, muc)")
+    return out[["variable", "muc", "moran_median", "anh_huong_khung", "kiem_dinh", "tam_tren_canh_median",
+                "nguon_tren_canh_median", "n_cap"]]
 
 
 def plot(tab: pd.DataFrame, path_noext, x="moran_median", drop=(), logx=False) -> list:
@@ -108,16 +115,11 @@ def plot(tab: pd.DataFrame, path_noext, x="moran_median", drop=(), logx=False) -
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
-    from matplotlib.patches import Patch
     from matplotlib.ticker import FuncFormatter
 
     d = tab[~tab["variable"].isin(drop)].copy()
-    xv = d[x].to_numpy(float)
-    cap = None
-    if np.isinf(xv).any():  # tam cham bien 150 km -> ve o mep phai, ghi chu
-        fin = xv[np.isfinite(xv)]
-        cap = float(fin.max() * 2) if len(fin) else 1.0
-        d[x] = np.where(np.isinf(xv), cap, xv)
+    if not np.isfinite(d[x].to_numpy(float)).all():
+        loi(f"{x} khong huu han - khong ve")
     fig, ax = plt.subplots(figsize=(8, 5.4), facecolor=SURFACE)
     ax.set_facecolor(SURFACE)
     for t in [v for v in VARIABLES if v in set(d["variable"])]:
@@ -132,20 +134,15 @@ def plot(tab: pd.DataFrame, path_noext, x="moran_median", drop=(), logx=False) -
     ax.axhline(1.0, color=INK2, ls="--", lw=1, zorder=1)
     ax.annotate("ngưỡng Δ_min", (0.01, 1.0), xycoords=("axes fraction", "data"), xytext=(0, 3),
                 textcoords="offset points", fontsize=7, color=INK2)
-    if cap is not None:
-        ax.axvline(cap, color=GRID_INK, lw=8, zorder=0)
-    no_x = cap is not None and not np.isfinite(xv).any()
-    if logx and not no_x:
+    if x == "nguon_tren_canh_median":
+        ax.axvline(1.0, color=INK2, ls=":", lw=1, zorder=1)
+        ax.annotate("x = 1: pixel nguồn = cạnh ô\nx > 1: pixel nguồn lớn hơn ô", (1.0, 0.98),
+                    xycoords=("data", "axes fraction"), xytext=(4, 0), textcoords="offset points", fontsize=7,
+                    color=INK2, va="top")
+    if logx:
         ax.set_xscale("log")
-        fmt = FuncFormatter(lambda v, _: f"{v:g}")
-        ax.xaxis.set_major_formatter(fmt)
-        ax.xaxis.set_minor_formatter(fmt)
-    ax.set_xlabel("Moran's I trung vị theo mùa (dải 10 km)" if x == "moran_median"
-                  else "tầm semivariogram / cạnh ô (trung vị các lưới cùng mức, log)", color=INK2, fontsize=9)
-    if no_x:
-        ax.set_xticks([])
-        ax.set_xlabel("tầm semivariogram / cạnh ô: MỌI (biến, mức) chạm biên 150 km (∞) - không có giá trị hữu hạn",
-                      color=INK, fontsize=9)
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+    ax.set_xlabel(XLABEL[x], color=INK2, fontsize=9)
     ax.set_ylabel(r"mức ảnh hưởng khung = max $|\hat{\Delta}|/\Delta_{\min}$ (cặp F1, HistGB)", color=INK2, fontsize=9)
     ax.set_title("E7 (mô tả): tự tương quan của biến và mức ảnh hưởng của khung lưới", color=INK, fontsize=10,
                  loc="left")
@@ -161,8 +158,6 @@ def plot(tab: pd.DataFrame, path_noext, x="moran_median", drop=(), logx=False) -
             Line2D([], [], ls="", marker="o", ms=7, mfc=SURFACE, mec=INK2, label="rỗng: mô tả / trượt cổng")]
     leg += [Line2D([], [], ls="", marker="o", ms=np.sqrt(SIZES[m]) * 0.8, mfc=SURFACE, mec=INK2,
                    label=f"mức {m} (số cạnh điểm)") for m in LEVELS]
-    if cap is not None:
-        leg.append(Patch(color=GRID_INK, label="dải xám: tầm chạm biên 150 km (∞)"))
     ax.legend(handles=leg, frameon=False, fontsize=7, labelcolor=INK2, loc="upper center",
               bbox_to_anchor=(0.5, -0.13), ncol=3)
     paths = []
@@ -187,6 +182,9 @@ def main(a):
     moran = pd.read_csv(moran_path)
     if sorted(moran["variable"]) != sorted(VARIABLES):
         loi(f"{moran_path}: bien {sorted(moran['variable'])} khac {sorted(VARIABLES)}")
+    r = moran["do_phan_giai_nguon_km"].to_numpy(float)
+    if not (np.isfinite(r) & (r > 0)).all():
+        loi(f"{moran_path}: do_phan_giai_nguon_km phai huu han > 0")
     grids = grid_table(area_path)
     tam = tam_canh_o(grids, moran)
     eff = pd.concat([framework_effect(pd.read_csv(kd_path(a.results_dir, t)), t, grids) for t in VARIABLES],
@@ -195,7 +193,8 @@ def main(a):
     os.makedirs(os.path.join(a.out_dir, "hinh"), exist_ok=True)
     src = {os.path.basename(p): file_sha256(p)
            for p in [moran_path, area_path] + [kd_path(a.results_dir, t) for t in VARIABLES]}
-    info = dict(quy_tac_nhat_ky="2026-10-09 10:56:38 E7", vai_tro="mo_ta", sha_dau_vao=src)
+    info = dict(quy_tac_nhat_ky="2026-10-09 10:56:38 E7; 2026-10-09 12:01:14 truc phu nguon/canh o", vai_tro="mo_ta",
+                sha_dau_vao=src)
     write_csv_atomic(tam, outs[0])
     write_csv_atomic(tab, outs[1])
     figs = []

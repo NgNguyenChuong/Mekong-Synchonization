@@ -224,7 +224,8 @@ def _chart_inputs(ch, tmp_path):
     out = tmp_path / "KE_HOACH" / "ket-qua"
     out.mkdir(parents=True)
     pd.DataFrame({"variable": ch.VARIABLES, "moran_median": [0.3, 0.5, 0.97, 0.9, 0.99, 0.98],
-                  "range_median_km": [np.inf, 40.0, np.inf, 60.0, np.inf, np.inf]}).to_csv(
+                  "range_median_km": [np.inf, 40.0, np.inf, 60.0, np.inf, np.inf],
+                  "do_phan_giai_nguon_km": [0.03, 0.03, 5.0, 1.0, 9.0, 9.0]}).to_csv(
         out / ch.SUMMARY_FILE, index=False)
     man = out / "man.csv"
     pd.DataFrame({"file": ["KE_HOACH/ket-qua/khac.csv"]}).to_csv(man, index=False)
@@ -242,8 +243,26 @@ def test_chart_dau_cuoi(ch, tmp_path):
     r = tam[(tam["variable"] == "ndwi") & (tam["grid"] == "h3_res_6")].iloc[0]
     assert r["ti_le_tam_tren_canh"] == pytest.approx(40.0 / np.sqrt(41.7))
     assert np.isposinf(tam.loc[tam["variable"] == "salinity", "ti_le_tam_tren_canh"]).all()
+    assert r["nguon_tren_canh"] == pytest.approx(0.03 / np.sqrt(41.7))
+    m = tab.set_index(["variable", "muc"])["nguon_tren_canh_median"]
+    assert m[("t2m_era5", 6)] == pytest.approx(9.0 / np.sqrt(41.7))
+    assert m[("rain_chirps", 7)] == pytest.approx(5.0 / np.sqrt(6.0))
+    assert m[("dsr_mcd18", 5)] == pytest.approx(1.0 / np.sqrt(292.0)) and np.isfinite(m).all()
     for p in ch.outputs(str(out)):
         assert os.path.exists(p) and os.path.exists(f"{p}.provenance.json")
+    assert (out / "hinh" / f"{ch.FIG}_nguon_canh_o.png").exists()
+    assert not any(f"{ch.FIG}_tam_canh_o" in p for p in ch.outputs(str(out)))
+
+
+@pytest.mark.parametrize("bad", [0.0, np.nan])
+def test_chart_do_phan_giai_nguon_sai_la_loi(ch, tmp_path, bad):
+    args, out, _ = _chart_inputs(ch, tmp_path)
+    s = pd.read_csv(out / ch.SUMMARY_FILE)
+    s.loc[s["variable"] == "rain_chirps", "do_phan_giai_nguon_km"] = bad
+    s.to_csv(out / ch.SUMMARY_FILE, index=False)
+    with pytest.raises(SystemExit, match="do_phan_giai_nguon_km"):
+        ch.main(args)
+    assert not (out / ch.MAIN_FILE).exists()
 
 
 def test_chart_file_ra_trong_manifest_ma_2(ch, tmp_path):
