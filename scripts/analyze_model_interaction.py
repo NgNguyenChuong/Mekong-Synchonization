@@ -20,6 +20,7 @@ if sys.platform == "win32":
 
 import analyze_cv_family as acf  # noqa: E402
 import analyze_model_sensitivity as ams  # noqa: E402
+from run_experiments import git_state  # noqa: E402
 from training.dot7_rules import (MODELS, MULTI_TAG_REASON, TESTED_TIERS, file_sha256, gate_required,  # noqa: E402
                                  guard_frozen, load_gate, model_name, model_provenance, provenance_path, run_model,
                                  write_csv_atomic, write_provenance)
@@ -29,6 +30,7 @@ HOLDOUT_SEASONS = (2020,)  # nhu run_family cua analyze_cv_family
 F1_EXTRA = ("delta_min_thr", "delta_ref", "n_common_point_seasons")
 TOL = {"rtol": 1e-6, "atol": 1e-9}  # Delta_hat tinh lai vs file F1 (to_csv giu du chu so)
 REPORT = {"rf": "kiem_dinh", "mlp": "mo_ta_phu_luc"}
+RULE_LOG = "NHAT_KY 2026-10-09 08:54:02"  # muc nhat ky chot quy tac truoc khi chay
 SIDES = ("hist_gb", "mo_hinh")
 OUT_COLS = ["target", "model", "grid_a", "grid_b", "muc", "G", "I_hat", "ci_low", "ci_high", "p_value", "p_holm",
             "holm_m", "seed_deltas", "seeds_same_dir", "delta_min_thr_histgb", "tost_tuong_tac", "label", "chua_ro",
@@ -92,16 +94,23 @@ def load_pairs(a, t):
 # ---------------------------------------------------------
 # Sai so OOF hai mo hinh -> kiem tuong tac
 # ---------------------------------------------------------
-def check_f1_inputs(t, side, inf, run_tags, ref, n_common, k):
-    """Luot doc vao phai la luot da tao file F1 cua ben do (tag, points_ref, so (diem, mua) chung)."""
+def check_f1_inputs(t, side, inf, run_tags, ref, n_common, k) -> list:
+    """Luot doc vao phai la luot da tao file F1 cua ben do (tag, points_ref, so (diem, mua) chung).
+    Tra ve danh sach kiem bo qua vi file F1 cu thieu cot (vd HistGB do man)."""
+    skipped = []
     f1_tags = set(inf["f1_git_tag"])
-    if f1_tags and not set(run_tags) <= f1_tags:
+    if not f1_tags:
+        skipped.append(f"{side}: file F1 khong co git_tag -> khong kiem git_tag luot thuoc tag file F1")
+    elif not set(run_tags) <= f1_tags:
         acf.loi(f"{t} {side}: git_tag luot {sorted(set(run_tags) - f1_tags)} khong co trong file F1 {sorted(f1_tags)}")
-    if inf["f1_points_ref_sha256"] and inf["f1_points_ref_sha256"] != [ref]:
+    if not inf["f1_points_ref_sha256"]:
+        skipped.append(f"{side}: file F1 khong co points_ref_sha256 -> khong kiem points_ref luot = file F1")
+    elif inf["f1_points_ref_sha256"] != [ref]:
         acf.loi(f"{t} {side}: points_ref_sha256 file F1 khac luot dang doc")
     n_f1 = set(k[f"n_common_point_seasons_{side}"].astype(int))
     if n_f1 != {n_common}:
         acf.loi(f"{t} {side}: so (diem, mua) chung {n_common} khac file F1 {sorted(n_f1)}")
+    return skipped
 
 
 def check_delta(t, res, k):
@@ -133,8 +142,9 @@ def run_target(a, t, k, info):
     except ValueError as exc:
         acf.loi(f"{t}: {exc}")
     tags = {s: sorted({i["git_tag"] for i in infos[s]}) for s in SIDES}
+    skipped = []
     for side in SIDES:
-        check_f1_inputs(t, side, info[side], tags[side], same["points_ref_sha256"], n_common[side], k)
+        skipped += check_f1_inputs(t, side, info[side], tags[side], same["points_ref_sha256"], n_common[side], k)
         info[side].update(git_tags=tags[side], n_luot=len(infos[side]), n_common_point_seasons=n_common[side])
     try:
         res = interaction_family(err["hist_gb"], err["mo_hinh"], pu, list(zip(k["grid_a"], k["grid_b"])),
@@ -148,7 +158,7 @@ def run_target(a, t, k, info):
     res["muc"] = k["muc"].to_numpy()
     res["delta_ref_histgb"] = k["delta_ref_hist_gb"].to_numpy()
     res["n_common_point_seasons"] = n
-    return res, same, tags, n
+    return res, same, tags, n, skipped
 
 
 def main(a):
@@ -160,7 +170,10 @@ def main(a):
     summ_path = os.path.join(a.out_dir, summary_name(a.model))
     files = [*outs.values(), summ_path]
     guard_frozen(files + [provenance_path(p) for p in files], a.frozen_manifest)
-    rows, inputs, done = [], {}, []
+    gs = git_state()
+    code = {"git_commit": gs["git_commit"], "git_dirty_src_scripts": gs["git_dirty_src_scripts"],
+            "quy_tac_nhat_ky": RULE_LOG}
+    rows, inputs, done, skips, g_cap = [], {}, [], {}, {}
     for t in a.targets:
         x, info = load_pairs(a, t)
         k = x[x["qua_cong_ca_hai"]].reset_index(drop=True)
@@ -171,30 +184,37 @@ def main(a):
                 "folds_sha256": file_sha256(a.folds_csv) if os.path.isfile(a.folds_csv) else None}
         if k.empty:  # khong cap nao qua cong ca hai: khong doc sai so
             res, gt, ref, n = pd.DataFrame(columns=OUT_COLS), "", "", 0
+            skipped = ["khong co cap qua cong ca hai -> khong doc sai so OOF, khong kiem nhat quan luot - file F1"]
         else:
-            res, same, tags, n = run_target(a, t, k, info)
+            res, same, tags, n, skipped = run_target(a, t, k, info)
             gt, ref = tag_str(tags, a.model), same["points_ref_sha256"]
             prov.update(git_tags=tags, points_ref_sha256=ref, n_common_point_seasons=n,
                         **acf.tag_info(same, a.allowed_tags, a.tags_reason))
         res["target"], res["model"], res["git_tags"], res["points_ref_sha256"] = t, a.model, gt, ref
         res = res[OUT_COLS]
+        skips[t], g_cap[t] = skipped, sorted(int(g) for g in set(res["G"]))
+        prov.update(G=g_cap[t], kiem_bo_qua=skipped)
         done.append((t, res, prov, info))
         n_sig = int((res["label"] == SIG).sum())
         n_unclear = int(res["chua_ro"].astype(bool).sum())
+        half = (res["ci_high"].astype(float) - res["ci_low"].astype(float)) / 2
         rows.append({"target": t, "model": a.model, "n_cap_kiem_dinh": len(x), "n_cap": len(k),
                      "n_tuong_tac_y_nghia": n_sig, "n_chua_ro": n_unclear,
+                     "n_tost_tuong_tac": int(res["tost_tuong_tac"].astype(bool).sum()),
+                     "median_ci_half_over_thr": (float(np.median(half / res["delta_min_thr_histgb"].astype(float)))
+                                                 if len(res) else np.nan),
                      "ket_luan": verdict(len(k), n_sig, n_unclear),
                      "holm_m": len(k), "alpha": a.alpha, "bao_cao": REPORT[a.model], "n_common_point_seasons": n,
                      "git_tags": gt, "points_ref_sha256": ref})
         inputs[t] = info
     for t, res, prov, info in done:  # ghi sau khi moi bien chay xong: LOI giua chung -> khong ghi file nao
         write_csv_atomic(res, outs[t])
-        write_provenance(outs[t], **prov, **model_provenance(a.model), dau_vao=info)
+        write_provenance(outs[t], **prov, **model_provenance(a.model), **code, dau_vao=info)
     summ = pd.DataFrame(rows)
     holm_m = {r["target"]: r["holm_m"] for r in rows}
     write_csv_atomic(summ, summ_path)
     write_provenance(summ_path, prefix=a.prefix, alpha=a.alpha, nhan_y_nghia=SIG, **model_provenance(a.model),
-                     holm_m=holm_m,
+                     **code, holm_m=holm_m, G=g_cap, kiem_bo_qua=skips,
                      bang_cap={t: _abs(p) for t, p in outs.items()},
                      bang_cap_sha256={t: file_sha256(p) for t, p in outs.items()}, dau_vao=inputs)
     if not a.no_table:

@@ -11,6 +11,8 @@ from training.pc1 import pair_unit_deltas
 
 SIG = "tuong_tac_co_y_nghia"
 NONE = "khong_tuong_tac"
+NO_INTERACTION = "khong_phat_hien_tuong_tac"
+ATOL = 1e-10  # MAE tuyen tinh theo |e|: hai cach tinh chi chenh lam tron
 COLS = ["family", "cmp_id", "grid_a", "grid_b", "model", "model_ref", "G", "I_hat", "ci_low", "ci_high",
         "ci_tost_low", "ci_tost_high", "se", "p_value", "p_exact", "n_perm", "k_same", "k_over_G", "seed_deltas",
         "n_seeds", "seeds_same_dir", "delta_min_thr_histgb", "tost_tuong_tac", "delta_hat_histgb", "delta_hat_model",
@@ -56,6 +58,7 @@ def interaction_family(err_ref: pd.DataFrame, err_mod: pd.DataFrame, point_unit:
     err_ref / err_mod: err_long (grid, model, seed, point_id, season, err, pred_source) cua hai mo hinh, da loc tap
     chung theo tung mo hinh; hai tap (diem, mua) va tap cach chia phai trung. delta_min_thr: nguong TOST moi cap.
     label = SIG khi p_holm < alpha, I_hat != 0 va moi cach chia cung dau I_hat; chua_ro = p_holm < alpha nhung khong.
+    Kiem luc chay: I_hat = Delta_hat mo hinh - Delta_hat tham chieu = TB I_hat theo cach chia, lech -> ValueError.
     """
     if not 0 < alpha < 0.5:
         raise ValueError("alpha phai trong (0; 0,5)")
@@ -99,6 +102,11 @@ def interaction_family(err_ref: pd.DataFrame, err_mod: pd.DataFrame, point_unit:
         i_hat = sf["delta_hat"]
         sgn = np.sign(i_hat)
         seed_i = [_wmean(ds_m[s] - ds_r[s], w) for s in seeds]
+        dh_r, dh_m = _wmean(d_r, w), _wmean(d_m, w)
+        if not np.isclose(i_hat, dh_m - dh_r, rtol=0, atol=ATOL):
+            raise ValueError(f"{cmp_id}: I_hat {i_hat:.12g} khac Delta_hat mo hinh - HistGB {dh_m - dh_r:.12g}")
+        if not np.isclose(np.mean(seed_i), i_hat, rtol=0, atol=ATOL):
+            raise ValueError(f"{cmp_id}: TB I_hat theo cach chia {np.mean(seed_i):.12g} khac I_hat {i_hat:.12g}")
         k_same = int((np.sign(inter) == sgn).sum()) if sgn != 0 else 0
         rows.append({
             "family": family, "cmp_id": cmp_id, "grid_a": ga, "grid_b": gb, "model": model, "model_ref": ref_model,
@@ -110,7 +118,7 @@ def interaction_family(err_ref: pd.DataFrame, err_mod: pd.DataFrame, point_unit:
             "seeds_same_dir": bool(sgn != 0 and all(np.sign(x) == sgn for x in seed_i)),
             "delta_min_thr_histgb": thr,
             "tost_tuong_tac": bool(-thr < ci2["ci_low"] and ci2["ci_high"] < thr),
-            "delta_hat_histgb": _wmean(d_r, w), "delta_hat_model": _wmean(d_m, w),
+            "delta_hat_histgb": dh_r, "delta_hat_model": dh_m,
         })
     out = pd.DataFrame(rows)
     out["p_holm"] = holm_adjust(out["p_value"].to_numpy())
@@ -128,4 +136,4 @@ def verdict(n_cap: int, n_sig: int, n_unclear: int) -> str:
         return "khong_co_cap"
     if n_sig > 0:
         return "co_tuong_tac"
-    return "chua_ro" if n_unclear > 0 else "khong_phu_thuoc_mo_hinh"
+    return "chua_ro" if n_unclear > 0 else NO_INTERACTION

@@ -31,6 +31,7 @@ RF = "random_forest"
 T = "ndwi"
 DO_MAN = "dot_dong_bang_do_man_manifest.csv"
 HISTGB = "dot7_dong_bang_histgb_manifest.csv"
+RFMLP = "dot7_dong_bang_rfmlp_manifest.csv"
 
 
 def _sha(p):
@@ -168,8 +169,8 @@ def test_guard_frozen_hai_manifest(rf_world, tmp_path, capsys):
         assert _sha(p) == h, p
 
 
-def test_mac_dinh_hai_manifest():
-    want = [os.path.join(acf.RESULTS, DO_MAN), os.path.join(acf.RESULTS, HISTGB)]
+def test_mac_dinh_ba_manifest():
+    want = [os.path.join(acf.RESULTS, n) for n in (DO_MAN, HISTGB, RFMLP)]
     assert acf.FROZEN_MANIFESTS == want
     for mod in (acf, abs_, afin, alr, ams):
         args = ["--model", "rf"] if mod is ams else []

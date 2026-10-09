@@ -46,7 +46,8 @@ GRIDS = ["h3_res_5", "h3_res_6", "h3_res_7", "latlon_0.0222deg", "latlon_0.0586d
          "square_utm_6458m"]
 RESULTS = os.path.join(ROOT, "KE_HOACH", "ket-qua")
 FROZEN_MANIFESTS = [os.path.join(RESULTS, "dot_dong_bang_do_man_manifest.csv"),
-                    os.path.join(RESULTS, "dot7_dong_bang_histgb_manifest.csv")]
+                    os.path.join(RESULTS, "dot7_dong_bang_histgb_manifest.csv"),
+                    os.path.join(RESULTS, "dot7_dong_bang_rfmlp_manifest.csv")]
 GATE_FILE = "dot7_cong_kiem_dinh.csv"
 EXP_ROOT = os.path.join(ROOT, "artifacts", "experiments")
 
