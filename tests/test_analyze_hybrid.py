@@ -344,3 +344,53 @@ def test_bmua_dong_bang_va_meta_sai_la_loi(mod, tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="feature_set"):
         mod.main(_args(bad, "ndwi", bmua=True, allowed_tags=BMUA_TAGS))
     assert not (bad / "out").exists()
+
+
+# ---------------- --tram (CHG-29): I_kg_tram = MAE(c b_mua) - MAE(d tram) ----------------
+TRAM_TAGS = ["t-c", "t-d"]
+
+
+def _write_tram_runs(exp, target, mags):
+    """(c) b_mua / (d) tram; |err| hang so theo cau hinh -> MAE biet truoc."""
+    rng = np.random.default_rng(4)
+    for g in G4:
+        for s in SEEDS:
+            for fs, mag, tag in zip(("b_mua", "tram"), mags, TRAM_TAGS):
+                d = exp / _name(g, s, fs, target) / "cv"
+                d.mkdir(parents=True)
+                o = _oof(rng)
+                o["err"] = np.where(o["err"] >= 0, 1.0, -1.0) * mag
+                o.to_csv(d / "oof_points.csv", index=False)
+                meta = {"returncode": 0, "mode": "cv", "target": target, "feature_set": fs, "git_tag": tag,
+                        "points_ref_sha256": "ref1", "features_sha256": f"f-{fs}", "table_sha256": f"tb-{fs}"}
+                (d / "run_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+                (d / "config.json").write_text(json.dumps({"target": target}), encoding="utf-8")
+
+
+def test_tram_gia_tri_biet_truoc_va_provenance(mod, tmp_path, monkeypatch):
+    _patch(mod, monkeypatch)
+    _write_tram_runs(tmp_path / "artifacts" / "experiments", "ndwi", mags=(2.0, 1.5))
+    mod.main(_args(tmp_path, "ndwi", tram=True, allowed_tags=TRAM_TAGS))
+    out = tmp_path / "out"
+    assert sorted(os.listdir(out)) == ["dot7_ndwi_hybrid_tram.csv", "dot7_ndwi_hybrid_tram.csv.provenance.json"]
+    r = pd.read_csv(out / "dot7_ndwi_hybrid_tram.csv")
+    assert len(r) == len(G4) and set(r["thanh_phan"]) == {"tram"}
+    assert np.allclose(r["I"], 0.5) and np.allclose(r["mae_c"], 2.0) and np.allclose(r["I_tuong_doi"], 0.25)
+    assert (r["p_holm"] < 0.05).all() and set(r["nhan"]) == {"vung_D"} and {f"I_s{s}" for s in SEEDS} <= set(r)
+    prov = json.loads((out / "dot7_ndwi_hybrid_tram.csv.provenance.json").read_text(encoding="utf-8"))
+    assert prov["chg"] == "CHG-29" and prov["holm_m"] == len(G4) and prov["n_luot"] == 2 * len(G4) * len(SEEDS)
+    assert prov["cau_hinh"] == {"c": "b_mua", "d": "tram"} and prov["cong_thuc"]["I_kg_tram"] == "MAE(c) - MAE(d)"
+    assert prov["features_sha256"] == {"b_mua": ["f-b_mua"], "tram": ["f-tram"]}
+    assert prov["table_sha256_d"] == ["tb-tram"] and prov["git_tags_seen"] == sorted(TRAM_TAGS)
+
+
+def test_tram_do_man_mo_ta_va_dong_bang_ma_2(mod, tmp_path, monkeypatch):
+    _patch(mod, monkeypatch)
+    _write_tram_runs(tmp_path / "artifacts" / "experiments", "salinity", mags=(1.0, 1.2))
+    mod.main(_args(tmp_path, "salinity", tram=True, allowed_tags=TRAM_TAGS))
+    r = pd.read_csv(tmp_path / "out" / "dot7_salinity_hybrid_tram.csv")
+    assert set(r["nhan"]) == {"mo_ta"} and r["p_holm"].isna().all() and np.allclose(r["I"], -0.2)
+    with pytest.raises(SystemExit) as e:
+        mod.main(_args(tmp_path, "salinity", tram=True, allowed_tags=TRAM_TAGS, out_dir=str(tmp_path / "out2"),
+                       frozen_files=("out2/dot7_salinity_hybrid_tram.csv",)))
+    assert e.value.code == 2 and not (tmp_path / "out2").exists()

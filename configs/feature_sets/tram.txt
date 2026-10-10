@@ -1,0 +1,19 @@
+# Bo (d) tram (CHG-29) = b_mua + 4 dac trung mang tram MRC noi suy doc song theo o x mua; bang unified_tram.
+rain_mm
+solar
+temp_c
+temp_max_c
+temp_min_c
+rh_percent
+dem_mean
+dist_main_river_km
+dist_any_water_km
+dist_coast_km
+landcover_class_*
+tch_wl_p20c
+zos_mua_mean
+sluice_flag
+tram_wl_p20
+tram_tide_amp
+tram_wl_p90
+tram_dist_km

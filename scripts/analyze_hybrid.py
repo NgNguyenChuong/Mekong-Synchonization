@@ -23,10 +23,13 @@ CHG-22 (3 trang thai): moi oof_points phai pred_source = "oof", err huu han, kho
 --bmua (CHG-26, moi bien ke ca salinity): them (c) __fs-b_mua; theo luoi I_khong_gian = MAE(c) - MAE(a),
   I_mua = MAE(b) - MAE(c), I_tuong_doi = I / MAE(b); doi dau theo khoi, Holm m = 13 moi thanh phan, CI90, quy tac D
   (co y nghia o ban TB va o ca 3 cach chia, cung dau); do man chi mo ta. Chi ghi dot7_<t>_hybrid_tach_mua.csv.
+--tram (CHG-29): (c) __fs-b_mua vs (d) __fs-tram; I_kg_tram = MAE(c) - MAE(d), I_tuong_doi = I / MAE(c); kiem dinh
+  nhu --bmua; do man chi mo ta. Chi ghi dot7_<t>_hybrid_tram.csv.
 
 Chay:  venv/Scripts/python.exe scripts/analyze_hybrid.py --prefix cv1
        Bien Dot 7: ... --target rain_chirps --allowed-tags nckh-dot7-e6a <tag (b)> --no-table
        Tach mua: ... --target <t> --bmua --allowed-tags <tag (a)> <tag (b)> <tag (c)>
+       Tram MRC: ... --target <t> --tram --allowed-tags <tag (c)> <tag (d)>
 """
 import argparse
 import os
@@ -60,6 +63,11 @@ TAGS_REASON = "(a) luot day du da co (tag cu), (b) khong_diem chay sau o tag moi
 KEYS = ["seed", "point_id", "season", "unit_id"]
 BMUA = "b_mua"
 SPLIT = (("khong_gian", "a", "c"), ("mua", "c", "b"))  # (thanh phan, day du, bo): I = MAE(bo) - MAE(day du)
+# che do: (hau to file, CHG, cau hinh (khoa, feature_set), SPLIT, cau hinh mau so I_tuong_doi, cong thuc)
+MODES = {"bmua": ("tach_mua", "CHG-26", (("a", None), ("b", "khong_diem"), ("c", BMUA)), SPLIT, "b",
+                  {"I_khong_gian": "MAE(c) - MAE(a)", "I_mua": "MAE(b) - MAE(c)", "I_tuong_doi": "I / MAE(b)"}),
+         "tram": ("tram", "CHG-29", (("c", BMUA), ("d", "tram")), (("tram", "d", "c"),), "c",
+                  {"I_kg_tram": "MAE(c) - MAE(d)", "I_tuong_doi": "I / MAE(c)"})}
 
 
 def out_names(target):
@@ -232,8 +240,9 @@ def point_lateral():
 
 
 def main(a):
-    if getattr(a, "bmua", False):
-        return main_bmua(a)
+    for mode in MODES:
+        if getattr(a, mode, False):
+            return main_split(a, mode)
     salt = a.target == "salinity"
     try:
         tiers = None if salt else tested_tiers(a.target)
@@ -287,25 +296,25 @@ def main(a):
             print(pd.concat(res2).round(4).to_string(index=False))
 
 
-def split_step1(runs, pu, scheme=None):
-    """Buoc 1 cho 2 thanh phan SPLIT; runs = {"a"|"b"|"c": {luoi: oof}}; scheme None = TB cac cach chia."""
+def split_step1(runs, pu, scheme=None, split=SPLIT, ref="b"):
+    """Buoc 1 cho cac thanh phan split; runs = {khoa: {luoi: oof}}; scheme None = TB cac cach chia."""
     pick = (lambda d: d) if scheme is None else (lambda d: d[d["seed"] == scheme])
-    parts, mae_b = [], None
-    for comp, full, abl in SPLIT:
+    parts, mae_ref = [], None
+    for comp, full, abl in split:
         imp = {g: unit_improvement(pick(runs[full][g]), pick(runs[abl][g]), pu) for g in GRIDS}
-        if abl == "b":
-            mae_b = {g: float(np.average(m["mae_b"], weights=m["w"])) for g, m in imp.items()}
+        if abl == ref:
+            mae_ref = {g: float(np.average(m["mae_b"], weights=m["w"])) for g, m in imp.items()}
         tag = f"tach_mua_{comp}" + ("" if scheme is None else f"|s{scheme}")
         parts.append(step1(imp, tag).assign(thanh_phan=comp))
     out = pd.concat(parts, ignore_index=True).drop(columns="cau_hinh")
-    out["mae_b"] = out["grid"].map(mae_b)
-    out["I_tuong_doi"] = out["I"] / out["mae_b"]  # ca hai thanh phan theo MAE(b): cong lai = I tong
+    out[f"mae_{ref}"] = out["grid"].map(mae_ref)
+    out["I_tuong_doi"] = out["I"] / out[f"mae_{ref}"]  # moi thanh phan theo MAE(ref): cong lai = I tong
     return out
 
 
-def tach_mua_table(runs, pu, schemes, target):
-    main = split_step1(runs, pu)
-    per = pd.concat([split_step1(runs, pu, s).assign(scheme=s) for s in schemes])
+def tach_mua_table(runs, pu, schemes, target, split=SPLIT, ref="b"):
+    main = split_step1(runs, pu, None, split, ref)
+    per = pd.concat([split_step1(runs, pu, s, split, ref).assign(scheme=s) for s in schemes])
     wide = per.pivot(index=["thanh_phan", "grid"], columns="scheme", values=["I", "p_holm"])
     wide.columns = [f"{v}_s{s}" for v, s in wide.columns]
     main = main.merge(wide.reset_index(), on=["thanh_phan", "grid"], validate="one_to_one")
@@ -318,34 +327,34 @@ def tach_mua_table(runs, pu, schemes, target):
         main[["p_value", "p_holm", "vung_D", *[f"p_holm_s{s}" for s in schemes]]] = np.nan
         main["nhan"] = MO_TA
     main.insert(0, "target", target)
-    first = ["target", "thanh_phan", "grid", "I", "I_tuong_doi", "mae_b", "p_value", "p_holm", "don_vi_cai_thien",
+    first = ["target", "thanh_phan", "grid", "I", "I_tuong_doi", f"mae_{ref}", "p_value", "p_holm", "don_vi_cai_thien",
              "ci90_low", "ci90_high"]
     return main[first + [c for c in main.columns if c not in first]]
 
 
-def main_bmua(a):
-    out = os.path.join(a.out_dir, f"dot7_{a.target}_hybrid_tach_mua.csv")
+def main_split(a, mode):
+    suffix, chg, cfg, split, ref, cong_thuc = MODES[mode]
+    out = os.path.join(a.out_dir, f"dot7_{a.target}_hybrid_{suffix}.csv")
     guard_frozen([out, provenance_path(out)], a.frozen_manifest)
     pu, infos = _point_unit(), []
-    runs = {k: {g: load(a.exp_root, a.prefix, g, a.schemes, fs, a.target, infos) for g in GRIDS}
-            for k, fs in (("a", None), ("b", "khong_diem"), ("c", BMUA))}
+    runs = {k: {g: load(a.exp_root, a.prefix, g, a.schemes, fs, a.target, infos) for g in GRIDS} for k, fs in cfg}
     assert_same_keys({f"({k}) {g}": runs[k][g] for k in runs for g in GRIDS}, pu)
-    res = tach_mua_table(runs, pu, a.schemes, a.target)
+    res = tach_mua_table(runs, pu, a.schemes, a.target, split, ref)
     same = check_consistent(infos, a.allowed_tags)
     os.makedirs(a.out_dir, exist_ok=True)
     write_csv_atomic(res, out)
     fs_sha = {fs: sorted({str(i["meta"].get("features_sha256")) for i in infos if i["meta"].get("feature_set") == fs})
-              for fs in ("khong_diem", BMUA)}
-    write_provenance(out, target=a.target, chg="CHG-26", prefix=a.prefix, schemes=list(a.schemes), grids=list(GRIDS),
-                     cau_hinh={"a": "day du", "b": "khong_diem", "c": BMUA},
-                     cong_thuc={"I_khong_gian": "MAE(c) - MAE(a)", "I_mua": "MAE(b) - MAE(c)",
-                                "I_tuong_doi": "I / MAE(b)", "MAE": "TB co trong so n_pts_mean tren don vi CV"},
+              for _, fs in cfg if fs}
+    k_last, fs_last = cfg[-1]
+    write_provenance(out, target=a.target, chg=chg, prefix=a.prefix, schemes=list(a.schemes), grids=list(GRIDS),
+                     cau_hinh={k: fs or "day du" for k, fs in cfg},
+                     cong_thuc={**cong_thuc, "MAE": "TB co trong so n_pts_mean tren don vi CV"},
                      kiem_dinh="mo_ta" if a.target == "salinity" else
                      "doi dau theo khoi, Holm m = 13 moi thanh phan; vung_D = p_holm < 0.05 o ban TB va moi cach chia, "
                      "cung dau", holm_m=len(GRIDS), git_tag=same["git_tag"],
                      points_ref_sha256=same["points_ref_sha256"], n_luot=len(infos), features_sha256=fs_sha,
-                     table_sha256_c=sorted({str(i["meta"].get("table_sha256")) for i in infos
-                                            if i["meta"].get("feature_set") == BMUA}),
+                     **{f"table_sha256_{k_last}": sorted({str(i["meta"].get("table_sha256")) for i in infos
+                                                         if i["meta"].get("feature_set") == fs_last})},
                      **tag_info(same, a.allowed_tags, a.tags_reason))
     print(f"Ghi: {out}", flush=True)
     if not a.no_table:
@@ -376,5 +385,7 @@ if __name__ == "__main__":
     ap.add_argument("--allowed-tags", nargs="+", default=None, help="cho phep nhieu git_tag (bien Dot 7: (a) + (b))")
     ap.add_argument("--tags-reason", default=TAGS_REASON)
     ap.add_argument("--no-table", action="store_true", help="khong in bang so ra stdout")
-    ap.add_argument("--bmua", action="store_true", help="CHG-26: tach I thanh phan mua / khong gian voi (c) b_mua")
+    mx = ap.add_mutually_exclusive_group()
+    mx.add_argument("--bmua", action="store_true", help="CHG-26: tach I thanh phan mua / khong gian voi (c) b_mua")
+    mx.add_argument("--tram", action="store_true", help="CHG-29: I_kg_tram = MAE(b_mua) - MAE(tram)")
     main(ap.parse_args())

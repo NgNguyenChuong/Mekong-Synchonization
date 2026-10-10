@@ -334,3 +334,37 @@ def nearest_valid_sea_pixel(lat, lon, valid, pts_lonlat, crs_metric="EPSG:32648"
 
 def sluice_active(season: int, first=SLUICE_FIRST_SEASON) -> bool:
     return season >= first
+
+
+def station_weights(g, dist, st_vertices, st_xy):
+    """Trong so tram (N, k) cho moi dinh + khoang cach toi tram dung (m) + loai (0 noi suy, 1 gan nhat doc song,
+    2 gan nhat duong thang). Tram thuong luu cua v = dist(tram) >= dist(v) (xa cua hon), ha luu = dist(tram) <= dist(v);
+    moi phia lay tram gan nhat theo khoang cach doc song (vo huong) -> noi suy tuyen tinh; thieu mot phia -> tram gan
+    nhat doc song; manh khong co tram -> tram gan nhat theo duong thang tu dinh (st_xy, m).
+    Khong dinh huong canh theo dist: duong phan thuy cua duong ngan nhat (vd Tien duoi Vam Nao) cat dut duong xuoi."""
+    from scipy.sparse.csgraph import dijkstra
+
+    n, k = g.n, len(st_vertices)
+    cols = np.arange(n)
+    d_un = dijkstra(g.matrix(), directed=False, indices=st_vertices)  # [s, v]
+    sd = dist[np.asarray(st_vertices)][:, None]
+    d_up = np.where(sd >= dist[None, :], d_un, np.inf)
+    d_dn = np.where(sd <= dist[None, :], d_un, np.inf)
+    iu, idn, ins = d_up.argmin(0), d_dn.argmin(0), d_un.argmin(0)
+    du, dd, dn = d_up[iu, cols], d_dn[idn, cols], d_un[ins, cols]
+    W, tdist, kind = np.zeros((n, k)), np.full(n, np.nan), np.full(n, 2, np.int8)
+    both = np.isfinite(du) & np.isfinite(dd)
+    r = np.nonzero(both)[0]
+    tot, wu = du[r] + dd[r], np.ones(len(r))  # dinh trung tram: du = dd = 0 -> chi tram do
+    wu[tot > 0] = dd[r][tot > 0] / tot[tot > 0]
+    np.add.at(W, (r, iu[r]), wu)
+    np.add.at(W, (r, idn[r]), 1.0 - wu)
+    tdist[r], kind[r] = np.minimum(du[r], dd[r]), 0
+    r = np.nonzero(~both & np.isfinite(dn))[0]
+    W[r, ins[r]], tdist[r], kind[r] = 1.0, dn[r], 1
+    r = np.nonzero(~both & ~np.isfinite(dn))[0]
+    if len(r):
+        de = np.hypot(g.xy[r, None, 0] - st_xy[None, :, 0], g.xy[r, None, 1] - st_xy[None, :, 1])
+        j = de.argmin(1)
+        W[r, j], tdist[r] = 1.0, de[np.arange(len(r)), j]
+    return W, tdist, kind

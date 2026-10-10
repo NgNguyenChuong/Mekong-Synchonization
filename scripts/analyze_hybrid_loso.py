@@ -1,9 +1,12 @@
 #!/usr/bin/env python
 """Hybrid giu rieng tung mua (CHG-28, h3_res_7): I_s = MAE_s(b) - MAE_s(a) nhom thoi_gian, CI90 theo khoi trong mua;
 dem dau qua mua, nhi thuc mot phia; --target all them bang tong ket + Holm m = 6.
+--pair BO DAY_DU (CHG-29): thay (b) khong_diem / (a) day du bang hai feature set, vd b_mua tram -> dot7_<t>_hybrid_loso_tram.csv
+(dem dau + nhi thuc cua bien do ghi trong provenance, Holm m = 1).
 Chay: venv/Scripts/python.exe scripts/analyze_hybrid_loso.py --target all --allowed-tags nckh-dot7-loso
 """
 import argparse
+import json
 import os
 import sys
 
@@ -38,13 +41,13 @@ def seasons_of(target):
     return [s for s in SEASONS if s != NAN_SEASON.get(target)]
 
 
-def analyze(target, exp_root, allowed):
+def analyze(target, exp_root, allowed, cfg=CFG):
     tags, rows = set(), []
     for s in seasons_of(target):
-        errs = {c: load_final(run_dir(exp_root, fs, target, s), allowed, tags) for c, fs in CFG.items()}
+        errs = {c: load_final(run_dir(exp_root, fs, target, s), allowed, tags) for c, fs in cfg.items()}
         if any(set(e.index.get_level_values("season")) != {s} for e in errs.values()):
             raise SystemExit(f"LOI: {target} mua {s}: nhom thoi_gian co mua khac {s}")
-        d = run_dir(exp_root, None, target, s)
+        d = run_dir(exp_root, cfg["a"], target, s)
         blk = pd.read_csv(os.path.join(d, "final_points.csv"), usecols=["point_id", "season", "block_id"]
                           ).set_index(["point_id", "season"])["block_id"]
         mae_b, w = block_mae(errs, blk)
@@ -81,20 +84,27 @@ def main():
     ap.add_argument("--out-dir", default=acf.RESULTS)
     ap.add_argument("--allowed-tags", nargs="+", default=None)
     ap.add_argument("--frozen-manifest", nargs="+", default=acf.FROZEN_MANIFESTS)
+    ap.add_argument("--pair", nargs=2, metavar=("BO", "DAY_DU"), default=None,
+                    help="feature set (b) va (a) thay khong_diem / day du, vd: b_mua tram")
     a = ap.parse_args()
+    cfg = {"a": a.pair[1], "b": a.pair[0]} if a.pair else CFG
+    suf = f"_{a.pair[1]}" if a.pair else ""
     targets = TARGETS if a.target == "all" else (a.target,)
-    outs = {t: os.path.join(a.out_dir, f"dot7_{t}_hybrid_loso.csv") for t in targets}
-    sum_csv = os.path.join(a.out_dir, "dot7_hybrid_loso_tong_ket.csv")
+    outs = {t: os.path.join(a.out_dir, f"dot7_{t}_hybrid_loso{suf}.csv") for t in targets}
+    sum_csv = os.path.join(a.out_dir, f"dot7_hybrid_loso{suf}_tong_ket.csv")
     paths = [*outs.values(), *([sum_csv] if a.target == "all" else [])]
     guard_frozen(paths + [p + ".provenance.json" for p in paths], a.frozen_manifest)
     common = dict(git_tags_allowed=a.allowed_tags, quy_tac=QUY_TAC, mode="final", nhom="thoi_gian", scheme=42,
                   grid=GRID, cv_folds_sha256=file_sha256(os.path.join(ROOT, "data", "eval", "cv_folds.csv")))
     per, all_tags = {}, set()
     for t in targets:
-        per[t], tags = analyze(t, a.exp_root, a.allowed_tags)
+        per[t], tags = analyze(t, a.exp_root, a.allowed_tags, cfg)
         all_tags.update(tags)
         per[t].to_csv(outs[t], index=False)
-        write_provenance(outs[t], target=t, git_tags_seen=tags, mua=seasons_of(t), **common)
+        extra = {}
+        if a.pair:
+            extra = {"cau_hinh": cfg, "tong_ket_bien": json.loads(summarize({t: per[t]}).to_json(orient="records"))[0]}
+        write_provenance(outs[t], target=t, git_tags_seen=tags, mua=seasons_of(t), **common, **extra)
         print(f"Ghi: {outs[t]} | tags {tags}")
         print(per[t].round(4).to_string(index=False))
     if a.target == "all":

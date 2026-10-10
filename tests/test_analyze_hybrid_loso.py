@@ -68,3 +68,25 @@ def test_file_dong_bang_ma_2(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as e:
         m.main()
     assert e.value.code == 2
+
+
+def test_pair_b_mua_tram_ten_file_va_provenance(tmp_path, monkeypatch):
+    """--pair b_mua tram: I_s = MAE_s(b_mua) - MAE_s(tram); ghi dot7_<t>_hybrid_loso_tram.csv, khong dung ten cu."""
+    for s, sg in zip(m.seasons_of("ndwi"), [1] * 12 + [-1]):
+        _write_run(tmp_path, "tram", "ndwi", s, 0.0)
+        _write_run(tmp_path, "b_mua", "ndwi", s, 0.2 * sg)
+    out, _ = m.analyze("ndwi", str(tmp_path), None, {"a": "tram", "b": "b_mua"})
+    assert np.allclose(out["I"], [0.2] * 12 + [-0.2]) and (out["I"] > 0).sum() == 12
+    res = tmp_path / "res"
+    res.mkdir()
+    man = res / "m.csv"
+    pd.DataFrame({"file": ["khac.csv"]}).to_csv(man, index=False)
+    monkeypatch.setattr(m, "file_sha256", lambda p: "x")
+    monkeypatch.setattr(sys, "argv", ["x", "--target", "ndwi", "--exp-root", str(tmp_path), "--out-dir", str(res),
+                                      "--frozen-manifest", str(man), "--pair", "b_mua", "tram"])
+    m.main()
+    assert sorted(p.name for p in res.iterdir() if p.name != "m.csv") == [
+        "dot7_ndwi_hybrid_loso_tram.csv", "dot7_ndwi_hybrid_loso_tram.csv.provenance.json"]
+    prov = json.load(open(res / "dot7_ndwi_hybrid_loso_tram.csv.provenance.json", encoding="utf-8"))
+    assert prov["cau_hinh"] == {"a": "tram", "b": "b_mua"}
+    assert prov["tong_ket_bien"]["n_I_duong"] == 12 and prov["tong_ket_bien"]["nhan"] == "co_ich"
