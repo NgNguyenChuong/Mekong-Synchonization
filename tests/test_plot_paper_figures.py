@@ -117,7 +117,7 @@ def _fake_results(pp, res):
 
 
 def test_file_ra_du(pp, tmp_path):
-    assert len(pp.outputs("x")) == 22 and {os.path.basename(p) for p in pp.outputs("x")} >= {
+    assert len(pp.outputs("x")) == 24 and {os.path.basename(p) for p in pp.outputs("x")} >= {
         "fig1_study_design.pdf", "fig5_positive_control.pdf", "fig6_main.png", "figS1_model_frame.pdf",
         "figS2_model_frame_mlp.png", "figS3_positive_control_uniform.png", "tableS1_oracle.csv", "tableS1_oracle.md"}
     _fake_results(pp, tmp_path / "res")
@@ -138,7 +138,7 @@ def test_file_ra_du(pp, tmp_path):
 def test_thumb_150dpi_nho_va_trong_guard(pp, tmp_path):
     from PIL import Image
 
-    assert len(pp.outputs("x", thumb=True)) == 32
+    assert len(pp.outputs("x", thumb=True)) == 35
     with pytest.raises(SystemExit) as e:  # anh nho cung bi chan neu nam trong manifest
         pp.main(_args(tmp_path, _manifest(tmp_path, ["out/fig3_same_level_pairs_thumb.png"]), ["fig3"], thumb=True))
     assert e.value.code == 2
@@ -226,3 +226,26 @@ def test_figS4_trung_vi_min_max_va_bien_thieu(pp, tmp_path):
     _tach_mua(res, "ndwi", n=12)
     with pytest.raises(SystemExit, match="13 luoi"):
         pp.fig_s4(str(res), {"notes": [], "used": []})
+
+
+def test_figS5_duong_theo_mua_dut_net_2020(pp, tmp_path):
+    res = tmp_path / "res"
+    res.mkdir()
+    _area().to_csv(res / pp.AREA_FILE, index=False)
+    for t, ss in (("ndwi", range(2014, 2027)), ("dsr_mcd18", [s for s in range(2014, 2027) if s != 2020])):
+        pd.DataFrame({"season": list(ss), "I_tuong_doi": [0.01 * (s - 2020) for s in ss]}).to_csv(
+            res / f"dot7_{t}_hybrid_loso.csv", index=False)
+    st = {"notes": [], "used": []}
+    fig = pp.fig_s5(str(res), st)
+    lines = {ln.get_label(): ln for ln in fig.axes[0].lines if not ln.get_label().startswith("_")}
+    assert set(lines) == {pp.VAR["ndwi"], pp.VAR["dsr_mcd18"]}
+    y = lines[pp.VAR["dsr_mcd18"]].get_ydata()
+    assert len(y) == 13 and np.isnan(y[6]) and y[0] == pytest.approx(-6.0)   # 2020 dut net, % I/MAE(b)
+    assert sum("không có" in n for n in st["notes"]) == 4
+    pp._plt().close(fig)
+    pp.main(_args(tmp_path, _manifest(tmp_path), ["figS5"]))
+    prov = json.loads((tmp_path / "out" / "figS5_hybrid_loso.png.provenance.json").read_text(encoding="utf-8"))
+    assert "leave-one-season-out" in prov["chu_thich_en"] and len(prov["sha_dau_vao"]) == 3
+    pd.DataFrame({"season": [2014, 2014], "I_tuong_doi": [0.1, 0.2]}).to_csv(res / "dot7_ndwi_hybrid_loso.csv", index=False)
+    with pytest.raises(SystemExit, match="trung mua"):
+        pp.fig_s5(str(res), {"notes": [], "used": []})

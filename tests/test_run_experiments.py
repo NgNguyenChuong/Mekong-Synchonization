@@ -338,3 +338,66 @@ def test_runner_feature_set_cung_target_tru_cot_cam(setup):
     assert meta["features_dropped_forbidden"] == ["rain_mm"] and "rain_mm" in meta["features_requested"]
     assert "--features-file" not in meta["cmd"] and "rain_mm" not in meta["cmd"]
     assert meta["feature_set"] == "khong_diem" and len(meta["features_sha256"]) == 64
+
+
+# ------------------------------------------------------------------ CHG-28: giu rieng tung mua (--holdout-season)
+def test_holdout_season_ten_va_nhom_rong_theo_mua(tmp_path):
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import run_experiments as rx
+
+    assert (rx.run_name("cv1", "h3_res_7", "hist_gb", 42, "", "khong_diem", "dsr_mcd18", 2016)
+            == "cv1__h3_res_7__hist_gb__s42__fs-khong_diem__t-dsr_mcd18__ho-2016")
+    assert rx.run_name("cv1", "h3_res_7", "hist_gb", 42, "", None, "salinity", 2020) == "cv1__h3_res_7__hist_gb__s42__ho-2020"
+    tb = tmp_path / "t.csv"
+    tb.write_text("x\n")
+    (tmp_path / "t.csv.provenance.json").write_text(json.dumps({"target": "dsr_mcd18", "holdout_season_nan": {
+        "target": "dsr_mcd18", "seasons": [2020], "reason": "gia"}}))
+    assert rx.table_empty_groups(str(tb), "dsr_mcd18") == ["thoi_gian", "ca_hai"]
+    assert rx.table_empty_groups(str(tb), "dsr_mcd18", (2016,)) == []    # truoc day van khai bao rong -> train.py ma 2
+
+
+def test_holdout_season_chi_voi_mode_final(tmp_path):
+    (tmp_path / "ref.csv").write_text("point_id,season,ref_salinity,n_valid_3x3\n")
+    for mode in ([], ["--mode", "cv"]):
+        rc, out = _runner_light(tmp_path, "--prefix", "cv1", "--holdout-season", "2016", *mode)
+        assert rc != 0 and "chi dung voi --mode final" in out, out
+
+
+@need_real
+def test_holdout_season_bang_nan_2020_khong_vao_huan_luyen(setup):
+    """Bang kieu buc xa: nhan 2020 NaN + train_ok_scope sai + khai bao holdout_season_nan [2020].
+    Giu rieng 2019 -> co override, khong khai bao nhom rong, tap huan luyen chi mua 2018/2021 (2020 NaN bi bo);
+    giu rieng 2020 -> khong co override, van khai bao nhom rong nhu cu."""
+    tmp = setup
+    rng = np.random.default_rng(9)
+    t = pd.read_csv(tmp / "tables" / "h3_res_5_unified.csv")
+    t["dsr_mcd18"] = t["solar"] + rng.normal(0, 0.1, len(t))
+    t.loc[t["season"] == 2020, "dsr_mcd18"] = np.nan
+    t.loc[t["season"] == 2020, "train_ok_scope"] = False
+    t.to_csv(tmp / "tables" / "h3_res_5_unified.csv", index=False)
+    decl = {"target": "dsr_mcd18", "seasons": [2020], "reason": "gia"}
+    with open(tmp / "tables" / "h3_res_5_unified.csv.provenance.json", "w", encoding="utf-8") as f:
+        json.dump({"target": "dsr_mcd18", "label_set": "chinh", "holdout_season_nan": decl}, f)
+    ref = pd.read_csv(tmp / "ref.csv")[["point_id", "season"]]
+    ref["ref_dsr_mcd18"] = np.where(ref["season"] == 2020, np.nan, rng.uniform(0, 1, len(ref)))
+    ref["src_px_valid"] = ref["season"] != 2020
+    ref.to_csv(tmp / "ref.csv", index=False)
+    with open(tmp / "ref.csv.provenance.json", "w", encoding="utf-8") as f:
+        json.dump({"target": "dsr_mcd18", "variant": "main", "ref_rule_kind": "pixel"}, f)
+    exp = tmp / "artifacts" / "experiments"
+    for s in (2019, 2020):
+        p = _run(tmp, "--allow-untagged", "--allow-dirty", "--feature-set", "khong_diem", "--models", "linear",
+                 "--target", "dsr_mcd18", "--mode", "final", "--holdout-season", str(s))
+        assert p.returncode == 0, p.stdout + p.stderr
+        out = exp / f"t__h3_res_5__linear__s42__fs-khong_diem__t-dsr_mcd18__ho-{s}" / "final"
+        meta = json.loads((out / "run_meta.json").read_text(encoding="utf-8"))
+        i = meta["cmd"].index("--holdout-seasons")
+        assert meta["cmd"][i + 1] == str(s) and meta["holdout_season"] == s
+        assert ("--allow-holdout-season-override" in meta["cmd"]) == (s != 2020)
+        assert ("--allow-empty-test-groups" in meta["cmd"]) == (s == 2020)
+        log = (out / "train_stdout.log").read_text(encoding="utf-8")
+        assert ("mua [2018, 2021]" if s == 2019 else "mua [2018, 2019, 2021]") in log
+        if s == 2019:
+            fp = pd.read_csv(out / "final_points.csv")
+            tg = fp[fp["test_group"] == "thoi_gian"]
+            assert len(tg) and set(tg["season"]) == {2019} and np.isfinite(fp["err"]).all()

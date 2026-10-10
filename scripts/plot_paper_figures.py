@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Hinh bai bao (Fig 1-6, S1-S4) + Bang S1 theo KE_HOACH/quy_uoc_hinh.md: tieng Anh, Okabe-Ito, PDF + PNG 600 dpi.
+"""Hinh bai bao (Fig 1-6, S1-S5) + Bang S1 theo KE_HOACH/quy_uoc_hinh.md: tieng Anh, Okabe-Ito, PDF + PNG 600 dpi.
 Chi doc ket qua da mo; ngoai le duy nhat: dai null Fig 6 mo phong tu se cua cap F1 HistGB.
 
 Chay:  venv/Scripts/python.exe scripts/plot_paper_figures.py [--only fig5 figS3 tableS1] [--thumb]
@@ -65,11 +65,12 @@ DMIN = r"Δ$_\mathregular{min}$"
 FIGS = {"fig1": "fig1_study_design", "fig2": "fig2_skill_gate", "fig3": "fig3_same_level_pairs",
         "fig4": "fig4_blocks_100km", "fig5": "fig5_positive_control", "fig6": "fig6_main",
         "figS1": "figS1_model_frame", "figS2": "figS2_model_frame_mlp", "figS3": "figS3_positive_control_uniform",
-        "figS4": "figS4_hybrid_season_split"}
+        "figS4": "figS4_hybrid_season_split", "figS5": "figS5_hybrid_loso"}
 TABLES = {"tableS1": "tableS1_oracle"}
 PC_KIND = {"fig5": "lognormal", "figS3": "deu"}
 SIZE_MM = {"fig1": (190, 120), "fig2": (140, 72), "fig3": (190, 170), "fig4": (190, 90), "fig5": (90, 70),
-           "fig6": (140, 80), "figS1": (190, 130), "figS2": (190, 120), "figS3": (90, 70), "figS4": (140, 75)}
+           "fig6": (140, 80), "figS1": (190, 130), "figS2": (190, 120), "figS3": (90, 70), "figS4": (140, 75),
+           "figS5": (140, 75)}
 SPLIT_STYLE = {"mua": (r"Season-level part (I$_\mathregular{season}$)", "o", "#E69F00"),
                "khong_gian": (r"Spatial part (I$_\mathregular{spatial}$)", "s", "#0072B2")}
 NULL_METHOD = (f"For each variable x level, Delta_i ~ N(0, se_i) independently for the {{3 or 6}} same-level HistGB "
@@ -116,6 +117,11 @@ CAPTIONS["figS4"] = (
     "delta-mean mouth sea level per season, sluice-period flag). I_season = MAE(b) − MAE(c); I_spatial = MAE(c) − "
     "MAE(a); both as % of MAE(b), so I_season + I_spatial = total hybrid improvement. Marker = median over the 13 "
     "grids, bar = min–max. † Descriptive only (no test).")
+CAPTIONS["figS5"] = (
+    "Hybrid improvement for unseen dry seasons (leave-one-season-out; HistGB, H3 resolution 7, partition s42). For "
+    "each held-out season s the model is trained on the cross-validation blocks of all other seasons and scored at "
+    "the evaluation points of the cross-validation blocks in season s. I_s = MAE_s(b) − MAE_s(a) as % of MAE_s(b); "
+    "(a) all features, (b) without the four hydrological features. Solar radiation has no 2020 label (gap).")
 CAPTIONS["figS2"] = CAPTIONS["figS1"].replace("RF vs HistGB", "MLP vs HistGB").replace("ΔMAE_RF", "ΔMAE_MLP")
 CAPTIONS["figS3"] = (CAPTIONS["fig5"].replace("log-normal injection", "uniform injection")
                      .replace("Uniform injection: Fig. S3", "Log-normal injection: Fig. 5"))
@@ -786,6 +792,30 @@ def fig_s4(res, st):
     return fig
 
 
+def fig_s5(res, st):
+    """Hybrid giu rieng tung mua (CHG-28): moi bien mot duong I_s / MAE_s(b) (%); mua thieu -> dut net."""
+    plt = _plt()
+    fig, ax = plt.subplots(figsize=(SIZE_MM["figS5"][0] * MM, SIZE_MM["figS5"][1] * MM), layout="constrained")
+    ax.axhline(0, color=GREY, lw=0.6)
+    seasons = range(2014, 2027)
+    for t in ORDER:
+        d = read_cols(os.path.join(res, f"dot7_{t}_hybrid_loso.csv"), ["season", "I_tuong_doi"], st, t)
+        if d is None:
+            continue
+        if d["season"].duplicated().any():
+            loi(f"{t}: hybrid_loso trung mua")
+        y = 100 * d.set_index("season")["I_tuong_doi"].reindex(seasons)
+        ax.plot(seasons, y.values, color=COLOR[t], marker=VMARK[t], ms=3.5, lw=0.9, mec=INK, mew=0.4, label=VAR[t])
+    if ax.get_legend_handles_labels()[0]:
+        fig.legend(loc="outside lower center", ncol=3)
+    else:
+        empty(ax)
+    ax.set_xticks(seasons)
+    ax.set_xlabel("Held-out dry season")
+    ax.set_ylabel("I$_s$ / MAE$_s$(b) (%)")
+    return fig
+
+
 def table_s1(res, levels, st) -> pd.DataFrame:
     """|Delta oracle| / Delta_min HistGB muc min: hang = bien, cot = cap min; bien khong co cap min -> not available."""
     f1 = f1_pairs(res, levels, st)
@@ -941,6 +971,8 @@ def build(key, res, levels, st, a, info):
         return table_s1(res, levels, st)
     if key == "figS4":
         return fig_s4(res, st)
+    if key == "figS5":
+        return fig_s5(res, st)
     return {"fig2": fig2, "fig3": fig3, "fig4": fig4}[key](res, levels, st)
 
 

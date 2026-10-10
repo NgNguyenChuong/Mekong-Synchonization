@@ -26,6 +26,8 @@ van tu choi danh sach tuong minh co cot cam); run_meta ghi features_requested + 
 Nhom test rong co chu dich (CHG-25 muc 4): provenance bang co khai bao 'holdout_season_nan' (target khop) -> truyen
 --allow-empty-test-groups xuong train.py + khoa 'empty_test_groups_declared'; bien Dot 7 ma bang thieu provenance -> LOI
 truoc khi chay luot nao.
+Giu rieng mot mua (--holdout-season s, chi --mode final; CHG-28): ten them "__ho-<s>", truyen --holdout-seasons s
+(+ --allow-holdout-season-override khi s != 2020), khoa 'holdout_season'; khai bao nhom rong tinh theo s.
 Tong hop -> artifacts/experiments/<prefix>_manifest.csv (gop don theo ten lan chay + mode, khong ghi de dong
 cu; KHONG in chi so sai so). run_meta ghi phien ban python/numpy/pandas/sklearn.
 
@@ -33,6 +35,7 @@ Chay:  venv/Scripts/python.exe scripts/run_experiments.py --prefix cv1 [--grids 
            [--models hist_gb linear idw] [--schemes 42 43 44] [--mode cv]
        Bien Dot 7: ... --prefix cv1 --target rain_chirps --tables-dir <DATA_ROOT>/features/unified_dot7/rain_chirps
            --points-ref <DATA_ROOT>/labels/dot7/points_reference_rain_chirps.csv
+       Giu rieng mua 2016: ... --prefix cv1 --mode final --grids h3_res_7 --models hist_gb --schemes 42 --holdout-season 2016
        Cham phu 60/90: ... --prefix phu6090 --label-set keep6090 --models hist_gb --points-ref-variant keep6090
            --points-subset-of-ref --points data/eval/aux_6090/eval_points_6090.geojson
            --points-ref <DATA_ROOT>/labels/points_reference_keep6090.csv
@@ -51,9 +54,10 @@ import pandas as pd
 KEY_FIELDS = ("run", "grid", "model", "scheme", "label_set", "mode", "feature_set", "features_sha256",
               "git_commit", "git_dirty_src_scripts", "allow_dirty", "allow_untagged", "seeds", "table_sha256",
               "cv_folds_sha256", "points_ref_sha256", "grid_sha256", "blocks_sha256", "points_sha256",
-              "points_ref_variant", "points_subset_of_ref", "target", "empty_test_groups_declared")
+              "points_ref_variant", "points_subset_of_ref", "target", "empty_test_groups_declared",
+              "holdout_season")
 # Gia tri mac dinh khi run_meta CU thieu khoa (lan chay truoc khi them khoa) - de khong chay lai do man.
-META_DEFAULTS = {"target": "salinity", "empty_test_groups_declared": []}
+META_DEFAULTS = {"target": "salinity", "empty_test_groups_declared": [], "holdout_season": None}
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
@@ -86,10 +90,11 @@ def git_state():
     return {"git_commit": commit, "git_tag": tag if rc == 0 else None, "git_dirty_src_scripts": bool(dirty)}
 
 
-def run_name(prefix, grid, model, scheme, label_set, feature_set=None, target=None):
+def run_name(prefix, grid, model, scheme, label_set, feature_set=None, target=None, holdout_season=None):
     return (f"{prefix}__{grid}__{model}__s{scheme}" + (f"__{label_set}" if label_set else "")
             + (f"__fs-{feature_set}" if feature_set else "")
-            + (f"__t-{target}" if target and target != "salinity" else ""))
+            + (f"__t-{target}" if target and target != "salinity" else "")
+            + (f"__ho-{holdout_season}" if holdout_season is not None else ""))
 
 
 def versions():
@@ -159,13 +164,13 @@ def target_mismatch(path, target, default=None):
     return None
 
 
-def table_empty_groups(table, target) -> list:
+def table_empty_groups(table, target, holdout_seasons=(MAIN_HOLDOUT_SEASON,)) -> list:
     """Nhom test rong khai bao trong provenance bang (train.py mac dinh giu rieng MAIN_HOLDOUT_SEASON).
     Bien Dot 7 (target != salinity) ma bang thieu provenance, hoac khai bao sai dang -> ValueError."""
     prov = provenance_of(table)
     if not prov and target != "salinity":
         raise ValueError(f"{os.path.basename(table)}: thieu provenance (bang bien Dot 7 bat buoc co)")
-    return list(declared_empty_groups(prov, target, (MAIN_HOLDOUT_SEASON,)))
+    return list(declared_empty_groups(prov, target, holdout_seasons))
 
 
 def feature_set_lists(feat_file, target):
@@ -198,6 +203,9 @@ def is_done(meta_path, cfg_path, want: dict) -> bool:
 
 
 def main(a):
+    if a.holdout_season is not None and a.mode != "final":
+        sys.exit("[LOI] --holdout-season chi dung voi --mode final.")
+    hs = (MAIN_HOLDOUT_SEASON if a.holdout_season is None else a.holdout_season,)
     state = git_state()
     if not state["git_tag"] and not a.allow_untagged:
         sys.exit("HEAD chua co tag git - gan tag truoc lan chay that (hoac --allow-untagged de thu nghiem).")
@@ -249,7 +257,7 @@ def main(a):
         if err:
             sys.exit(f"[LOI] {err}")
         try:
-            empty_by_grid[grid] = table_empty_groups(table, a.target)
+            empty_by_grid[grid] = table_empty_groups(table, a.target, hs)
         except ValueError as exc:
             sys.exit(f"[LOI] {grid}: {exc}")
     rows, ref_features, vers = [], {}, versions()
@@ -262,7 +270,8 @@ def main(a):
             folds = os.path.join(a.folds_dir, f"cv_folds_s{scheme}.csv")
             folds_sha = sha256(folds)
             for model in a.models:
-                name = run_name(a.prefix, grid, model, scheme, a.label_set, a.feature_set, a.target)
+                name = run_name(a.prefix, grid, model, scheme, a.label_set, a.feature_set, a.target,
+                                a.holdout_season)
                 out = os.path.join(exp_root, name, a.mode)
                 meta_path = os.path.join(out, "run_meta.json")
                 want = {"run": name, "grid": grid, "model": model, "scheme": scheme, "label_set": a.label_set or "chinh",
@@ -273,7 +282,7 @@ def main(a):
                         "points_ref_sha256": ref_sha, "grid_sha256": grid_sha, "blocks_sha256": blocks_sha,
                         "points_sha256": points_sha, "points_ref_variant": a.points_ref_variant,
                         "points_subset_of_ref": a.points_subset_of_ref, "target": a.target,
-                        "empty_test_groups_declared": empty_groups}
+                        "empty_test_groups_declared": empty_groups, "holdout_season": a.holdout_season}
                 row = {"run": name, "grid": grid, "model": model, "scheme": scheme, "label_set": a.label_set or "chinh",
                        **want, "seeds": " ".join(map(str, a.seeds)), "git_tag": state["git_tag"],
                        "empty_test_groups_declared": " ".join(empty_groups)}
@@ -294,6 +303,10 @@ def main(a):
                     cmd += ["--features", *feat_keep] if feat_dropped else ["--features-file", feat_file]
                 if a.target != "salinity":
                     cmd += ["--target", a.target]
+                if a.holdout_season is not None:
+                    cmd += ["--holdout-seasons", str(a.holdout_season)]
+                    if a.holdout_season != MAIN_HOLDOUT_SEASON:
+                        cmd += ["--allow-holdout-season-override"]
                 if empty_groups:
                     cmd += ["--allow-empty-test-groups", *empty_groups]
                 if a.no_point_eval:
@@ -341,6 +354,8 @@ if __name__ == "__main__":
     ap.add_argument("--schemes", nargs="+", type=int, default=[42, 43, 44], help="cv_folds_s<n>.csv")
     ap.add_argument("--seeds", nargs="+", type=int, default=[42], help="seed mo hinh (HistGB tat dinh)")
     ap.add_argument("--mode", choices=["cv", "final"], default="cv")
+    ap.add_argument("--holdout-season", type=int, default=None,
+                    help="Giu rieng mot mua (chi --mode final); mac dinh thiet ke chinh 2020")
     ap.add_argument("--label-set", default="", help='"" = bo chinh; keepwater / keepmangrove / keep6090')
     ap.add_argument("--target", default="salinity",
                     help="Cot muc tieu (Dot 7: ndwi, rain_chirps, dsr_mcd18, t2m_era5, rh_era5); mac dinh salinity")
