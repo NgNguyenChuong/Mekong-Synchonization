@@ -726,8 +726,9 @@ def fig_pc(res, st, key):
             ax.plot(k + jit, 100 * xk["ty_le_phat_hien"], ls="", marker="o", ms=2.2, mfc=LEVEL_FILL[m], mec=INK,
                     mew=0.4, alpha=0.3)
         med = x.groupby("k")["ty_le_phat_hien"].median() * 100
-        ax.plot(med.index, med.values, ls=LEVEL_LS[m], color=INK, lw=0.9, marker="o", ms=4, mfc=LEVEL_FILL[m],
-                mec=INK, mew=0.6, label=LEVEL[m])
+        # lech ngang 0,05 theo muc: hai trung vi bang nhau (vd 100 %) khong che nhau
+        ax.plot(med.index + 0.05 * (m - 6), med.values, ls=LEVEL_LS[m], color=INK, lw=0.9, marker="o", ms=4,
+                mfc=LEVEL_FILL[m], mec=INK, mew=0.6, label=LEVEL[m])
     ax.set_xticks([1, 2])
     ax.set_xticklabels([f"1 × {DMIN}", f"2 × {DMIN}"])
     ax.set_xlim(0.65, 2.35)
