@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""Hinh bai bao (Fig 1-6, S1-S2) theo KE_HOACH/quy_uoc_hinh.md: tieng Anh, Okabe-Ito, PDF vector + PNG 600 dpi.
+"""Hinh bai bao (Fig 1-6, S1-S3) + Bang S1 theo KE_HOACH/quy_uoc_hinh.md: tieng Anh, Okabe-Ito, PDF + PNG 600 dpi.
 Chi doc ket qua da mo; ngoai le duy nhat: dai null Fig 6 mo phong tu se cua cap F1 HistGB.
 
-Chay:  venv/Scripts/python.exe scripts/plot_paper_figures.py [--only fig3 fig6] [--out-dir KE_HOACH/ket-qua/hinh/paper]
-           [--thumb]
+Chay:  venv/Scripts/python.exe scripts/plot_paper_figures.py [--only fig5 figS3 tableS1] [--thumb]
+           [--out-dir KE_HOACH/ket-qua/hinh/paper]
 """
 import argparse
 import os
@@ -21,7 +21,6 @@ if sys.platform == "win32":
 import plot_dot7_figures as d7  # noqa: E402
 from analyze_cv_family import FROZEN_MANIFESTS, RESULTS, gate_name, out_name  # noqa: E402
 from analyze_e7_chart import AREA_FILE, LEVELS, MAIN_FILE, _bool, grid_table  # noqa: E402
-from analyze_e7_moran import SUMMARY_FILE  # noqa: E402
 from training.dot7_rules import (_seed_signs, file_sha256, guard_frozen, main_family, model_name,  # noqa: E402
                                  provenance_path, write_provenance)
 from training.model_interaction import NONE as I_NONE, SIG as I_SIG  # noqa: E402
@@ -64,10 +63,12 @@ XCLIP = 4.0
 N_NULL, NULL_SEED = 200_000, 42
 DMIN = r"Δ$_\mathregular{min}$"
 FIGS = {"fig1": "fig1_study_design", "fig2": "fig2_skill_gate", "fig3": "fig3_same_level_pairs",
-        "fig4": "fig4_blocks_100km", "fig5": "fig5_positive_control_oracle", "fig6": "fig6_main",
-        "figS1": "figS1_model_frame", "figS2": "figS2_model_frame_mlp"}
-SIZE_MM = {"fig1": (190, 120), "fig2": (140, 72), "fig3": (190, 170), "fig4": (190, 90), "fig5": (190, 80),
-           "fig6": (140, 100), "figS1": (190, 130), "figS2": (190, 120)}
+        "fig4": "fig4_blocks_100km", "fig5": "fig5_positive_control", "fig6": "fig6_main",
+        "figS1": "figS1_model_frame", "figS2": "figS2_model_frame_mlp", "figS3": "figS3_positive_control_uniform"}
+TABLES = {"tableS1": "tableS1_oracle"}
+PC_KIND = {"fig5": "lognormal", "figS3": "deu"}
+SIZE_MM = {"fig1": (190, 120), "fig2": (140, 72), "fig3": (190, 170), "fig4": (190, 90), "fig5": (90, 70),
+           "fig6": (140, 80), "figS1": (190, 130), "figS2": (190, 120), "figS3": (90, 70)}
 NULL_METHOD = (f"For each variable x level, Delta_i ~ N(0, se_i) independently for the {{3 or 6}} same-level HistGB "
                f"pairs (se from the block sign-flip analysis), {N_NULL} draws, seed {NULL_SEED}; band = 2.5-97.5 % "
                f"quantiles of max_i |Delta_i| / Delta_min. Ignores correlation between pairs sharing a grid.")
@@ -90,20 +91,24 @@ CAPTIONS = {
     "fig4": "Sensitivity to block size (HistGB). (a) Change in MAE when cross-validation blocks grow from 50 to 100 km, "
             "per grid (shape = frame, fill = level); vertical bars = median over the 13 grids. (b) Fine-level pairs "
             "with 100 km blocks: ΔMAE / Δmin (mean over the two 100 km partitions; thin line = range of the two).",
-    "fig5": "Positive control and oracle. (a) Detection rate when an effect of k × Δmin is injected into a "
-            "same-level pair (soil salinity, HistGB); small dots = pairs, lines = mean over the pairs of a level; "
-            "the τ = μ indicator run is omitted. (b) |ΔMAE| of the oracle (cell mean of true labels, 50 km blocks) "
-            "for fine-level pairs, in units of the HistGB Δmin of the variable.",
-    "fig6": "Frame effect vs. source resolution. (a) Max |ΔMAE| / Δmin across the same-level pairs (HistGB) against "
+    "fig5": "Positive control (soil salinity, HistGB, spatial block cross-validation), log-normal injection. "
+            "Detection rate when an effect of k × Δmin is injected into a same-level grid pair; lines = median over "
+            "the pairs of a level, faint dots = pairs; dashed line = 80 % target power. Uniform injection: Fig. S3.",
+    "fig6": "Frame effect vs. source resolution. Max |ΔMAE| / Δmin across the same-level pairs (HistGB) against "
             "source pixel size / mean cell edge; filled = tested level, open = descriptive; points of variables "
             "sharing a source are dodged horizontally. Grey bars = expected under no frame effect (95 % range): "
-            + NULL_METHOD + " (b) Moran's I (10 km distance band) of the point labels: median and min–max over seasons.",
+            + NULL_METHOD,
+    "tableS1": "Oracle (cell mean of true labels, spatial block cross-validation with 50 km blocks): |ΔMAE| of "
+               "fine-level grid pairs in units of the HistGB Δmin of the variable (5 % of the level-mean MAE); "
+               "< 1 = below the smallest effect size of interest. Not available = no fine-level oracle pairs.",
     "figS1": "Model × frame (RF vs HistGB). (a) ΔMAE / Δmin of each pair under both models (whiskers = 90 % CI; "
              "pairs passing the skill gate under both models); sign agreement n/N per variable, criterion ≥ 80 %. "
              "(b) Interaction I = ΔMAE_RF − ΔMAE_HistGB in units of the HistGB Δmin; thick bar = 90 % CI, thin bar "
              "= 95 % CI (not adjusted for multiplicity); grey band = ±Δmin.",
 }
 CAPTIONS["figS2"] = CAPTIONS["figS1"].replace("RF vs HistGB", "MLP vs HistGB").replace("ΔMAE_RF", "ΔMAE_MLP")
+CAPTIONS["figS3"] = (CAPTIONS["fig5"].replace("log-normal injection", "uniform injection")
+                     .replace("Uniform injection: Fig. S3", "Log-normal injection: Fig. 5"))
 RC = {"font.family": "sans-serif", "font.sans-serif": ["Arial", "DejaVu Sans"], "font.size": 7, "axes.labelsize": 7,
       "xtick.labelsize": 7, "ytick.labelsize": 7, "legend.fontsize": 7, "axes.titlesize": 7, "pdf.fonttype": 42,
       "ps.fonttype": 42, "axes.linewidth": 0.6, "xtick.major.width": 0.6, "ytick.major.width": 0.6,
@@ -265,10 +270,8 @@ def e7_tables(res, f1, st):
     """Bang E7 (max|Delta|/Delta_min, nguon/canh o, kiem_dinh) + dai null theo (bien, muc); kiem lai max tu F1."""
     tab = read_cols(os.path.join(res, MAIN_FILE), ["variable", "muc", "anh_huong_khung", "kiem_dinh", "n_cap",
                                                    "nguon_tren_canh_median"], st, "E7 main table")
-    mor = read_cols(os.path.join(res, SUMMARY_FILE), ["variable", "moran_median", "moran_min", "moran_max"], st,
-                    "E7 Moran")
     if tab is None:
-        return None, mor
+        return None
     rows = []
     for r in tab.itertuples():
         g = f1[(f1["target"] == r.variable) & (f1["muc"] == r.muc)]
@@ -281,7 +284,7 @@ def e7_tables(res, f1, st):
             loi(f"E7 {r.variable} muc {r.muc}: anh_huong_khung/n_cap khac F1 (max|delta_hat|/delta_min_thr)")
         rows.append(null_band(g["se"], g["thr"].iloc[0]))
     tab[["null_lo", "null_hi"]] = pd.DataFrame(rows, index=tab.index)
-    return tab.assign(kiem_dinh=_bool(tab["kiem_dinh"])), mor
+    return tab.assign(kiem_dinh=_bool(tab["kiem_dinh"]))
 
 
 def sens_pairs(res, model, f1, st):
@@ -702,69 +705,71 @@ def fig4(res, levels, st):
     return fig
 
 
-def fig5(res, levels, st):
+def fig_pc(res, st, key):
+    """Duong luc kiem dinh mot kieu cay: trung vi theo muc, diem tung cap mo."""
     plt = _plt()
     p, _ = d7.pc1_tables(res, st)
-    f1 = f1_pairs(res, levels, st)
-    orc = d7.oracle_table(res, levels, st)
-    fig, axes = plt.subplots(1, 3, figsize=(190 * MM, 80 * MM), width_ratios=[1, 1, 1.35], layout="constrained")
-    kinds = (("deu", "Uniform injection"), ("lognormal", "Log-normal injection"))
     if p is not None and "tau_mu" in set(p["kind"]):
         st["notes"].append("PC-1: bỏ kiểu τ = μ (chỉ báo)")
-    for ax, (kind, title) in zip(axes[:2], kinds):
-        ax.set_title("   " + title, loc="left")
-        ax.axhline(80, color=GREY, lw=0.8, ls="--")
-        ax.text(0.72, 81, "80 % target power", fontsize=7, color="#555555", va="bottom")
-        g = p[p["kind"] == kind] if p is not None else pd.DataFrame()
-        if g.empty:
-            empty(ax)
-        for m in LEVELS:
-            x = g[g["level"] == m].sort_values(["k", "pair_index"])
-            if x.empty:
-                continue
-            for k, xk in x.groupby("k"):
-                jit = np.linspace(-0.07, 0.07, len(xk)) if len(xk) > 1 else np.zeros(1)
-                ax.plot(k + jit, 100 * xk["ty_le_phat_hien"], ls="", marker="o", ms=2.4, mfc=LEVEL_FILL[m], mec=INK,
-                        mew=0.4)
-            mean = x.groupby("k")["ty_le_phat_hien"].mean() * 100
-            ax.plot(mean.index, mean.values, ls=LEVEL_LS[m], color=INK, lw=0.9, marker="o", ms=4,
-                    mfc=LEVEL_FILL[m], mec=INK, mew=0.6, label=LEVEL[m])
-        ax.set_xticks([1, 2])
-        ax.set_xticklabels([f"1 × {DMIN}", f"2 × {DMIN}"])
-        ax.set_xlim(0.65, 2.35)
-        ax.set_ylim(0, 103)
-        ax.set_xlabel(f"Injected effect (k × {DMIN})")
-    axes[0].set_ylabel("Detection rate (%)")
-    axes[1].tick_params(labelleft=False)
-    fig.legend(handles=axes[0].get_legend_handles_labels()[0], loc="outside lower left", ncol=3, handlelength=2.2)
-    letter(axes[0], "a")
-    a2 = axes[2]
+    fig, ax = plt.subplots(figsize=(SIZE_MM[key][0] * MM, SIZE_MM[key][1] * MM), layout="constrained")
+    ax.axhline(80, color=GREY, lw=0.8, ls="--")
+    ax.text(0.67, 81, "80 % target power", fontsize=7, color="#555555", va="bottom")
+    g = p[p["kind"] == PC_KIND[key]] if p is not None else pd.DataFrame(columns=["level"])
+    if g.empty:
+        empty(ax)
+    for m in LEVELS:
+        x = g[g["level"] == m].sort_values(["k", "pair_index"])
+        if x.empty:
+            continue
+        for k, xk in x.groupby("k"):
+            jit = np.linspace(-0.07, 0.07, len(xk)) if len(xk) > 1 else np.zeros(1)
+            ax.plot(k + jit, 100 * xk["ty_le_phat_hien"], ls="", marker="o", ms=2.2, mfc=LEVEL_FILL[m], mec=INK,
+                    mew=0.4, alpha=0.3)
+        med = x.groupby("k")["ty_le_phat_hien"].median() * 100
+        ax.plot(med.index, med.values, ls=LEVEL_LS[m], color=INK, lw=0.9, marker="o", ms=4, mfc=LEVEL_FILL[m],
+                mec=INK, mew=0.6, label=LEVEL[m])
+    ax.set_xticks([1, 2])
+    ax.set_xticklabels([f"1 × {DMIN}", f"2 × {DMIN}"])
+    ax.set_xlim(0.65, 2.35)
+    ax.set_ylim(-3, 103)  # diem 0 % khong bi cat
+    ax.set_xlabel(f"Injected effect (k × {DMIN})")
+    ax.set_ylabel("Detection rate (%)")
+    h = ax.get_legend_handles_labels()[0]
+    if h:
+        fig.legend(handles=h, loc="outside lower center", ncol=3, handlelength=2.2, columnspacing=1.0)
+    return fig
+
+
+def table_s1(res, levels, st) -> pd.DataFrame:
+    """|Delta oracle| / Delta_min HistGB muc min: hang = bien, cot = cap min; bien khong co cap min -> not available."""
+    f1 = f1_pairs(res, levels, st)
     thr7 = f1[f1["muc"] == 7].groupby("target")["thr"].agg(["first", "nunique"])
     if (thr7["nunique"] > 1).any():
         loi("Delta_min muc min khong duy nhat theo bien")
+    orc = d7.oracle_table(res, levels, st)
     if orc is None or orc.empty:
-        empty(a2)
-    else:
-        orc = orc[orc["target"].isin(thr7.index)]
-        orc = orc.assign(y=orc["delta_hat"].abs() / orc["target"].map(thr7["first"]))
-        pairs = list(dict.fromkeys(zip(orc["grid_a"], orc["grid_b"])))
-        voff = dict(zip(ORDER, np.linspace(-0.3, 0.3, len(ORDER))))
-        for r in orc.itertuples():
-            a2.plot(pairs.index((r.grid_a, r.grid_b)) + voff[r.target], r.y, ls="", marker=VMARK[r.target], ms=3.6,
-                    mfc=COLOR[r.target], mec=COLOR[r.target])
-        a2.axhline(1, color=INK, lw=0.7, ls="--")
-        a2.text(-0.45, 1.02, DMIN, fontsize=7, va="bottom")
-        a2.set_xticks(range(len(pairs)))
-        a2.set_xticklabels([pair_label(*q) for q in pairs], rotation=35, ha="right", rotation_mode="anchor")
-        a2.set_ylim(0, max(1.15, orc["y"].max() * 1.1))
-        a2.legend(handles=var_handles(set(orc["target"])), loc="center right", fontsize=7, handletextpad=0.3)
-        na = [VAR[t] for t in ORDER if t not in set(orc["target"])]
-        if na:
-            a2.text(0.98, 0.2, "Not available: " + ", ".join(na), transform=a2.transAxes, ha="right", fontsize=7,
-                    color="#555555")
-    a2.set_ylabel(f"|ΔMAE$_\\mathregular{{oracle}}$| / {DMIN}")
-    letter(a2, "b")
-    return fig
+        loi("khong co cap oracle muc min (dot7_oracle_cap.csv)")
+    orc = orc[orc["target"].isin(thr7.index)]
+    orc = orc.assign(y=orc["delta_hat"].abs() / orc["target"].map(thr7["first"]),
+                     pair=[pair_label(a, b) for a, b in zip(orc["grid_a"], orc["grid_b"])])
+    tab = orc.pivot(index="target", columns="pair", values="y").reindex(columns=list(dict.fromkeys(orc["pair"])))
+    if tab.isna().any().any():
+        loi("bang S1: cap min khac nhau giua cac bien")
+    tab = tab.reindex(list(ORDER)).round(3)
+    out = tab.astype(object).where(tab.notna(), "not available")
+    out.index = out.index.map(VAR).rename("Variable")
+    out.columns.name = None
+    return out
+
+
+def save_table(tab, path_noext, caption) -> list:
+    csv, md = f"{path_noext}.csv", f"{path_noext}.md"
+    tab.to_csv(csv)
+    rows = [[tab.index.name, *tab.columns], ["---"] * (tab.shape[1] + 1)]
+    rows += [[i, *(v if isinstance(v, str) else f"{v:.3f}" for v in r)] for i, r in zip(tab.index, tab.values)]
+    with open(md, "w", encoding="utf-8") as f:
+        f.write(f"**Table S1.** {caption}\n\n" + "\n".join("| " + " | ".join(r) + " |" for r in rows) + "\n")
+    return [csv, md]
 
 
 def fig6(res, levels, st, info):
@@ -772,8 +777,8 @@ def fig6(res, levels, st, info):
     from matplotlib.ticker import FuncFormatter
 
     f1 = f1_pairs(res, levels, st)
-    tab, mor = e7_tables(res, f1, st)
-    fig, (a1, a2) = plt.subplots(1, 2, figsize=(140 * MM, 100 * MM), width_ratios=[3, 1], layout="constrained")
+    tab = e7_tables(res, f1, st)
+    fig, a1 = plt.subplots(figsize=(SIZE_MM["fig6"][0] * MM, SIZE_MM["fig6"][1] * MM), layout="constrained")
     dodge = {"salinity": 0.93, "ndwi": 1.07, "t2m_era5": 0.93, "rh_era5": 1.07}
     if tab is None:
         empty(a1)
@@ -804,29 +809,14 @@ def fig6(res, levels, st, info):
         a1.set_xlim(0.001, 6)
         a1.set_xticks([0.001, 0.01, 0.1, 1])
         a1.set_yticks([0.1, 0.2, 0.5, 1, 2])
-        fig.legend(handles=var_handles(set(tab["variable"]), line=True)
-                   + [mk("Tested level", "o", INK, INK), mk("Descriptive level", "o", "white", INK),
-                      mk("Expected under no frame effect (95 % range)", "", ls="-", lw=5, color="#D0D0D0")],
-                   loc="outside lower center", ncol=2, handletextpad=0.4, columnspacing=1.0)
+        h = var_handles(set(tab["variable"]), line=True) + [
+            mk("Tested level", "o", INK, INK), mk("Descriptive level", "o", "white", INK),
+            mk("Expected under no frame effect (95 % range)", "", ls="-", lw=5, color="#D0D0D0")]
+        for x in h:  # chu giai hep ben phai: xuong dong truoc ngoac / 'frame'
+            x.set_label(x.get_label().replace(" (", "\n(").replace("no frame", "no\nframe"))
+        fig.legend(handles=h, loc="outside right upper", handletextpad=0.4, labelspacing=0.7)
     a1.set_xlabel("Source pixel size / cell edge")
     a1.set_ylabel(f"Max |ΔMAE| / {DMIN} across same-level pairs")
-    letter(a1, "a")
-    if mor is None:
-        empty(a2)
-    else:
-        m = mor.set_index("variable")
-        ts = [t for t in ORDER if t in m.index]
-        for i, t in enumerate(ts):
-            a2.plot([m.loc[t, "moran_min"], m.loc[t, "moran_max"]], [i, i], color=INK, lw=1.0)
-            a2.plot(m.loc[t, "moran_median"], i, ls="", marker="o", ms=4, mfc=INK, mec=INK, clip_on=False)
-        a2.set_yticks(range(len(ts)))
-        a2.set_yticklabels([VAR[t].replace(" (", "\n(") for t in ts])
-        a2.set_ylim(len(ts) - 0.5, -0.5)
-        a2.tick_params(axis="y", length=0)
-        a2.set_xlim(0, 1)
-        a2.set_xticks([0, 0.5, 1])
-    a2.set_xlabel("Moran's I")
-    letter(a2, "b")
     return fig
 
 
@@ -899,7 +889,11 @@ def build(key, res, levels, st, a, info):
         return fig6(res, levels, st, info)
     if key in ("figS1", "figS2"):
         return fig_sens(res, levels, st, "rf" if key == "figS1" else "mlp", key)
-    return {"fig2": fig2, "fig3": fig3, "fig4": fig4, "fig5": fig5}[key](res, levels, st)
+    if key in PC_KIND:
+        return fig_pc(res, st, key)
+    if key == "tableS1":
+        return table_s1(res, levels, st)
+    return {"fig2": fig2, "fig3": fig3, "fig4": fig4}[key](res, levels, st)
 
 
 def rel(p):
@@ -909,13 +903,14 @@ def rel(p):
         return os.path.abspath(p)
 
 
-def outputs(out_dir, keys=tuple(FIGS), thumb=False) -> list:
+def outputs(out_dir, keys=(*FIGS, *TABLES), thumb=False) -> list:
     exts = (".pdf", ".png") + ((THUMB_SUFFIX,) if thumb else ())
-    return [os.path.join(out_dir, f"{FIGS[k]}{ext}") for k in keys for ext in exts]
+    return [os.path.join(out_dir, f"{FIGS[k]}{ext}" if k in FIGS else f"{TABLES[k]}{ext}")
+            for k in keys for ext in (exts if k in FIGS else (".csv", ".md"))]
 
 
 def main(a):
-    keys = a.only or list(FIGS)
+    keys = a.only or [*FIGS, *TABLES]
     outs = outputs(a.out_dir, keys, a.thumb)
     guard_frozen(outs + [provenance_path(p) for p in outs], a.frozen_manifest)
     area = os.path.join(a.results_dir, AREA_FILE)
@@ -923,15 +918,19 @@ def main(a):
     os.makedirs(a.out_dir, exist_ok=True)
     for key in keys:
         st, info = {"notes": [], "used": [area]}, {}
-        fig = build(key, a.results_dir, levels, st, a, info)
+        obj = build(key, a.results_dir, levels, st, a, info)
         notes = list(dict.fromkeys(st["notes"]))
         src = {rel(p): file_sha256(p) for p in dict.fromkeys(st["used"])}  # truoc khi ghi: loi -> khong co hinh mo coi
-        paths = save(fig, os.path.join(a.out_dir, FIGS[key]), a.thumb)
+        if key in TABLES:
+            paths = save_table(obj, os.path.join(a.out_dir, TABLES[key]), CAPTIONS[key])
+            extra = {"vai_tro": "bang_bai_bao"}
+        else:
+            paths = save(obj, os.path.join(a.out_dir, FIGS[key]), a.thumb)
+            extra = {"vai_tro": "hinh_bai_bao", "kich_thuoc_mm": SIZE_MM[key]}
         for p in paths:
-            write_provenance(p, vai_tro="hinh_bai_bao", kich_thuoc_mm=SIZE_MM[key], sha_dau_vao=src, phan_bo=notes,
-                             chu_thich_en=CAPTIONS[key], **info)
-        print(f"{FIGS[key]}: {len(src)} file vao, {len(notes)} ghi chu", flush=True)
-        for p in paths[2:]:
+            write_provenance(p, **extra, sha_dau_vao=src, phan_bo=notes, chu_thich_en=CAPTIONS[key], **info)
+        print(f"{os.path.basename(paths[0]).rsplit('.', 1)[0]}: {len(src)} file vao, {len(notes)} ghi chu", flush=True)
+        for p in (paths[2:] if key in FIGS else ()):
             kb = os.path.getsize(p) / 1024
             print(f"  {os.path.basename(p)}: {kb:.0f} KB" + (f" - CANH BAO > {THUMB_MAX_KB} KB" if kb > THUMB_MAX_KB
                                                               else ""), flush=True)
@@ -946,7 +945,7 @@ if __name__ == "__main__":
     ap.add_argument("--grids-dir", default=os.path.join(ROOT, "data", "grids"))
     ap.add_argument("--eval-dir", default=os.path.join(ROOT, "data", "eval"))
     ap.add_argument("--boundary", default=None, help="mac dinh CANONICAL_BOUNDARY (ranh gioi v2)")
-    ap.add_argument("--only", nargs="+", choices=list(FIGS))
+    ap.add_argument("--only", nargs="+", choices=[*FIGS, *TABLES])
     ap.add_argument("--frozen-manifest", nargs="+", default=FROZEN_MANIFESTS)
     ap.add_argument("--thumb", action="store_true", help=f"ghi them <hinh>{THUMB_SUFFIX} {THUMB_DPI} dpi cho dashboard")
     args = ap.parse_args()

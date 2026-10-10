@@ -1,4 +1,5 @@
-"""plot_paper_figures.py tren du lieu gia: dai null dung phan vi, nhan cuoi 4 lop, guard manifest, file ra du."""
+"""plot_paper_figures.py tren du lieu gia: dai null dung phan vi, nhan cuoi 4 lop, guard manifest, file ra du,
+duong luc kiem dinh = trung vi theo kieu cay, bang S1 oracle."""
 import argparse
 import importlib.util
 import json
@@ -102,13 +103,23 @@ def _fake_results(pp, res):
             eff.append({"variable": t, "muc": m, "anh_huong_khung": g["delta_hat"].abs().max() / 0.2,
                         "kiem_dinh": i < 3, "n_cap": len(g), "nguon_tren_canh_median": 10.0 ** (i - 3) * (8 - m)})
     pd.DataFrame(eff).to_csv(res / pp.MAIN_FILE, index=False)
-    pd.DataFrame({"variable": list(pp.ORDER), "moran_median": 0.5, "moran_min": 0.4, "moran_max": 0.6}).to_csv(
-        res / pp.SUMMARY_FILE, index=False)
+    orc = [{"target": t, "blocks": b, "delta_ref_level": m, "grid_a": a, "grid_b": g,
+            "delta_hat": -0.01 * (k + 1) * (1 if b == "k50" else 3), "ti_le_delta_tuong_doi": 0.0}
+           for t in pp.ORDER for b in ("k50", "k100") for k, (m, a, g) in enumerate(F1_PAIRS)
+           if t != "rain_chirps" or m == 5]  # mua: khong co cap min
+    pd.DataFrame(orc).to_csv(res / "dot7_oracle_cap.csv", index=False)
+    # muc 5: 3 cap 0 / 10 / 90 % -> trung vi 10, trung binh 33
+    pc = [{"pair_index": i, "level": m, "k": k, "kind": kind,
+           "ty_le_phat_hien": v * (1 if kind == "lognormal" else 0.5)}
+          for kind in ("deu", "lognormal", "tau_mu") for k in (1.0, 2.0)
+          for i, (m, v) in enumerate([(5, 0.0), (5, 0.1), (5, 0.9), (6, 0.5), (7, 1.0)])]
+    pd.DataFrame(pc).to_csv(res / "dot7_pc1_tong_hop.csv", index=False)
 
 
 def test_file_ra_du(pp, tmp_path):
-    assert len(pp.outputs("x")) == 16 and {os.path.basename(p) for p in pp.outputs("x")} >= {
-        "fig1_study_design.pdf", "fig6_main.png", "figS1_model_frame.pdf", "figS2_model_frame_mlp.png"}
+    assert len(pp.outputs("x")) == 20 and {os.path.basename(p) for p in pp.outputs("x")} >= {
+        "fig1_study_design.pdf", "fig5_positive_control.pdf", "fig6_main.png", "figS1_model_frame.pdf",
+        "figS2_model_frame_mlp.png", "figS3_positive_control_uniform.png", "tableS1_oracle.csv", "tableS1_oracle.md"}
     _fake_results(pp, tmp_path / "res")
     pp.main(_args(tmp_path, _manifest(tmp_path), ["fig3", "fig6"]))
     for name in ("fig3_same_level_pairs", "fig6_main"):
@@ -120,13 +131,14 @@ def test_file_ra_du(pp, tmp_path):
     prov = json.loads((tmp_path / "out" / "fig6_main.png.provenance.json").read_text(encoding="utf-8"))
     vals = prov["dai_null"]["gia_tri"]
     assert len(vals) == 18 and all(0 < v["null_lo"] < v["null_hi"] for v in vals)
+    assert not any("moran" in k for k in prov["sha_dau_vao"])  # bo panel Moran -> khong doc file Moran
     assert not list((tmp_path / "out").glob("*_thumb.png"))  # khong --thumb -> khong anh nho
 
 
 def test_thumb_150dpi_nho_va_trong_guard(pp, tmp_path):
     from PIL import Image
 
-    assert len(pp.outputs("x", thumb=True)) == 24
+    assert len(pp.outputs("x", thumb=True)) == 29
     with pytest.raises(SystemExit) as e:  # anh nho cung bi chan neu nam trong manifest
         pp.main(_args(tmp_path, _manifest(tmp_path, ["out/fig3_same_level_pairs_thumb.png"]), ["fig3"], thumb=True))
     assert e.value.code == 2
@@ -151,3 +163,31 @@ def test_thuoc_ti_le_dung_50_km_khong_doi_khung(pp):
     assert ax.get_xlim() == (104.3, 107.0) and ax.get_ylim() == (8.4, 11.2)
     assert [t.get_text() for t in ax.texts if t.get_text()] == ["50 km", "N"]  # mui ten = Annotation chu rong
     pp._plt().close(fig)
+
+
+def test_luc_kiem_dinh_trung_vi_theo_kieu_cay(pp, tmp_path):
+    _fake_results(pp, tmp_path / "res")
+    for key, scale in (("fig5", 1.0), ("figS3", 0.5)):  # fig5 = lognormal, figS3 = deu
+        st = {"notes": [], "used": []}
+        fig = pp.fig_pc(str(tmp_path / "res"), st, key)
+        lines = {ln.get_label(): ln for ln in fig.axes[0].lines}
+        assert list(lines[pp.LEVEL[5]].get_ydata()) == pytest.approx([10 * scale] * 2)  # trung vi, khong phai 33
+        assert list(lines[pp.LEVEL[7]].get_ydata()) == pytest.approx([100 * scale] * 2)
+        assert any("τ = μ" in n for n in st["notes"])
+        pp._plt().close(fig)
+
+
+def test_bang_s1_oracle(pp, tmp_path):
+    _fake_results(pp, tmp_path / "res")
+    pp.main(_args(tmp_path, _manifest(tmp_path), ["tableS1"]))
+    t = pd.read_csv(tmp_path / "out" / "tableS1_oracle.csv", index_col=0)
+    assert t.shape == (6, 6) and list(t.index) == [pp.VAR[v] for v in pp.ORDER]
+    assert (t.loc[pp.VAR["rain_chirps"]] == "not available").all()
+    # cap min dau tien (k = 6): |-0.07| / Delta_min 0.2; chi lay khoi 50 km
+    assert float(t.loc[pp.VAR["salinity"], "H3 vs S2"]) == pytest.approx(0.35)
+    assert float(t.loc[pp.VAR["ndwi"], "Square vs Lat–lon"]) == pytest.approx(0.6)
+    md = (tmp_path / "out" / "tableS1_oracle.md").read_text(encoding="utf-8")
+    assert md.count("not available") == 6 and "| 0.350 |" in md
+    prov = json.loads((tmp_path / "out" / "tableS1_oracle.csv.provenance.json").read_text(encoding="utf-8"))
+    assert prov["vai_tro"] == "bang_bai_bao" and prov["chu_thich_en"] and "dot7_oracle_cap.csv" in "".join(
+        prov["sha_dau_vao"])
