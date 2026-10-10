@@ -82,7 +82,7 @@ CAPTIONS = {
     "fig3": "Same-level grid pairs (area ratio ≤ 1.2), HistGB, spatial block cross-validation (50 km blocks). "
             "ΔMAE = MAE(A) − MAE(B) for pair 'A vs B', in units of Δmin = 5 % of the level-mean MAE (smallest effect "
             "size of interest). Thick bar = 90 % CI (TOST), thin bar = 95 % CI; grey band = equivalence margin "
-            "(±Δmin); arrows = CI beyond ±4. Classes are final: block sign-flip permutation test (2^19), "
+            "(±Δmin); arrows = CI beyond ±4; CIs are not adjusted for multiplicity. Classes are final: block sign-flip permutation test (2^19), "
             "Holm-adjusted p, decision rule D, then held-out blocks and season (2020).",
     "fig4": "Sensitivity to block size (HistGB). (a) Change in MAE when cross-validation blocks grow from 50 to 100 km, "
             "per grid (shape = frame, fill = level); vertical bars = median over the 13 grids. (b) Fine-level pairs "
@@ -98,7 +98,7 @@ CAPTIONS = {
     "figS1": "Model × frame (RF vs HistGB). (a) ΔMAE / Δmin of each pair under both models (whiskers = 90 % CI; "
              "pairs passing the skill gate under both models); sign agreement n/N per variable, criterion ≥ 80 %. "
              "(b) Interaction I = ΔMAE_RF − ΔMAE_HistGB in units of the HistGB Δmin; thick bar = 90 % CI, thin bar "
-             "= 95 % CI; grey band = ±Δmin.",
+             "= 95 % CI (not adjusted for multiplicity); grey band = ±Δmin.",
 }
 CAPTIONS["figS2"] = CAPTIONS["figS1"].replace("RF vs HistGB", "MLP vs HistGB").replace("ΔMAE_RF", "ΔMAE_MLP")
 RC = {"font.family": "sans-serif", "font.sans-serif": ["Arial", "DejaVu Sans"], "font.size": 7, "axes.labelsize": 7,
@@ -875,6 +875,13 @@ def build(key, res, levels, st, a, info):
     return {"fig2": fig2, "fig3": fig3, "fig4": fig4, "fig5": fig5}[key](res, levels, st)
 
 
+def rel(p):
+    try:
+        return os.path.relpath(p, ROOT)
+    except ValueError:  # Windows: khac o dia (du lieu o C:/A:, repo o D:)
+        return os.path.abspath(p)
+
+
 def outputs(out_dir, keys=tuple(FIGS)) -> list:
     return [os.path.join(out_dir, f"{FIGS[k]}.{ext}") for k in keys for ext in ("pdf", "png")]
 
@@ -889,9 +896,9 @@ def main(a):
     for key in keys:
         st, info = {"notes": [], "used": [area]}, {}
         fig = build(key, a.results_dir, levels, st, a, info)
-        paths = save(fig, os.path.join(a.out_dir, FIGS[key]))
         notes = list(dict.fromkeys(st["notes"]))
-        src = {os.path.relpath(p, ROOT): file_sha256(p) for p in dict.fromkeys(st["used"])}
+        src = {rel(p): file_sha256(p) for p in dict.fromkeys(st["used"])}  # truoc khi ghi: loi -> khong co hinh mo coi
+        paths = save(fig, os.path.join(a.out_dir, FIGS[key]))
         for p in paths:
             write_provenance(p, vai_tro="hinh_bai_bao", kich_thuoc_mm=SIZE_MM[key], sha_dau_vao=src, phan_bo=notes,
                              chu_thich_en=CAPTIONS[key], **info)
