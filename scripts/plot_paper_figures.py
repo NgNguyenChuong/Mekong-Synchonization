@@ -3,6 +3,7 @@
 Chi doc ket qua da mo; ngoai le duy nhat: dai null Fig 6 mo phong tu se cua cap F1 HistGB.
 
 Chay:  venv/Scripts/python.exe scripts/plot_paper_figures.py [--only fig3 fig6] [--out-dir KE_HOACH/ket-qua/hinh/paper]
+           [--thumb]
 """
 import argparse
 import os
@@ -57,6 +58,8 @@ FIG1_GRIDS = {5: ("h3_res_5", "s2_level_9", "square_utm_17087m", "latlon_0.1552d
               7: ("h3_res_7", "s2_level_12", "square_utm_2441m", "latlon_0.0222deg")}
 FIG1_CENTER = (105.78, 10.03)  # giua dong bang (Can Tho)
 FIG1_HALF_M = 15_000
+SCALE_KM = 50
+THUMB_DPI, THUMB_SUFFIX, THUMB_MAX_KB = 150, "_thumb.png", 400  # anh nho cho dashboard
 XCLIP = 4.0
 N_NULL, NULL_SEED = 200_000, 42
 DMIN = r"Δ$_\mathregular{min}$"
@@ -434,11 +437,34 @@ def ci_handles():
             patch(f"Equivalence margin (±{DMIN})", BAND_C, edge="none")]
 
 
-def save(fig, path_noext) -> list:
+def north_scale(ax, km=SCALE_KM):
+    """Thuoc ti le + mui ten Bac goc duoi trai (vung bien, khong co khoi) cua ban do EPSG:4326 (Bac huong len)."""
+    from pyproj import Geod
+
+    (x0, x1), (y0, y1) = ax.get_xlim(), ax.get_ylim()
+    y, xs = y0 + 0.05 * (y1 - y0), x0 + 0.05 * (x1 - x0)
+    xe = Geod(ellps="WGS84").fwd(xs, y, 90, km * 1000)[0]  # do dai do tai vi do cua thuoc
+    ax.plot([xs, xe], [y, y], color=INK, lw=1.6, solid_capstyle="butt")
+    for x in (xs, xe):
+        ax.plot([x, x], [y, y + 0.012 * (y1 - y0)], color=INK, lw=0.6)
+    ax.text((xs + xe) / 2, y + 0.018 * (y1 - y0), f"{km} km", ha="center", va="bottom", fontsize=7)
+    xc, tr = (xs + xe) / 2, ax.get_xaxis_transform()
+    ax.annotate("", xy=(xc, 0.25), xytext=(xc, 0.15), xycoords=tr, textcoords=tr,
+                arrowprops=dict(arrowstyle="-|>", color=INK, lw=0.8, mutation_scale=8, shrinkA=0, shrinkB=0))
+    ax.text(xc, 0.255, "N", transform=tr, ha="center", va="bottom", fontsize=8, fontweight="bold")
+    ax.set_xlim(x0, x1)  # ve them khong lam doi khung
+    ax.set_ylim(y0, y1)
+
+
+def save(fig, path_noext, thumb=False) -> list:
     paths = []
     for ext in ("pdf", "png"):
         p = f"{path_noext}.{ext}"
         fig.savefig(p, dpi=600, facecolor="white")
+        paths.append(p)
+    if thumb:
+        p = f"{path_noext}{THUMB_SUFFIX}"
+        fig.savefig(p, dpi=THUMB_DPI, facecolor="white")
         paths.append(p)
     _plt().close(fig)
     return paths
@@ -483,6 +509,7 @@ def fig1(res, levels, st, a):
         win = win.buffer(FIG1_HALF_M, cap_style="square").to_crs(4326)
         win.boundary.plot(ax=ax, color=INK, lw=0.8, ls="--")
         ax.set_aspect(1 / np.cos(np.deg2rad(FIG1_CENTER[1])))
+        north_scale(ax)
         ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}°E"))
         ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}°N"))
         ax.legend(handles=[patch("CV unit (50 km blocks)", "none", edge=INK),
@@ -882,13 +909,14 @@ def rel(p):
         return os.path.abspath(p)
 
 
-def outputs(out_dir, keys=tuple(FIGS)) -> list:
-    return [os.path.join(out_dir, f"{FIGS[k]}.{ext}") for k in keys for ext in ("pdf", "png")]
+def outputs(out_dir, keys=tuple(FIGS), thumb=False) -> list:
+    exts = (".pdf", ".png") + ((THUMB_SUFFIX,) if thumb else ())
+    return [os.path.join(out_dir, f"{FIGS[k]}{ext}") for k in keys for ext in exts]
 
 
 def main(a):
     keys = a.only or list(FIGS)
-    outs = outputs(a.out_dir, keys)
+    outs = outputs(a.out_dir, keys, a.thumb)
     guard_frozen(outs + [provenance_path(p) for p in outs], a.frozen_manifest)
     area = os.path.join(a.results_dir, AREA_FILE)
     levels = grid_table(area).set_index("grid")["muc"]
@@ -898,11 +926,15 @@ def main(a):
         fig = build(key, a.results_dir, levels, st, a, info)
         notes = list(dict.fromkeys(st["notes"]))
         src = {rel(p): file_sha256(p) for p in dict.fromkeys(st["used"])}  # truoc khi ghi: loi -> khong co hinh mo coi
-        paths = save(fig, os.path.join(a.out_dir, FIGS[key]))
+        paths = save(fig, os.path.join(a.out_dir, FIGS[key]), a.thumb)
         for p in paths:
             write_provenance(p, vai_tro="hinh_bai_bao", kich_thuoc_mm=SIZE_MM[key], sha_dau_vao=src, phan_bo=notes,
                              chu_thich_en=CAPTIONS[key], **info)
         print(f"{FIGS[key]}: {len(src)} file vao, {len(notes)} ghi chu", flush=True)
+        for p in paths[2:]:
+            kb = os.path.getsize(p) / 1024
+            print(f"  {os.path.basename(p)}: {kb:.0f} KB" + (f" - CANH BAO > {THUMB_MAX_KB} KB" if kb > THUMB_MAX_KB
+                                                              else ""), flush=True)
         for n in notes:
             print(f"  - {n}", flush=True)
 
@@ -916,6 +948,7 @@ if __name__ == "__main__":
     ap.add_argument("--boundary", default=None, help="mac dinh CANONICAL_BOUNDARY (ranh gioi v2)")
     ap.add_argument("--only", nargs="+", choices=list(FIGS))
     ap.add_argument("--frozen-manifest", nargs="+", default=FROZEN_MANIFESTS)
+    ap.add_argument("--thumb", action="store_true", help=f"ghi them <hinh>{THUMB_SUFFIX} {THUMB_DPI} dpi cho dashboard")
     args = ap.parse_args()
     if args.boundary is None:
         from preprocessing import CANONICAL_BOUNDARY

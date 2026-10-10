@@ -59,10 +59,10 @@ def test_nhan_cuoi_anh_xa_4_lop(pp, tmp_path):
     assert pp.final_labels(str(tmp_path), "t2m_era5", st) is None and st["notes"]
 
 
-def _args(tmp_path, manifest, only):
+def _args(tmp_path, manifest, only, thumb=False):
     return argparse.Namespace(results_dir=str(tmp_path / "res"), out_dir=str(tmp_path / "out"),
                               grids_dir=str(tmp_path), eval_dir=str(tmp_path), boundary=str(tmp_path / "b.geojson"),
-                              only=only, frozen_manifest=[manifest])
+                              only=only, frozen_manifest=[manifest], thumb=thumb)
 
 
 def _manifest(tmp_path, files=()):
@@ -120,3 +120,34 @@ def test_file_ra_du(pp, tmp_path):
     prov = json.loads((tmp_path / "out" / "fig6_main.png.provenance.json").read_text(encoding="utf-8"))
     vals = prov["dai_null"]["gia_tri"]
     assert len(vals) == 18 and all(0 < v["null_lo"] < v["null_hi"] for v in vals)
+    assert not list((tmp_path / "out").glob("*_thumb.png"))  # khong --thumb -> khong anh nho
+
+
+def test_thumb_150dpi_nho_va_trong_guard(pp, tmp_path):
+    from PIL import Image
+
+    assert len(pp.outputs("x", thumb=True)) == 24
+    with pytest.raises(SystemExit) as e:  # anh nho cung bi chan neu nam trong manifest
+        pp.main(_args(tmp_path, _manifest(tmp_path, ["out/fig3_same_level_pairs_thumb.png"]), ["fig3"], thumb=True))
+    assert e.value.code == 2
+    _fake_results(pp, tmp_path / "res")
+    pp.main(_args(tmp_path, _manifest(tmp_path), ["fig3"], thumb=True))
+    p = tmp_path / "out" / "fig3_same_level_pairs_thumb.png"
+    w_mm = pp.SIZE_MM["fig3"][0]
+    assert Image.open(p).size[0] == pytest.approx(w_mm / 25.4 * 150, abs=2)
+    assert p.stat().st_size <= pp.THUMB_MAX_KB * 1024 and (tmp_path / "out" / f"{p.name}.provenance.json").is_file()
+
+
+def test_thuoc_ti_le_dung_50_km_khong_doi_khung(pp):
+    from pyproj import Geod
+
+    fig = pp._plt().figure()
+    ax = fig.add_subplot()
+    ax.set_xlim(104.3, 107.0)
+    ax.set_ylim(8.4, 11.2)
+    pp.north_scale(ax)
+    (xs, xe), (y, _) = ax.lines[0].get_data()
+    assert Geod(ellps="WGS84").inv(xs, y, xe, y)[2] == pytest.approx(50_000, rel=1e-3)
+    assert ax.get_xlim() == (104.3, 107.0) and ax.get_ylim() == (8.4, 11.2)
+    assert [t.get_text() for t in ax.texts if t.get_text()] == ["50 km", "N"]  # mui ten = Annotation chu rong
+    pp._plt().close(fig)
