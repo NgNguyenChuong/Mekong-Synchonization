@@ -21,6 +21,8 @@ Bien muc tieu (--target, Dot 7; mac dinh salinity = hanh vi cu, ten lan chay va 
 chay them "__t-<target>", truyen --target xuong train.py, khoa 'target' (meta cu thieu khoa = salinity); provenance
 bang / dap an co 'target' khac --target -> LOI som. Bang theo bien o --tables-dir rieng
 (<DATA_ROOT>/features/unified_dot7/<target>), dap an <DATA_ROOT>/labels/dot7/points_reference_<target>.csv.
+--feature-set CUNG --target: bo dat ten tru cot cam theo bien (TARGET_FORBIDDEN) -> truyen --features da tru (train.py
+van tu choi danh sach tuong minh co cot cam); run_meta ghi features_requested + features_dropped_forbidden.
 Nhom test rong co chu dich (CHG-25 muc 4): provenance bang co khai bao 'holdout_season_nan' (target khop) -> truyen
 --allow-empty-test-groups xuong train.py + khoa 'empty_test_groups_declared'; bien Dot 7 ma bang thieu provenance -> LOI
 truoc khi chay luot nao.
@@ -56,6 +58,7 @@ META_DEFAULTS = {"target": "salinity", "empty_test_groups_declared": []}
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
+from training.features import drop_target_forbidden, read_feature_list  # noqa: E402
 from training.split import MAIN_HOLDOUT_SEASON, declared_empty_groups  # noqa: E402
 
 DATA = data_path()
@@ -165,6 +168,15 @@ def table_empty_groups(table, target) -> list:
     return list(declared_empty_groups(prov, target, (MAIN_HOLDOUT_SEASON,)))
 
 
+def feature_set_lists(feat_file, target):
+    """(muc trong file, muc giu, muc bo vi cam theo bien): bo dat ten giao voi danh sach cho phep cua bien."""
+    req = read_feature_list(feat_file)
+    keep, dropped = drop_target_forbidden(req, target)
+    if not keep:
+        raise ValueError(f"{os.path.basename(feat_file)}: moi muc bi cam voi bien '{target}'")
+    return req, keep, dropped
+
+
 def is_done(meta_path, cfg_path, want: dict) -> bool:
     if not (os.path.exists(meta_path) and os.path.exists(cfg_path)):
         return False
@@ -205,12 +217,16 @@ def main(a):
     suffix = f"_{a.label_set}" if a.label_set else ""
     ref_sha = sha256(a.points_ref) if (a.points_ref and not a.no_point_eval) else None
     blocks_sha, points_sha = sha256(a.blocks), sha256(a.points)
-    feat_file, feat_sha = None, None
+    feat_file, feat_sha, feat_req, feat_keep, feat_dropped = None, None, None, None, []
     if a.feature_set:  # bo dac trung dat ten: configs/feature_sets/<ten>.txt (--features-file -> moi muc phai co)
         feat_file = os.path.join(ROOT, "configs", "feature_sets", f"{a.feature_set}.txt")
         if not os.path.exists(feat_file):
             sys.exit(f"Khong co bo dac trung {feat_file}")
         feat_sha = sha256(feat_file)
+        try:
+            feat_req, feat_keep, feat_dropped = feature_set_lists(feat_file, a.target)
+        except ValueError as exc:
+            sys.exit(f"[LOI] {exc}")
     exp_root = os.path.join(a.cwd, "artifacts", "experiments")
     if ref_sha is not None:
         v = ref_variant_of(a.points_ref)
@@ -274,8 +290,8 @@ def main(a):
                 cmd = [sys.executable, os.path.join(ROOT, "src", "training", "train.py"), "--table", table,
                        "--mode", a.mode, "--grid", grid_path, "--blocks", a.blocks, "--cv-folds", folds,
                        "--model", model, "--seeds", *map(str, a.seeds), "--experiment-name", name]
-                if feat_file:
-                    cmd += ["--features-file", feat_file]
+                if feat_file:  # train.py tu choi danh sach tuong minh co cot cam -> truyen danh sach da tru
+                    cmd += ["--features", *feat_keep] if feat_dropped else ["--features-file", feat_file]
                 if a.target != "salinity":
                     cmd += ["--target", a.target]
                 if empty_groups:
@@ -293,7 +309,8 @@ def main(a):
                 with open(os.path.join(out, "train_stdout.log"), "w", encoding="utf-8") as log:
                     rc = subprocess.run(cmd, cwd=a.cwd, stdout=log, stderr=subprocess.STDOUT,
                                         env=dict(os.environ, PYTHONIOENCODING="utf-8")).returncode
-                meta = {**row, **state, **want, "returncode": rc, "cmd": cmd, "started": started,
+                meta = {**row, **state, **want, "features_requested": feat_req,
+                        "features_dropped_forbidden": feat_dropped, "returncode": rc, "cmd": cmd, "started": started,
                         "finished": datetime.now().isoformat(timespec="seconds"), "versions": vers}
                 with open(meta_path, "w", encoding="utf-8") as f:
                     json.dump(meta, f, indent=2, ensure_ascii=False)

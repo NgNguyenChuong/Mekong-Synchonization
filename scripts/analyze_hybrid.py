@@ -16,8 +16,13 @@ CHG-22 (3 trang thai): moi oof_points phai pred_source = "oof", err huu han, kho
   moi luoi phai CUNG tap (point_id, season, unit_id) theo tung cach chia, unit_id khop don vi tinh tu vi tri diem;
   (a)/(b) va cac luoi trong cap phai cung tap don vi sau loc min_pts; mean_I khong huu han; diem thieu/NaN/ngoai
   khoang graph_lateral_km -> LOI (dung, khong ghi ket qua). Khong con giao/merge inner am tham.
+--target (Dot 7, NHAT_KY 2026-10-10; mac dinh salinity = ten file/byte cu): (a) cv1 __t-<t>, (b) __fs-khong_diem__t-<t>,
+  khong co (c); run_meta/config phai ma 0, dung target + feature_set; tag theo check_consistent (--allowed-tags); buoc 2
+  chi kiem dinh o TESTED_TIERS cua bien (Holm tren cap kiem dinh), cap khac nhan mo_ta. File trong manifest dong bang
+  -> ma 2 truoc khi doc/ghi; ra dot7_<t>_hybrid_{buoc1,buoc2,nhom_song,do_nhay_cach_chia}.csv + provenance.
 
 Chay:  venv/Scripts/python.exe scripts/analyze_hybrid.py --prefix cv1
+       Bien Dot 7: ... --target rain_chirps --allowed-tags nckh-dot7-e6a <tag (b)> --no-table
 """
 import argparse
 import os
@@ -32,23 +37,45 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from analyze_cv_family import GRIDS, area_levels, area_table, pairs_by_area  # noqa: E402
+from analyze_cv_family import (EXP_ROOT, FROZEN_MANIFESTS, GRIDS, area_levels, area_table, check_consistent,  # noqa: E402
+                                check_run, pairs_by_area, tag_info)
+from run_experiments import run_name  # noqa: E402
 from settings import data_path  # noqa: E402
 from training.block_stats import cluster_t_ci, comparison_seed, seed_mean_errors, signflip_test, unit_metrics  # noqa: E402
+from training.dot7_rules import (MO_TA, file_sha256, guard_frozen, provenance_path, tested_tiers,  # noqa: E402
+                                 write_csv_atomic, write_provenance)
 from training.evaluate import holm_adjust  # noqa: E402
 
 ALPHA = 0.05
 DMIN_FRAC = 0.25
 STRATA = [(-0.001, 2.0, "<=2 km"), (2.0, 10.0, "2-10 km"), (10.0, 1e9, ">10 km")]
+OUT_KINDS = ("buoc1", "buoc2", "nhom", "do_nhay")
+TAGS_REASON = "(a) luot day du da co (tag cu), (b) khong_diem chay sau o tag moi; so OOF cung tap (diem, mua)"
 
 
 KEYS = ["seed", "point_id", "season", "unit_id"]
 
 
-def load(exp, prefix, grid, schemes, feature_set=None):
+def out_names(target):
+    """Ten file ra theo OUT_KINDS; do man giu ten dot6 cu."""
+    if target == "salinity":
+        names = ("dot6_hybrid_buoc1.csv", "dot6_hybrid_buoc2.csv", "dot6_hybrid_theo_nhom_song.csv",
+                 "dot6_hybrid_do_nhay_cach_chia.csv")
+    else:
+        names = tuple(f"dot7_{target}_hybrid_{k}.csv" for k in ("buoc1", "buoc2", "nhom_song", "do_nhay_cach_chia"))
+    return dict(zip(OUT_KINDS, names))
+
+
+def load(exp, prefix, grid, schemes, feature_set=None, target="salinity", infos=None):
+    """oof_points HistGB cua mot luoi; infos (list) -> kiem run_meta/config tung luot va noi vao infos."""
     parts = []
     for s in schemes:
-        name = f"{prefix}__{grid}__hist_gb__s{s}" + (f"__fs-{feature_set}" if feature_set else "")
+        name = run_name(prefix, grid, "hist_gb", s, "", feature_set, target)
+        if infos is not None:
+            info = check_run(os.path.join(exp, name, "cv"), name, target, "cv")
+            if info["meta"].get("feature_set") != feature_set:
+                raise SystemExit(f"LOI: {name}: feature_set '{info['meta'].get('feature_set')}' khac '{feature_set}'")
+            infos.append(info)
         path = os.path.join(exp, name, "cv", "oof_points.csv")
         d = pd.read_csv(path, dtype={"point_id": str, "unit_id": str},
                         usecols=["point_id", "season", "err", "pred_source", "unit_id"])
@@ -130,7 +157,8 @@ def step1(imp_by_grid, tag):
     return out
 
 
-def step2(imp_by_grid, pairs, levels, s1, tag):
+def step2(imp_by_grid, pairs, levels, s1, tag, tiers=None):
+    """tiers None = do man (moi cap kiem dinh, cot nhu cu); tiers -> Holm chi tren cap thuoc tiers, cap khac mo_ta."""
     mean_I = {lv: float(s1[s1["grid"].isin(levels[levels == lv].index)]["I"].mean()) for lv in levels.unique()}
     bad = {lv: v for lv, v in mean_I.items() if not np.isfinite(v)}
     if bad:
@@ -152,10 +180,17 @@ def step2(imp_by_grid, pairs, levels, s1, tag):
                      "nguong_D": thr, "ci_tost_low": r["ci90_low"], "ci_tost_high": r["ci90_high"],
                      "tuong_duong": r.get("tuong_duong", False), "ap_dung": ap_dung})
     out = pd.DataFrame(rows)
-    out["p_holm"] = holm_adjust(out["p_value"].to_numpy())
+    kd = np.ones(len(out), bool) if tiers is None else out["muc"].isin(tiers).to_numpy()
+    out["p_holm"] = np.nan
+    if kd.any():
+        out.loc[kd, "p_holm"] = holm_adjust(out.loc[kd, "p_value"].to_numpy())
     out["nhan"] = np.where(~out["ap_dung"], "khong_ap_dung",
                            np.where(out["p_holm"] < ALPHA, "khac_co_y_nghia",
                                     np.where(out["tuong_duong"], "tuong_duong", "chua_phan_dinh")))
+    if tiers is not None:  # CHG-25: ngoai muc kiem dinh cua bien -> chi mo ta (giu D + KTC)
+        out["p_value"], out["tuong_duong"] = out["p_value"].where(kd), out["tuong_duong"].where(kd)
+        out.loc[~kd, "nhan"] = MO_TA
+        out["kiem_dinh"], out["holm_m"] = kd, int(kd.sum())
     return out
 
 
@@ -191,38 +226,57 @@ def point_lateral():
 
 
 def main(a):
-    exp = os.path.join(ROOT, "artifacts", "experiments")
+    salt = a.target == "salinity"
+    try:
+        tiers = None if salt else tested_tiers(a.target)
+    except ValueError as exc:
+        raise SystemExit(f"LOI: {exc}")
+    outs = {k: os.path.join(a.out_dir, n) for k, n in out_names(a.target).items()}
+    guard_frozen([*outs.values(), *map(provenance_path, outs.values())], a.frozen_manifest)
+    exp = a.exp_root
     at = area_table(a.area_table)
     pairs = pairs_by_area(at, max_ratio=1.2, expected_m=12)
     levels = area_levels(at, pairs=pairs)
     lat = point_lateral()
     pu = _point_unit()
-    fulls = {g: load(exp, a.prefix, g, a.schemes) for g in GRIDS}
+    infos = None if salt else []
+    fulls = {g: load(exp, a.prefix, g, a.schemes, None, a.target, infos) for g in GRIDS}
     ref = assert_same_keys({f"(a) {g}": fulls[g] for g in GRIDS}, pu)
     print(f"(diem, mua) moi cach chia: {len(ref) // len(a.schemes)}; cach chia {a.schemes}", flush=True)
     res1, res2, strata, sens = [], [], [], []
-    for fs in ("khong_diem", "zos_vung"):
-        abls = {g: load(exp, a.prefix, g, a.schemes, fs) for g in GRIDS}
+    for fs in ("khong_diem", "zos_vung") if salt else ("khong_diem",):
+        abls = {g: load(exp, a.prefix, g, a.schemes, fs, a.target, infos) for g in GRIDS}
         assert_same_keys({"(a)": fulls[GRIDS[0]], **{f"({fs}) {g}": abls[g] for g in GRIDS}})
         imp = {g: unit_improvement(fulls[g], abls[g], pu) for g in GRIDS}
         s1 = step1(imp, fs)
         res1.append(s1)
-        res2.append(step2(imp, pairs, levels, s1, fs))
+        res2.append(step2(imp, pairs, levels, s1, fs, tiers))
         strata.append(strata_table(pd.concat(fulls.values()), pd.concat(abls.values()), lat, fs))
         for s in a.schemes:  # quy tac D
             imp_s = {g: unit_improvement(fulls[g][fulls[g]["seed"] == s], abls[g][abls[g]["seed"] == s], pu)
                      for g in GRIDS}
             s1s = step1(imp_s, f"{fs}|s{s}")
             sens.append(s1s.assign(scheme=s))
-            sens.append(step2(imp_s, pairs, levels, s1s, f"{fs}|s{s}").assign(scheme=s))
+            sens.append(step2(imp_s, pairs, levels, s1s, f"{fs}|s{s}", tiers).assign(scheme=s))
+    same = None if salt else check_consistent(infos, a.allowed_tags)
     os.makedirs(a.out_dir, exist_ok=True)
-    pd.concat(res1).to_csv(os.path.join(a.out_dir, "dot6_hybrid_buoc1.csv"), index=False)
-    pd.concat(res2).to_csv(os.path.join(a.out_dir, "dot6_hybrid_buoc2.csv"), index=False)
-    pd.concat(strata).to_csv(os.path.join(a.out_dir, "dot6_hybrid_theo_nhom_song.csv"), index=False)
-    pd.concat(sens).to_csv(os.path.join(a.out_dir, "dot6_hybrid_do_nhay_cach_chia.csv"), index=False)
-    with pd.option_context("display.width", 220, "display.max_columns", 20):
-        print(pd.concat(res1).round(4).to_string(index=False))
-        print(pd.concat(res2).round(4).to_string(index=False))
+    for k, parts in zip(OUT_KINDS, (res1, res2, strata, sens)):
+        write_csv_atomic(pd.concat(parts), outs[k])
+        if not salt:  # do man: giu dung bo file cu (khong sidecar)
+            write_provenance(outs[k], target=a.target, prefix=a.prefix, schemes=list(a.schemes), grids=list(GRIDS),
+                             cau_hinh=["khong_diem"], muc_kiem_dinh=sorted(int(t) for t in tiers),
+                             holm_m_buoc1=len(GRIDS), holm_m_buoc2=int(pairs["grid_a"].map(levels).isin(tiers).sum()),
+                             git_tag=same["git_tag"], points_ref_sha256=same["points_ref_sha256"], n_luot=len(infos),
+                             features_sha256_b=sorted({str(i["meta"].get("features_sha256")) for i in infos
+                                                       if i["meta"].get("feature_set")}),
+                             area_table=os.path.abspath(a.area_table).replace("\\", "/"),
+                             area_table_sha256=file_sha256(a.area_table),
+                             **tag_info(same, a.allowed_tags, a.tags_reason))
+    print(f"Ghi: {list(outs.values())}", flush=True)
+    if not a.no_table:
+        with pd.option_context("display.width", 220, "display.max_columns", 20):
+            print(pd.concat(res1).round(4).to_string(index=False))
+            print(pd.concat(res2).round(4).to_string(index=False))
 
 
 def _point_unit():
@@ -239,7 +293,13 @@ def _point_unit():
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--prefix", default="cv1")
+    ap.add_argument("--target", default="salinity", help="salinity (mac dinh, file dot6 cu) | ndwi | rain_chirps | ...")
     ap.add_argument("--schemes", nargs="+", type=int, default=[42, 43, 44])
     ap.add_argument("--area-table", default=os.path.join(ROOT, "KE_HOACH", "ket-qua", "dot4_doi_chieu_dien_tich.csv"))
     ap.add_argument("--out-dir", default=os.path.join(ROOT, "KE_HOACH", "ket-qua"))
+    ap.add_argument("--exp-root", default=EXP_ROOT)
+    ap.add_argument("--frozen-manifest", nargs="+", default=FROZEN_MANIFESTS)
+    ap.add_argument("--allowed-tags", nargs="+", default=None, help="cho phep nhieu git_tag (bien Dot 7: (a) + (b))")
+    ap.add_argument("--tags-reason", default=TAGS_REASON)
+    ap.add_argument("--no-table", action="store_true", help="khong in bang so ra stdout")
     main(ap.parse_args())

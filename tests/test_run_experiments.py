@@ -277,3 +277,44 @@ def test_dot7_runner_dap_an_target_lech_dung_som(setup):
     p = _run(tmp, "--allow-untagged", "--allow-dirty", "--target", "rain_chirps")
     assert p.returncode != 0 and "target" in (p.stdout + p.stderr)
     assert not (tmp / "artifacts" / "experiments" / "t__h3_res_5__linear__s42__t-rain_chirps").exists()
+
+
+def test_feature_set_tru_cot_cam_theo_bien():
+    """khong_diem (b) = file tru TARGET_FORBIDDEN cua bien; do man / ndwi khong bo muc nao."""
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import run_experiments as rx
+
+    ff = os.path.join(ROOT, "configs", "feature_sets", "khong_diem.txt")
+    temps = ["temp_c", "temp_max_c", "temp_min_c", "rh_percent"]
+    for t, drop in (("salinity", []), ("ndwi", []), ("rain_chirps", ["rain_mm"]), ("dsr_mcd18", ["solar"]),
+                    ("t2m_era5", temps), ("rh_era5", temps)):
+        req, keep, dropped = rx.feature_set_lists(ff, t)
+        assert dropped == drop and keep == [e for e in req if e not in drop] and len(req) == 11
+
+
+@need_real
+def test_runner_feature_set_cung_target_tru_cot_cam(setup):
+    """--feature-set khong_diem --target rain_chirps: truoc day train.py loi (rain_mm cam); nay truyen --features da
+    tru, config khong co rain_mm (18 dac trung), run_meta ghi features_requested / features_dropped_forbidden."""
+    tmp = setup
+    rng = np.random.default_rng(7)
+    t = pd.read_csv(tmp / "tables" / "h3_res_5_unified.csv")
+    t["rain_chirps"] = t["rain_mm"] + rng.normal(0, 0.1, len(t))
+    t.to_csv(tmp / "tables" / "h3_res_5_unified.csv", index=False)
+    with open(tmp / "tables" / "h3_res_5_unified.csv.provenance.json", "w", encoding="utf-8") as f:
+        json.dump({"target": "rain_chirps", "label_set": "chinh"}, f)
+    ref = pd.read_csv(tmp / "ref.csv")[["point_id", "season"]]
+    ref["ref_rain_chirps"], ref["src_px_valid"] = rng.uniform(0, 1, len(ref)), True
+    ref.to_csv(tmp / "ref.csv", index=False)
+    with open(tmp / "ref.csv.provenance.json", "w", encoding="utf-8") as f:
+        json.dump({"target": "rain_chirps", "variant": "main", "ref_rule_kind": "pixel"}, f)
+    p = _run(tmp, "--allow-untagged", "--allow-dirty", "--feature-set", "khong_diem", "--models", "linear",
+             "--target", "rain_chirps")
+    assert p.returncode == 0, p.stdout + p.stderr
+    out = tmp / "artifacts" / "experiments" / "t__h3_res_5__linear__s42__fs-khong_diem__t-rain_chirps" / "cv"
+    cfg = json.loads((out / "config.json").read_text(encoding="utf-8"))
+    assert "rain_mm" not in cfg["features"] and len(cfg["features"]) == 18
+    meta = json.loads((out / "run_meta.json").read_text(encoding="utf-8"))
+    assert meta["features_dropped_forbidden"] == ["rain_mm"] and "rain_mm" in meta["features_requested"]
+    assert "--features-file" not in meta["cmd"] and "rain_mm" not in meta["cmd"]
+    assert meta["feature_set"] == "khong_diem" and len(meta["features_sha256"]) == 64
