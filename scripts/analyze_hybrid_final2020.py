@@ -70,7 +70,7 @@ def analyze(target, exp_root, allowed):
         n = float(w.sum())
         for comp, (x, y) in COMP.items():
             dvec = (mae_b[x] - mae_b[y]).values
-            r = signflip_test(dvec, w.values)
+            r = signflip_test(dvec, w.values, seed=42)  # G > 20 -> Monte Carlo
             mae_all = {c: float((errs[c]).mean()) for c in errs}
             rows.append({"target": target, "thanh_phan": comp, "grid": grid, "G": r["G"], "n_diem_mua": int(n),
                          "mae_a": mae_all["a"], "mae_b": mae_all["b"], "mae_c": mae_all["c"],
