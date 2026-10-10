@@ -264,3 +264,83 @@ def test_do_man_giu_byte_nhu_ban_cu(mod, tmp_path, monkeypatch):
     assert sorted(os.listdir(tmp_path / "out_moi")) == sorted(names)   # khong sidecar, khong file moi
     for n in names:
         assert (tmp_path / "out_moi" / n).read_bytes() == (tmp_path / "out_cu" / n).read_bytes(), n
+
+
+# ---------------- --bmua (CHG-26): tach I thanh phan mua / khong gian ----------------
+BMUA_TAGS = ["t-a", "t-b", "t-c"]
+
+
+def _write_bmua_runs(exp, target, mags=None, mutate_meta=None):
+    """(a) / (b) khong_diem / (c) b_mua; mags = (|err| a, b, c) hang so -> MAE biet truoc; None -> err ngau nhien."""
+    rng = np.random.default_rng(3)
+    for g in G4:
+        for s in SEEDS:
+            for k, (fs, shift, tag) in enumerate(zip((None, "khong_diem", "b_mua"), (0.0, 0.3, 0.1), BMUA_TAGS)):
+                name = _name(g, s, fs, target)
+                d = exp / name / "cv"
+                d.mkdir(parents=True)
+                o = _oof(rng, shift)
+                if mags is not None:
+                    o["err"] = np.where(o["err"] >= 0, 1.0, -1.0) * mags[k]
+                o.to_csv(d / "oof_points.csv", index=False)
+                meta = {"returncode": 0, "mode": "cv", "target": target, "feature_set": fs, "git_tag": tag,
+                        "points_ref_sha256": "ref1", "features_sha256": f"f-{fs}" if fs else None,
+                        "table_sha256": f"tb-{fs}"}
+                if mutate_meta is not None:
+                    meta = mutate_meta(name, meta)
+                (d / "run_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+                (d / "config.json").write_text(json.dumps({"target": target}), encoding="utf-8")
+
+
+def test_bmua_gia_tri_biet_truoc_va_provenance(mod, tmp_path, monkeypatch):
+    _patch(mod, monkeypatch)
+    _write_bmua_runs(tmp_path / "artifacts" / "experiments", "rain_chirps", mags=(1.0, 2.0, 1.5))
+    mod.main(_args(tmp_path, "rain_chirps", bmua=True, allowed_tags=BMUA_TAGS))
+    out = tmp_path / "out"
+    assert sorted(os.listdir(out)) == ["dot7_rain_chirps_hybrid_tach_mua.csv",
+                                       "dot7_rain_chirps_hybrid_tach_mua.csv.provenance.json"]  # khong ghi 4 file cu
+    r = pd.read_csv(out / "dot7_rain_chirps_hybrid_tach_mua.csv")
+    assert len(r) == 2 * len(G4) and set(r["thanh_phan"]) == {"khong_gian", "mua"}
+    assert np.allclose(r["I"], 0.5) and np.allclose(r["mae_b"], 2.0) and np.allclose(r["I_tuong_doi"], 0.25)
+    assert (r["p_holm"] < 0.05).all() and r["vung_D"].all() and set(r["nhan"]) == {"vung_D"}
+    assert {f"I_s{s}" for s in SEEDS} <= set(r.columns) and {f"p_holm_s{s}" for s in SEEDS} <= set(r.columns)
+    prov = json.loads((out / "dot7_rain_chirps_hybrid_tach_mua.csv.provenance.json").read_text(encoding="utf-8"))
+    assert prov["chg"] == "CHG-26" and prov["holm_m"] == len(G4) and prov["n_luot"] == 3 * len(G4) * len(SEEDS)
+    assert prov["features_sha256"] == {"khong_diem": ["f-khong_diem"], "b_mua": ["f-b_mua"]}
+    assert prov["table_sha256_c"] == ["tb-b_mua"] and prov["git_tags_seen"] == sorted(BMUA_TAGS)
+    assert prov["cong_thuc"]["I_mua"] == "MAE(b) - MAE(c)"
+
+
+def test_bmua_do_man_mo_ta_tong_hai_phan_bang_I(mod, tmp_path, monkeypatch):
+    _patch(mod, monkeypatch)
+    exp = tmp_path / "artifacts" / "experiments"
+    _write_bmua_runs(exp, "salinity")
+    mod.main(_args(tmp_path, "salinity", bmua=True, allowed_tags=BMUA_TAGS))
+    assert os.listdir(tmp_path / "out") == ["dot7_salinity_hybrid_tach_mua.csv",
+                                            "dot7_salinity_hybrid_tach_mua.csv.provenance.json"]  # khong dot6_*
+    r = pd.read_csv(tmp_path / "out" / "dot7_salinity_hybrid_tach_mua.csv")
+    assert set(r["nhan"]) == {"mo_ta"} and r["p_holm"].isna().all() and r["vung_D"].isna().all()
+    assert np.isfinite(r[["I", "ci90_low", "ci90_high", "I_tuong_doi"]].to_numpy()).all()
+    # I_khong_gian + I_mua = MAE(b) - MAE(a) (cung trong so don vi)
+    full = {g: mod.load(str(exp), "cv1", g, SEEDS) for g in G4}
+    abl = {g: mod.load(str(exp), "cv1", g, SEEDS, "khong_diem") for g in G4}
+    tot = mod.step1({g: mod.unit_improvement(full[g], abl[g], _pu()) for g in G4}, "tong").set_index("grid")["I"]
+    s = r.groupby("grid")["I"].sum()
+    assert np.allclose(s[G4].to_numpy(), tot[G4].to_numpy())
+
+
+def test_bmua_dong_bang_va_meta_sai_la_loi(mod, tmp_path, monkeypatch):
+    _patch(mod, monkeypatch)
+    _write_bmua_runs(tmp_path / "artifacts" / "experiments", "ndwi")
+    with pytest.raises(SystemExit) as e:
+        mod.main(_args(tmp_path, "ndwi", bmua=True, allowed_tags=BMUA_TAGS,
+                       frozen_files=("out/dot7_ndwi_hybrid_tach_mua.csv",)))
+    assert e.value.code == 2 and not (tmp_path / "out").exists()
+    with pytest.raises(SystemExit, match="git_tag"):  # thieu tag (c) trong --allowed-tags
+        mod.main(_args(tmp_path, "ndwi", bmua=True, allowed_tags=BMUA_TAGS[:2]))
+    bad = tmp_path / "bad"
+    _write_bmua_runs(bad / "artifacts" / "experiments", "ndwi", mutate_meta=lambda n, m: (
+        {**m, "feature_set": "khong_diem"} if n == _name("g3", 42, "b_mua", "ndwi") else m))
+    with pytest.raises(SystemExit, match="feature_set"):
+        mod.main(_args(bad, "ndwi", bmua=True, allowed_tags=BMUA_TAGS))
+    assert not (bad / "out").exists()

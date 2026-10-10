@@ -117,7 +117,7 @@ def _fake_results(pp, res):
 
 
 def test_file_ra_du(pp, tmp_path):
-    assert len(pp.outputs("x")) == 20 and {os.path.basename(p) for p in pp.outputs("x")} >= {
+    assert len(pp.outputs("x")) == 22 and {os.path.basename(p) for p in pp.outputs("x")} >= {
         "fig1_study_design.pdf", "fig5_positive_control.pdf", "fig6_main.png", "figS1_model_frame.pdf",
         "figS2_model_frame_mlp.png", "figS3_positive_control_uniform.png", "tableS1_oracle.csv", "tableS1_oracle.md"}
     _fake_results(pp, tmp_path / "res")
@@ -138,7 +138,7 @@ def test_file_ra_du(pp, tmp_path):
 def test_thumb_150dpi_nho_va_trong_guard(pp, tmp_path):
     from PIL import Image
 
-    assert len(pp.outputs("x", thumb=True)) == 29
+    assert len(pp.outputs("x", thumb=True)) == 32
     with pytest.raises(SystemExit) as e:  # anh nho cung bi chan neu nam trong manifest
         pp.main(_args(tmp_path, _manifest(tmp_path, ["out/fig3_same_level_pairs_thumb.png"]), ["fig3"], thumb=True))
     assert e.value.code == 2
@@ -191,3 +191,38 @@ def test_bang_s1_oracle(pp, tmp_path):
     prov = json.loads((tmp_path / "out" / "tableS1_oracle.csv.provenance.json").read_text(encoding="utf-8"))
     assert prov["vai_tro"] == "bang_bai_bao" and prov["chu_thich_en"] and "dot7_oracle_cap.csv" in "".join(
         prov["sha_dau_vao"])
+
+
+def _tach_mua(res, t, n=13):
+    g = [f"g{i}" for i in range(n)]
+    pd.DataFrame({"thanh_phan": ["khong_gian"] * n + ["mua"] * n, "grid": g + g,
+                  "I_tuong_doi": np.r_[np.linspace(0.01, 0.13, n), np.linspace(0.20, 0.32, n)],
+                  "vung_D": [True] * 3 + [False] * (n - 3) + [True] * n}).to_csv(
+        res / f"dot7_{t}_hybrid_tach_mua.csv", index=False)
+
+
+def test_figS4_trung_vi_min_max_va_bien_thieu(pp, tmp_path):
+    res = tmp_path / "res"
+    res.mkdir()
+    _area().to_csv(res / pp.AREA_FILE, index=False)
+    for t in ("salinity", "rain_chirps"):
+        _tach_mua(res, t)
+    st = {"notes": [], "used": []}
+    fig = pp.fig_s4(str(res), st)
+    ax = fig.axes[0]
+    for m, med, lo, hi in (("s", 7.0, 1.0, 13.0), ("o", 26.0, 20.0, 32.0)):  # khong gian = vuong, mua = tron
+        pts = [ln for ln in ax.lines if ln.get_marker() == m]
+        assert len(pts) == 2 and all(ln.get_ydata()[0] == pytest.approx(med) for ln in pts)
+    rng = [ln for ln in ax.lines if len(ln.get_ydata()) == 2 and ln.get_ydata()[0] != ln.get_ydata()[1]]  # bo duong 0
+    assert sorted({tuple(np.round(ln.get_ydata(), 6)) for ln in rng}) == [(1.0, 13.0), (20.0, 32.0)]
+    labels = [t.get_text() for t in ax.get_xticklabels()]
+    assert len(labels) == 2 and labels[0].endswith("†") and "†" not in labels[1]
+    assert "rain_chirps khong_gian: vững D 3/13" in st["notes"] and not any(n.startswith("salinity ") for n in st["notes"])
+    assert sum("không có" in n for n in st["notes"]) == 4  # 4 bien chua co file -> bo, khong loi
+    pp._plt().close(fig)
+    pp.main(_args(tmp_path, _manifest(tmp_path), ["figS4"]))
+    prov = json.loads((tmp_path / "out" / "figS4_hybrid_season_split.pdf.provenance.json").read_text(encoding="utf-8"))
+    assert "I_season" in prov["chu_thich_en"] and len(prov["sha_dau_vao"]) == 3 and prov["kich_thuoc_mm"] == [140, 75]
+    _tach_mua(res, "ndwi", n=12)
+    with pytest.raises(SystemExit, match="13 luoi"):
+        pp.fig_s4(str(res), {"notes": [], "used": []})

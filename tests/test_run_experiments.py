@@ -292,6 +292,26 @@ def test_feature_set_tru_cot_cam_theo_bien():
         assert dropped == drop and keep == [e for e in req if e not in drop] and len(req) == 11
 
 
+def test_b_mua_bang_khong_diem_cong_3():
+    """(c) b_mua = (b) + tch_wl_p20c, zos_mua_mean, sluice_flag; dem cot that sau khi giai tien to landcover."""
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import run_experiments as rx
+    from training.features import find_leak_columns, find_target_leak_columns, resolve_feature_list
+
+    fs = os.path.join(ROOT, "configs", "feature_sets")
+    lc = [f"landcover_class_{c}" for c in ("Trees", "Shrubland", "Grassland", "Cropland", "Built_up", "Bareland",
+                                            "Water", "Wetland", "Mangroves")]
+    new, old = ["tch_wl_p20c", "zos_mua_mean", "sluice_flag"], ["dist_mouth_river_km", "zos_mouth_p90", "sluice_frac"]
+    cols = ["rain_mm", "solar", "temp_c", "temp_max_c", "temp_min_c", "rh_percent", "dem_mean", "dist_main_river_km",
+            "dist_any_water_km", "dist_coast_km", *lc, *old, *new]
+    for t, n in (("salinity", 22), ("ndwi", 22), ("rain_chirps", 21), ("dsr_mcd18", 21), ("t2m_era5", 18),
+                 ("rh_era5", 18)):
+        kb = resolve_feature_list(cols, rx.feature_set_lists(os.path.join(fs, "khong_diem.txt"), t)[1])[0]
+        kc = resolve_feature_list(cols, rx.feature_set_lists(os.path.join(fs, "b_mua.txt"), t)[1])[0]
+        assert len(kc) == n == len(kb) + 3 and set(kc) - set(kb) == set(new) and not set(old) & set(kc), t
+        assert not find_leak_columns(new) and not find_target_leak_columns(new, t)
+
+
 @need_real
 def test_runner_feature_set_cung_target_tru_cot_cam(setup):
     """--feature-set khong_diem --target rain_chirps: truoc day train.py loi (rain_mm cam); nay truyen --features da

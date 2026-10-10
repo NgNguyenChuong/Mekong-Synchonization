@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Hinh bai bao (Fig 1-6, S1-S3) + Bang S1 theo KE_HOACH/quy_uoc_hinh.md: tieng Anh, Okabe-Ito, PDF + PNG 600 dpi.
+"""Hinh bai bao (Fig 1-6, S1-S4) + Bang S1 theo KE_HOACH/quy_uoc_hinh.md: tieng Anh, Okabe-Ito, PDF + PNG 600 dpi.
 Chi doc ket qua da mo; ngoai le duy nhat: dai null Fig 6 mo phong tu se cua cap F1 HistGB.
 
 Chay:  venv/Scripts/python.exe scripts/plot_paper_figures.py [--only fig5 figS3 tableS1] [--thumb]
@@ -64,11 +64,14 @@ N_NULL, NULL_SEED = 200_000, 42
 DMIN = r"Δ$_\mathregular{min}$"
 FIGS = {"fig1": "fig1_study_design", "fig2": "fig2_skill_gate", "fig3": "fig3_same_level_pairs",
         "fig4": "fig4_blocks_100km", "fig5": "fig5_positive_control", "fig6": "fig6_main",
-        "figS1": "figS1_model_frame", "figS2": "figS2_model_frame_mlp", "figS3": "figS3_positive_control_uniform"}
+        "figS1": "figS1_model_frame", "figS2": "figS2_model_frame_mlp", "figS3": "figS3_positive_control_uniform",
+        "figS4": "figS4_hybrid_season_split"}
 TABLES = {"tableS1": "tableS1_oracle"}
 PC_KIND = {"fig5": "lognormal", "figS3": "deu"}
 SIZE_MM = {"fig1": (190, 120), "fig2": (140, 72), "fig3": (190, 170), "fig4": (190, 90), "fig5": (90, 70),
-           "fig6": (140, 80), "figS1": (190, 130), "figS2": (190, 120), "figS3": (90, 70)}
+           "fig6": (140, 80), "figS1": (190, 130), "figS2": (190, 120), "figS3": (90, 70), "figS4": (140, 75)}
+SPLIT_STYLE = {"mua": (r"Season-level part (I$_\mathregular{season}$)", "o", "#E69F00"),
+               "khong_gian": (r"Spatial part (I$_\mathregular{spatial}$)", "s", "#0072B2")}
 NULL_METHOD = (f"For each variable x level, Delta_i ~ N(0, se_i) independently for the {{3 or 6}} same-level HistGB "
                f"pairs (se from the block sign-flip analysis), {N_NULL} draws, seed {NULL_SEED}; band = 2.5-97.5 % "
                f"quantiles of max_i |Delta_i| / Delta_min. Ignores correlation between pairs sharing a grid.")
@@ -106,6 +109,13 @@ CAPTIONS = {
              "(b) Interaction I = ΔMAE_RF − ΔMAE_HistGB in units of the HistGB Δmin; thick bar = 90 % CI, thin bar "
              "= 95 % CI (not adjusted for multiplicity); grey band = ±Δmin.",
 }
+CAPTIONS["figS4"] = (
+    "Season–space split of the hybrid improvement (HistGB, spatial block cross-validation with 50 km blocks, mean of "
+    "3 partitions). (a) all features; (b) without the four hydrological features (Tân Châu water level, distance to "
+    "river mouth, mouth sea level, sluice fraction); (c) = (b) + their season-level part only (Tân Châu water level, "
+    "delta-mean mouth sea level per season, sluice-period flag). I_season = MAE(b) − MAE(c); I_spatial = MAE(c) − "
+    "MAE(a); both as % of MAE(b), so I_season + I_spatial = total hybrid improvement. Marker = median over the 13 "
+    "grids, bar = min–max. † Descriptive only (no test).")
 CAPTIONS["figS2"] = CAPTIONS["figS1"].replace("RF vs HistGB", "MLP vs HistGB").replace("ΔMAE_RF", "ΔMAE_MLP")
 CAPTIONS["figS3"] = (CAPTIONS["fig5"].replace("log-normal injection", "uniform injection")
                      .replace("Uniform injection: Fig. S3", "Log-normal injection: Fig. 5"))
@@ -741,6 +751,41 @@ def fig_pc(res, st, key):
     return fig
 
 
+def fig_s4(res, st):
+    """Tach hybrid (CHG-26): moi bien 2 ky hieu = trung vi 13 luoi cua I / MAE(b) (%), thanh = min-max."""
+    plt = _plt()
+    fig, ax = plt.subplots(figsize=(SIZE_MM["figS4"][0] * MM, SIZE_MM["figS4"][1] * MM), layout="constrained")
+    ax.axhline(0, color=INK, lw=0.5)
+    ts = []
+    for t in ORDER:
+        d = read_cols(os.path.join(res, f"dot7_{t}_hybrid_tach_mua.csv"),
+                      ["thanh_phan", "grid", "I_tuong_doi", "vung_D"], st, t)
+        if d is None:
+            continue
+        n = d.groupby("thanh_phan")["grid"].nunique()
+        if set(n.index) != set(SPLIT_STYLE) or (n != 13).any() or d.duplicated(["thanh_phan", "grid"]).any():
+            loi(f"{t}: tach_mua can 13 luoi x 2 thanh phan, thay {n.to_dict()}")
+        x = len(ts)
+        ts.append(t)
+        for k, (comp, (lab, m, c)) in enumerate(SPLIT_STYLE.items()):
+            g = d[d["thanh_phan"] == comp]
+            v, xx = 100 * g["I_tuong_doi"], x + (k - 0.5) * 0.3
+            ax.plot([xx, xx], [v.min(), v.max()], color=c, lw=0.9, solid_capstyle="butt")
+            ax.plot(xx, v.median(), ls="", marker=m, ms=4.5, mfc=c, mec=INK, mew=0.5, zorder=4)
+            if t != "salinity":
+                st["notes"].append(f"{t} {comp}: vững D {int(_bool(g['vung_D']).sum())}/13")
+    if not ts:
+        empty(ax)
+    ax.set_xticks(range(len(ts)))
+    ax.set_xticklabels([VAR[t].replace(" (", "\n(").replace(", ref", ",\nref") + ("†" if t == "salinity" else "")
+                        for t in ts])
+    ax.set_xlim(-0.6, max(len(ts), 1) - 0.4)
+    ax.set_ylabel("I / MAE(b) (%)")
+    fig.legend(handles=[mk(lab, m, c, INK, ms=4.5, ls="-", lw=0.9, color=c) for lab, m, c in SPLIT_STYLE.values()],
+               loc="outside upper center", ncol=2)
+    return fig
+
+
 def table_s1(res, levels, st) -> pd.DataFrame:
     """|Delta oracle| / Delta_min HistGB muc min: hang = bien, cot = cap min; bien khong co cap min -> not available."""
     f1 = f1_pairs(res, levels, st)
@@ -894,6 +939,8 @@ def build(key, res, levels, st, a, info):
         return fig_pc(res, st, key)
     if key == "tableS1":
         return table_s1(res, levels, st)
+    if key == "figS4":
+        return fig_s4(res, st)
     return {"fig2": fig2, "fig3": fig3, "fig4": fig4}[key](res, levels, st)
 
 
