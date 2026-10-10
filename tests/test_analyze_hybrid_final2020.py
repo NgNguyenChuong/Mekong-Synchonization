@@ -16,7 +16,7 @@ def _write_run(root, grid, fs, shift, rng):
     os.makedirs(d)
     n = 200
     pts = pd.DataFrame({"point_id": [f"p{i}" for i in range(n)], "season": 2020,
-                        "block_id": [f"b{i % 16}" for i in range(n)]  # 16 khoi: p toi thieu 2/65536, qua duoc Holm 13, "test_group": "thoi_gian",
+                        "block_id": [f"b{i % 16}" for i in range(n)], "test_group": "thoi_gian",  # 16 khoi: p min 2/65536 qua duoc Holm 13
                         "err": rng.normal(0, 1, n) + shift})
     pd.concat([pts, pts.assign(test_group="khong_gian", season=2019)]).to_csv(os.path.join(d, "final_points.csv"), index=False)
     json.dump({"returncode": 0, "mode": "final", "git_tag": "t1"}, open(os.path.join(d, "run_meta.json"), "w"))
