@@ -72,3 +72,54 @@ def test_quy_tac_d_khong_vung():
     per[43] = per[43].assign(label="chua_phan_dinh")  # mot cach chia khong giu -> khong vung
     res = m.apply_rule_d(main, per)
     assert res.loc[res["label"] != "chua_phan_dinh", "ket_luan_D"].eq("khong_vung_theo_cach_chia").all()
+
+
+def _schemes(seed=1, shift_sy=0.3):
+    err, unit, cv = _err(np.random.default_rng(seed), shift_sy=shift_sy)
+    main = m.compare_scheme(err, unit, cv, [], "hist_gb", 0.05, 0.05)
+    per = {s: m.compare_scheme(err[err.seed == s], unit, cv, [], "hist_gb", 0.05, 0.05) for s in (42, 43, 44)}
+    return err, main, per
+
+
+def test_delta_ref_la_mae_goc_doc_lap():
+    err, unit, cv = _err(np.random.default_rng(2), shift_sy=3.0)  # sy sai so lon: doi mau so sang sy/TB se lech
+    out = m.compare_scheme(err, unit, cv, [], "hist_gb", 0.05, 0.05)
+    for edge in m.EDGES:
+        mae = err.loc[err.grid == f"square_utm_{edge}m", "err"].abs().mean()
+        assert np.allclose(out.loc[out.edge_m == edge, "delta_ref"], mae)
+
+
+def test_dau_delta_khac_giua_cach_chia_khong_vung():
+    _, main, per = _schemes()
+    per[43] = per[43].assign(delta_hat=-per[43]["delta_hat"])  # nhan giu nguyen, dau dao
+    res = m.apply_rule_d(main, per)
+    assert res.loc[main.variant == "sy", "ket_luan_D"].eq("khong_vung_theo_cach_chia").all()
+    assert res.loc[main.variant == "sx", "ket_luan_D"].eq("tuong_duong").all()
+
+
+def test_p_holm_ge_p_value():
+    out = _schemes()[1]
+    assert (out["p_holm"] >= out["p_value"]).all() and (out["p_holm"] > out["p_value"]).any()
+
+
+def test_e_pha_e_khung():
+    res = pd.DataFrame({"muc": [5, 5, 6, 6], "delta_hat": [-0.02, 0.04, 0.01, 0.01], "delta_min_thr": [0.1] * 4})
+    f1 = pd.DataFrame({"family": ["F1_chinh"] * 3 + ["do_nhay_chi_s42"], "delta_ref_level": [5, 5, 6, 5],
+                       "delta_hat": [0.03, -0.05, 0.02, 9.0], "delta_min_thr": [0.1] * 4})
+    out = m.add_e_criteria(res, f1)
+    e5, e6 = out[out.muc == 5].iloc[0], out[out.muc == 6].iloc[0]
+    assert np.isclose(e5.E_pha, 0.4) and np.isclose(e5.E_khung, 0.5) and e5.pha_le_khung
+    assert np.isclose(e6.E_pha, 0.1) and np.isclose(e6.E_khung, 0.2)
+    f1.loc[2, "delta_hat"] = 0.005  # khung muc 6 nho hon pha
+    assert not m.add_e_criteria(res, f1).query("muc == 6")["pha_le_khung"].any()
+
+
+def test_muc_truot_cong_mo_ta():
+    _, main, per = _schemes()
+    res = m.apply_rule_d(main, per)
+    g = m.apply_gate_pha(res, {5: True, 6: False, 7: True})
+    bad, ok = g[g.muc == m.MUC[6458]], g[g.muc != m.MUC[6458]]
+    assert bad[["label", "ket_luan_D", "nhan_s42"]].eq("mo_ta").all().all()
+    assert bad[["p_value", "p_holm", "tost_tuong_duong"]].isna().all().all()
+    assert ok["label"].eq(res.loc[ok.index, "label"]).all() and ok["p_holm"].notna().all()
+    assert m.apply_gate_pha(res, None)["label"].eq(res["label"]).all()
