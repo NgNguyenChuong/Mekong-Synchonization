@@ -206,20 +206,22 @@ def generate_s2_grid(boundary_path=None, level=11, output_path=None) -> gpd.GeoD
     return _write(gdf, output_path)
 
 
-def generate_square_grid(boundary_path=None, resolution_m=6458, output_path=None) -> gpd.GeoDataFrame:
-    """O vuong trong EPSG:32648, goc neo o boi so cua resolution_m theo toa do UTM."""
+def generate_square_grid(boundary_path=None, resolution_m=6458, output_path=None,
+                         shift_x_m=0.0, shift_y_m=0.0) -> gpd.GeoDataFrame:
+    """O vuong trong EPSG:32648, goc neo o boi so cua resolution_m theo toa do UTM (+ dich goc shift_x_m/shift_y_m)."""
     boundary_path = _resolve_boundary_path(boundary_path)
     union_poly = _load_union(boundary_path, CRS_METRIC)
 
     minx, miny, maxx, maxy = union_poly.bounds
     size = float(resolution_m)
-    xs = np.arange(np.floor(minx / size) * size, maxx + size, size)
-    ys = np.arange(np.floor(miny / size) * size, maxy + size, size)
+    # lui 1 o de luoi dich van phu het ranh gioi
+    xs = np.arange(np.floor(minx / size) * size - size * (shift_x_m > 0) + shift_x_m, maxx + size, size)
+    ys = np.arange(np.floor(miny / size) * size - size * (shift_y_m > 0) + shift_y_m, maxy + size, size)
 
     ids, geoms_utm = [], []
     for x in xs:
         for y in ys:
-            ids.append(f"sq_{resolution_m}m_{int(x)}_{int(y)}")
+            ids.append(f"sq_{resolution_m}m_{int(round(x))}_{int(round(y))}")
             geoms_utm.append(box(x, y, x + size, y + size))
     cell_ids, geoms_utm, fracs = _select_intersecting(ids, geoms_utm, union_poly, cell_area=size * size)
 

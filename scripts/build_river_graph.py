@@ -15,6 +15,7 @@ Buoc 2 (bo qua neu --lists-only):
 Moi dau ra kem .provenance.json.
 
 Chay:  venv/Scripts/python.exe scripts/build_river_graph.py [--lists-only] [--grids h3_res_7 ...]
+       ... --tables-only --grids <luoi> --stack-dir <DATA_ROOT>/features/hybrid --out-dir <dir ra>   # chi bang theo o
 """
 import argparse
 import glob
@@ -269,7 +270,18 @@ def cell_tables(stack, grids, static_dir, out_dir, years, prov):
     return pd.DataFrame(rows)
 
 
+def tables_only(a):
+    """Chi tinh bang hybrid theo o tu stack da co (luoi moi); khong ghi lai do thi/stack/danh sach."""
+    stack = os.path.join(a.stack_dir or a.out_dir, "hybrid_scope_30m.tif")
+    prov = dict(rule="CHG-16 (tables-only, stack co san)", stack_sha256=file_sha256(stack))
+    os.makedirs(a.out_dir, exist_ok=True)
+    grids = [os.path.join(a.grids_dir, f"{g}.geojson") for g in a.grids]
+    print(cell_tables(stack, grids, a.static_dir, a.out_dir, YEARS, prov).to_string(index=False))
+
+
 def main(a):
+    if a.tables_only:
+        return tables_only(a)
     lines, coast, g, mouths, excl, joins, cuts = build(a)
     report_lists(g, mouths, excl, joins, cuts)
     dist, lab = rg.mouth_distances(g, mouths)
@@ -329,4 +341,6 @@ if __name__ == "__main__":
     ap.add_argument("--grids-dir", default=os.path.join(ROOT, "data", "grids"))
     ap.add_argument("--grids", nargs="*")
     ap.add_argument("--lists-only", action="store_true")
+    ap.add_argument("--tables-only", action="store_true", help="Chi sinh <luoi>_hybrid.csv cho --grids tu --stack-dir")
+    ap.add_argument("--stack-dir", default=None, help="Thu muc co hybrid_scope_30m.tif (mac dinh --out-dir)")
     main(ap.parse_args())
