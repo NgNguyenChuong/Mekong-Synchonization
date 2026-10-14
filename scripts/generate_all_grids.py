@@ -11,6 +11,8 @@ nguyen hinh o; moi file luoi kem <luoi>.geojson.provenance.json (sha256 ranh gio
 % ranh gioi khong duoc phu (phai = 0) va phan bo overlap_frac; --previous-dir de so so o voi luoi cu.
 
 Chay:  python scripts/generate_all_grids.py [--previous-dir data/grids/deprecated_centroid_rule]
+       python scripts/generate_all_grids.py --shift-frac 0.5 --shift-axis x --output-dir data/grids_pha --report-csv KE_HOACH/ket-qua/dot4_doi_chieu_dien_tich_pha.csv
+       (3 luoi o vuong dich goc -> *_sx, hoac y -> *_sy; KHONG ghi vao data/grids)
 """
 import argparse
 import os
@@ -62,7 +64,7 @@ def geodesic_km2(geom) -> float:
     return abs(GEOD.geometry_area_perimeter(geom)[0]) / 1e6
 
 
-def main(boundary, output_dir, report_csv, previous_dir=None):
+def main(boundary, output_dir, report_csv, previous_dir=None, shift_frac=0.0, shift_axis="x", base_report=DEFAULT_REPORT):
     import geopandas as gpd
 
     os.makedirs(output_dir, exist_ok=True)
@@ -74,7 +76,17 @@ def main(boundary, output_dir, report_csv, previous_dir=None):
     print(f"Ranh gioi: {boundary} ({boundary_km2:.2f} km2, sha256 {sha[:12]})")
 
     rows, h3_mean = [], {}
-    for framework, label, tier, build in GRID_SPECS:
+    specs = GRID_SPECS
+    sfx = ""
+    if shift_frac:
+        # luoi dich: chi o vuong; giu dong cu trong bang, chi them dong moi
+        sfx = "_s" + shift_axis
+        old = pd.read_csv(base_report)  # chi doc diem H3 tu bang goc; bang goc khong bi ghi
+        h3_mean = {int(r.tier_h3_res): float(r.mean_area_km2) for r in old.itertuples() if r.framework == "H3"}
+        specs = [(f, f"{lb}{sfx}", t, (lambda b, e=int(lb[:-1]): generate_square_grid(
+            b, e, shift_x_m=shift_frac * e * (shift_axis == "x"), shift_y_m=shift_frac * e * (shift_axis == "y"))))
+            for f, lb, t, _ in GRID_SPECS if f == "Square_UTM"]
+    for framework, label, tier, build in specs:
         t0 = time.time()
         gdf = build(boundary)
         areas = np.array([geodesic_km2(g) for g in gdf.geometry])
@@ -133,7 +145,11 @@ def main(boundary, output_dir, report_csv, previous_dir=None):
         print(f"  {framework:10s} {label:10s} {len(gdf):6d} o (truoc {prev}) | TB {mean:9.4f} km2 | lech H3 {diff:+7.2f}% "
               f"| khong phu {uncovered_pct:.2e}% | frac<0.1: {(frac < 0.1).sum()} | {time.time() - t0:5.1f}s", flush=True)
 
-    pd.DataFrame(rows).to_csv(report_csv, index=False)
+    new = pd.DataFrame(rows)
+    if shift_frac and os.path.exists(report_csv):  # bang pha: giu dong cua truc khac, thay dong cung nhan
+        prev = pd.read_csv(report_csv)
+        new = pd.concat([prev[~prev.resolution.isin(new.resolution)], new], ignore_index=True)
+    new.to_csv(report_csv, index=False)
     print(f"Bang doi chieu: {report_csv}")
 
 
@@ -143,5 +159,9 @@ if __name__ == "__main__":
     ap.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     ap.add_argument("--report-csv", default=DEFAULT_REPORT)
     ap.add_argument("--previous-dir", default=None, help="Thu muc luoi cu de so so o truoc/sau")
+    ap.add_argument("--shift-frac", type=float, default=0.0, help="Dich goc luoi vuong = frac * canh (vd 0.5)")
+    ap.add_argument("--base-report", default=DEFAULT_REPORT, help="Bang dien tich goc (chi doc, lay diem H3)")
+    ap.add_argument("--shift-axis", choices=["x", "y"], default="x")
     args = ap.parse_args()
-    main(args.boundary, args.output_dir, args.report_csv, args.previous_dir)
+    main(args.boundary, args.output_dir, args.report_csv, args.previous_dir, args.shift_frac, args.shift_axis,
+         args.base_report)
