@@ -38,7 +38,7 @@ def table(imp, levels, tag, frac):
     thr = thr_by_grid(imp, levels, frac)
     s1["muc"] = s1["grid"].map(levels)
     s1["nguong_tost"] = s1["grid"].map(thr)
-    s1["tuong_duong"] = (s1["ci90_low"] > -s1["nguong_tost"]) & (s1["ci90_high"] < s1["nguong_tost"])
+    s1["tuong_duong"] = ((s1["ci90_low"] > -s1["nguong_tost"]) & (s1["ci90_high"] < s1["nguong_tost"])).astype(object)
     s1.loc[s1["nguong_tost"].isna(), "tuong_duong"] = pd.NA   # luoi khong thuoc muc nao (s2_9/10/11): khong ap dung TOST
     return s1
 
