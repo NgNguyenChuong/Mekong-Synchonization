@@ -149,13 +149,13 @@ def main(a):
     res, same, n, extra = analyze_target(a, a.target)
     write_csv_atomic(res, out)
     lv = res.drop_duplicates("muc").set_index("muc")
-    tong_ket = {"n_muc_pha_le_khung": f"{int(lv['pha_le_khung'].sum())}/{len(lv)}",
+    tong_ket = {"n_muc_pha_le_khung": f"{int(lv['pha_le_khung'].sum())}/{len(lv)} (mau so gom ca muc truot cong)",
                 "tost_2_cap_pha": {int(m): d["ket_luan_D"].tolist() for m, d in res.groupby("muc")}}
     write_provenance(out, prefix=a.prefix, target=a.target, git_tag=same["git_tag"],
                      points_ref_sha256=same["points_ref_sha256"], n_luot=n, holm_m=6, delta_min=a.delta_min,
                      delta_min_kind="rel", delta_ref={int(m): float(d["delta_ref"].iloc[0]) for m, d in res.groupby("muc")},
                      delta_ref_desc="MAE TB luoi goc (CV, theo muc)", rule="CHG-30", tong_ket=tong_ket, **extra,
-                     **acf.tag_info(same, a.allowed_tags))
+                     **acf.tag_info(same, a.allowed_tags, "luot goc tag cu (cv1/e6a), luot dich tag nckh-dot7-pha; config chi khac grid/table"))
     if not a.no_table:
         cols = ["edge_m", "variant", "delta_hat", "delta_rel", "ci_tost_low", "ci_tost_high", "p_holm",
                 "tost_tuong_duong", "label", "ket_luan_D"]
