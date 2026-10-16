@@ -39,7 +39,7 @@ Dau ra:
   dot4_cv_folds_theo_luoi.csv (moi phuong an x luoi: o train/val moi fold, diem CV cham duoc theo phuong an C).
 
 Chay:  venv/Scripts/python.exe scripts/build_cv_folds.py [--seeds 42 43 44] [--max-objective 0.183] [--force]
-Tai lap quy tac cu (CHG-06): venv/Scripts/python.exe scripts/build_cv_folds.py --tols 0.10 0.15 ...
+Tai lap quy tac cu (CHG-06): venv/Scripts/python.exe scripts/build_cv_folds.py --tols 0.10 0.15 ...  (= --objective-mode rel)
 Kiem lai dieu kien cua phuong an DA LUU (sau khi doi mat na/diem; khong ghi fold):
        venv/Scripts/python.exe scripts/build_cv_folds.py --check-only
 Vung doi chung: venv/Scripts/python.exe scripts/build_cv_folds.py --region nile
@@ -88,6 +88,7 @@ from training.split import block_cv_cell_summary  # noqa: E402
 CRITERIA = ("scope_km2", "coast_scope_km2")
 FOLD_COLS = ["block_id", "unit_id", "cv_fold", "land_km2", "scope_km2", "coast_scope_km2", "n_cv_points",
              "n_cv_coast_points"]
+REL_TOLS = (0.10, 0.15)
 DEFAULT_MAX_OBJECTIVE = 0.183  # CHG-14 (An chot 2026-10-04): = diem can bang s42 tren pham vi v2 (0,1829)
 REPORT_NAMES = ("dot4_cv_tap_phuong_an.csv", "dot4_cv_tap_ung_vien.csv", "dot4_cv_khoi.csv", "dot4_cv_gop_khoi.csv",
                 "dot4_cv_folds_theo_fold.csv", "dot4_cv_folds_theo_luoi.csv")
@@ -441,7 +442,11 @@ def resolve_rule(a):
     """CHG-14: mac dinh nguong tuyet doi --max-objective 0,183; --tols (quy tac cu) chi khi KHONG co --max-objective."""
     if a.tols and a.max_objective is not None:
         raise SystemExit("[LOI] --tols (quy tac tuong doi cu) va --max-objective (CHG-14) loai tru nhau.")
-    if not a.tols and a.max_objective is None:
+    if getattr(a, "objective_mode", "abs") == "rel":  # CHG-06: <= 1,10x muc tieu tot nhat, thieu thi 1,15x (vung ma 0,183 khong hop)
+        if a.tols or a.max_objective is not None:
+            raise SystemExit("[LOI] --objective-mode rel loai tru voi --tols / --max-objective.")
+        a.tols = list(REL_TOLS)
+    elif not a.tols and a.max_objective is None:
         a.max_objective = DEFAULT_MAX_OBJECTIVE
     return a
 
@@ -609,6 +614,8 @@ if __name__ == "__main__":
     ap.add_argument("--tols", type=float, nargs="+", default=None,
                     help="Quy tac CU (CHG-06, chi de tai lap): muc tieu <= (1 + tol) x tot nhat, thu lan luot "
                          "(vd 0.10 0.15); loai tru voi --max-objective")
+    ap.add_argument("--objective-mode", choices=("abs", "rel"), default="abs",
+                    help="abs (mac dinh): --max-objective tuyet doi; rel: muc tieu <= 1,10x (thieu thi 1,15x) tot nhat")
     ap.add_argument("--max-overlap", type=float, default=0.60,
                     help="Do trung toi da (ty le don vi giu fold sau ghep Hungarian) giua moi cap phuong an")
     ap.add_argument("--coast-tol", type=float, default=0.15,
