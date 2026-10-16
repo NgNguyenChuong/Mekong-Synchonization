@@ -2,7 +2,8 @@
 """Bang hop nhat theo bien muc tieu Dot 7 (13 luoi) = bang bo chinh do man - cot nhan do man - cot cam theo bien
 + nhan moi (src/unified_table.target_table); ghi <DATA_ROOT>/features/unified_dot7/<bien>/<luoi>_unified.csv.
 Mua NaN theo quy tac nhan (provenance nhan 'nan_seasons') -> khai bao 'holdout_season_nan' trong provenance bang.
-Chay:  venv/Scripts/python.exe scripts/build_unified_dot7.py [--targets ndwi rain_chirps ...] [--grids ...]
+Vung doi chung (--region): bang goc = bang hop nhat NDWI cua vung (khong do man, khong cot thuy van/hybrid - vang mat).
+Chay:  venv/Scripts/python.exe scripts/build_unified_dot7.py [--targets ndwi rain_chirps ...] [--grids ...] [--region nile]
 """
 import argparse
 import glob
@@ -22,12 +23,14 @@ from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from build_unified_table import unexpected_train_nan  # noqa: E402
+from build_unified_table import HYBRID_FEATURES, HYDRO_FEATURES, unexpected_train_nan  # noqa: E402
 from preprocessing import CANONICAL_BOUNDARY, file_sha256, write_provenance  # noqa: E402
 from training.features import (DEFAULT_ALLOWED_FEATURES, drop_target_forbidden, find_leak_columns,  # noqa: E402
                                find_target_leak_columns, resolve_feature_list)
+from region import add_region_arg  # noqa: E402
 from training.split import EMPTY_DECL_KEY  # noqa: E402
-from unified_table import SAL_TRAIN_COL, TRAIN_COL, finite_or_nan, target_table  # noqa: E402
+from unified_table import (NDWI_LABEL_COLS, SAL_LABEL_COLS, SAL_TRAIN_COL, TRAIN_COL, finite_or_nan,  # noqa: E402
+                           target_table)
 
 DATA = data_path()
 # cot chat luong cua nhan (khong phai dac trung)
@@ -74,9 +77,12 @@ def build_one(a, grid, target):
             raise SystemExit(f"[LOI] thieu {p}")
     with open(base_p + ".provenance.json", encoding="utf-8") as f:
         bprov = json.load(f)
-    if bprov.get("target") != "salinity" or bprov.get("label_set") != "chinh":
-        raise SystemExit(f"[LOI] {base_p}: khong phai bang bo chinh do man (target {bprov.get('target')}, "
-                         f"label_set {bprov.get('label_set')})")
+    dbscl = a.region == "dbscl"
+    base_target = "salinity" if dbscl else "ndwi"
+    if (bprov.get("target") != base_target or bprov.get("label_set") != "chinh"
+            or bprov.get("region", "dbscl") != a.region):
+        raise SystemExit(f"[LOI] {base_p}: khong phai bang bo chinh {base_target} vung {a.region} (target "
+                         f"{bprov.get('target')}, label_set {bprov.get('label_set')}, region {bprov.get('region')})")
     lprov_p = lab_p + ".provenance.json"
     if not os.path.exists(lprov_p):
         raise SystemExit(f"[LOI] {lab_p}: thieu provenance")
@@ -87,7 +93,8 @@ def build_one(a, grid, target):
     base = pd.read_csv(base_p, dtype={"cell_id": str})
     lab = pd.read_csv(lab_p, dtype={"cell_id": str})
     try:
-        table, dropped = target_table(base, lab, target, TARGET_LABEL_COLS[target])
+        table, dropped = target_table(base, lab, target, TARGET_LABEL_COLS[target],
+                                      base_label_cols=SAL_LABEL_COLS if dbscl else NDWI_LABEL_COLS)
     except ValueError as exc:
         raise SystemExit(f"[LOI] {grid}/{target}: {exc}")
     if target == "ndwi":   # cung raster + mat na voi do man -> n_valid_px, train_ok phai trung
@@ -97,6 +104,8 @@ def build_one(a, grid, target):
                 raise SystemExit(f"[LOI] {grid}/ndwi: cot {c} khac bo do man - mat na khong trung")
     allowed, _ = drop_target_forbidden(DEFAULT_ALLOWED_FEATURES, target)
     feats, absent = resolve_feature_list(table.columns, allowed)
+    if not dbscl:  # dac trung thuy van/hybrid DBSCL vang mat co chu dich
+        absent = [c for c in absent if c not in (*HYDRO_FEATURES, *HYBRID_FEATURES)]
     if absent:
         raise SystemExit(f"[LOI] {grid}/{target}: dac trung mac dinh vang mat {absent}")
     bad = find_leak_columns(feats) + find_target_leak_columns(feats, target)
@@ -110,18 +119,19 @@ def build_one(a, grid, target):
     if bad_nan:
         raise SystemExit(f"[LOI] {grid}/{target}: NaN ngoai danh sach cho phep trong dong {TRAIN_COL}: {bad_nan}")
     decl = holdout_nan_declaration(lprov, table, target)
+    bt = "do man" if dbscl else base_target
     out_dir = os.path.join(a.out_root, target)
     os.makedirs(out_dir, exist_ok=True)
     out = os.path.join(out_dir, f"{grid}_unified.csv")
     table.to_csv(out + ".part", index=False, float_format="%.6g")
     os.replace(out + ".part", out)
-    write_provenance(out, CANONICAL_BOUNDARY, grid=grid, target=target, label_set="chinh",
+    write_provenance(out, a.boundary, grid=grid, target=target, label_set="chinh", region=a.region,
                      sources={"base": {"path": base_p, "sha256": file_sha256(base_p)},
                               "labels": {"path": lab_p, "sha256": file_sha256(lab_p)}},
                      key_cols=["cell_id", "season"], quality_cols=list(TARGET_LABEL_COLS[target]) + [TRAIN_COL, SAL_TRAIN_COL],
                      default_features=feats, dropped_target_forbidden=dropped,
                      **({EMPTY_DECL_KEY: decl} if decl else {}),
-                     rule=f"bang bo chinh do man - cot nhan do man - cot cam theo bien + nhan {target}; "
+                     rule=f"bang bo chinh {bt} - cot nhan {bt} - cot cam theo bien + nhan {target}; "
                           f"{TRAIN_COL} = {SAL_TRAIN_COL} VA nhan {target} huu han")
     sal = table[SAL_TRAIN_COL].astype(bool)
     lost = sal & table[target].isna()
@@ -177,4 +187,9 @@ if __name__ == "__main__":
     ap.add_argument("--labels-dir", default=f"{DATA}/labels/dot7")
     ap.add_argument("--out-root", default=f"{DATA}/features/unified_dot7")
     ap.add_argument("--report-dir", default=os.path.join(ROOT, "KE_HOACH", "ket-qua"))
+    ap.add_argument("--boundary", default=CANONICAL_BOUNDARY, help="Ranh gioi ghi vao provenance")
+    add_region_arg(ap, {"base_dir": lambda p: f"{p['features_dir']}/unified",
+                        "labels_dir": lambda p: f"{p['labels_dir']}/dot7",
+                        "out_root": lambda p: f"{p['features_dir']}/unified_dot7",
+                        "report_dir": "report_dir", "boundary": "boundary"})
     main(ap.parse_args())

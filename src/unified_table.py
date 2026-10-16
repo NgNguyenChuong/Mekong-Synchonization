@@ -160,14 +160,17 @@ def finite_or_nan(series) -> bool:
 
 # ---------------------------------------------------------------- Dot 7: bang hop nhat theo bien muc tieu
 SAL_LABEL_COLS = ("salinity", "n_valid_px", "valid_frac", "train_ok", "train_ok_10pct")
+NDWI_LABEL_COLS = ("ndwi", *SAL_LABEL_COLS[1:])  # bang goc vung doi chung (khong co do man)
 SAL_TRAIN_COL = "train_ok_scope_sal"   # co huan luyen cua bo do man (giu de doi chieu; mau 'train_ok' cam lam dac trung)
 
 
-def target_table(base: pd.DataFrame, labels: pd.DataFrame, target_col: str, label_cols=()) -> tuple[pd.DataFrame, list]:
+def target_table(base: pd.DataFrame, labels: pd.DataFrame, target_col: str, label_cols=(),
+                 base_label_cols=SAL_LABEL_COLS) -> tuple[pd.DataFrame, list]:
     """Bang hop nhat cho bien muc tieu khac do man (E5d Dot 7) tu bang hop nhat bo chinh do man.
 
     - Tap khoa (cell_id, season) cua nhan moi phai TRUNG bang goc (thieu/thua/trung -> ValueError).
-    - Bo cot nhan do man (SAL_LABEL_COLS); TRAIN_COL goc doi ten SAL_TRAIN_COL.
+    - Bo cot nhan cua bang goc (base_label_cols; DBSCL = do man, vung doi chung = NDWI_LABEL_COLS); TRAIN_COL goc
+      doi ten SAL_TRAIN_COL.
     - Bo moi cot khop mau cam THEO BIEN (training.features.TARGET_FORBIDDEN - cung dai luong vat ly).
     - TRAIN_COL moi = SAL_TRAIN_COL VA nhan bien moi huu han (An: "train_ok_scope nhu cu ∧ nhan bien hop le").
     Tra (bang, danh sach cot da bo vi cam theo bien).
@@ -180,14 +183,14 @@ def target_table(base: pd.DataFrame, labels: pd.DataFrame, target_col: str, labe
     _same_keyset(base, labels, "bang goc", "nhan moi")
     if target_col not in labels.columns:
         raise ValueError(f"nhan moi thieu cot muc tieu '{target_col}'")
-    miss = [c for c in (*SAL_LABEL_COLS, TRAIN_COL) if c not in base.columns]
+    miss = [c for c in (*base_label_cols, TRAIN_COL) if c not in base.columns]
     if miss:
         raise ValueError(f"bang goc thieu cot {miss} (can bang hop nhat bo chinh do man)")
     keep_lab = [*KEY_COLS, target_col, *label_cols]
-    clash = [c for c in keep_lab[2:] if c in base.columns and c not in SAL_LABEL_COLS]
+    clash = [c for c in keep_lab[2:] if c in base.columns and c not in base_label_cols]
     if clash:
         raise ValueError(f"Cot nhan moi trung ten cot bang goc: {clash}")
-    b = base.drop(columns=list(SAL_LABEL_COLS)).rename(columns={TRAIN_COL: SAL_TRAIN_COL})
+    b = base.drop(columns=list(base_label_cols)).rename(columns={TRAIN_COL: SAL_TRAIN_COL})
     cand = [c for c in b.columns if c not in (*KEY_COLS, SAL_TRAIN_COL)]
     dropped = [c for c, _ in find_target_leak_columns(cand, target_col)]
     b = b.drop(columns=dropped)

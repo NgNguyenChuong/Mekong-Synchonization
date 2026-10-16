@@ -200,7 +200,7 @@ def block_table(blocks, points, scope_mask, dist_coast, coast_km):
     return t
 
 
-def write_folds(df, path, force, prov):
+def write_folds(df, path, force, prov, boundary=CANONICAL_BOUNDARY):
     """Ghi bang fold; da co file KHAC -> loi tru khi --force. Tra ve True neu da ghi."""
     if os.path.exists(path) and not force:
         old = pd.read_csv(path, dtype={"block_id": str, "unit_id": str})
@@ -214,7 +214,7 @@ def write_folds(df, path, force, prov):
         log(f"Giu nguyen {path} (khop phuong an tinh lai).")
         return False
     df.to_csv(path, index=False)
-    write_provenance(path, CANONICAL_BOUNDARY, **prov)
+    write_provenance(path, boundary, **prov)
     log(f"Ghi {path}")
     return True
 
@@ -523,10 +523,10 @@ def main(a):
                               "max_overlap tung cap; to hop thu tu tu dien")
                            + "); khoi giu rieng = -1",
                     rule_cells="touch (o cat ngang khoi)", shared_by_all_grids=True)
-        write_folds(bf, path, a.force, prov)
+        write_folds(bf, path, a.force, prov, a.boundary)
         if seed == a.seeds[0]:
             write_folds(bf, os.path.join(a.out_dir, "cv_folds.csv"), a.force,
-                        dict(prov, alias_of=os.path.basename(path)))
+                        dict(prov, alias_of=os.path.basename(path)), a.boundary)
         schemes[seed] = (path, bf)
         fs = fold_summary(bf, seed)
         fold_rows.append(fs)
@@ -560,7 +560,7 @@ def main(a):
             for out, fp in targets:
                 os.makedirs(os.path.dirname(out), exist_ok=True)
                 table.to_csv(out, index=False)
-                write_provenance(out, CANONICAL_BOUNDARY, grid=rel(gpath), grid_sha256=gsha, cv_folds=rel(fp),
+                write_provenance(out, a.boundary, grid=rel(gpath), grid_sha256=gsha, cv_folds=rel(fp),
                                  cv_folds_sha256=file_sha256(fp), blocks_sha256=blocks_sha,
                                  function="eval_design.cell_block_table")
             fold_of_block = folds.set_index("block_id")["cv_fold"].astype(int)
@@ -618,10 +618,11 @@ if __name__ == "__main__":
     ap.add_argument("--check-only", action="store_true",
                     help="Chi kiem lai dieu kien J/I/D cua cac phuong an DA LUU tren mat na/diem hien tai; khong ghi "
                          "fold. Thoat 0 = dat het, 3 = co dieu kien vo")
+    ap.add_argument("--boundary", default=CANONICAL_BOUNDARY, help="Ranh gioi ghi vao provenance")
     ap.add_argument("--check-prefix", default="dot4_scope_v3", help="Tien to bang cua --check-only")
     add_region_arg(ap, {"blocks": lambda p: os.path.join(p["eval_dir"], "holdout_blocks.geojson"),
                         "points": lambda p: os.path.join(p["eval_dir"], "eval_points.geojson"),
                         "grids_dir": "grids_dir", "out_dir": "eval_dir", "report_dir": "report_dir",
                         "backup_dir": lambda p: os.path.join(p["eval_dir"], "deprecated_v2b"),
-                        "scope_mask": "scope", "dist_coast": "river"})
+                        "scope_mask": "scope", "dist_coast": "river", "boundary": "boundary"})
     main(ap.parse_args())

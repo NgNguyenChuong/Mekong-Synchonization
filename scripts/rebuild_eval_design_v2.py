@@ -18,7 +18,11 @@ CHG-10 (2026-10-03): diem hien hanh = ban sinh boi script nay tren scope_mask_v2
 de tai lap) roi LOC theo scope_mask_v3.tif bang scripts/filter_eval_points_scope.py (khong sinh lai). Chay script nay
 se SINH LAI va ghi de diem -> chi dung khi that su muon gieo lai.
 
+Vung doi chung (--region): khong co ban v1 -> khoi 50 km sinh moi (eval_design.make_holdout_blocks, --holdout-frac,
+--seed-blocks) trong CRS met cua vung; diem gieo thang tren scope_mask_v3 cua vung (khong buoc loc v3).
+
 Chay:  venv/Scripts/python.exe scripts/rebuild_eval_design_v2.py [--n-holdout 3000] [--seed-holdout 42] [--seed-cv 43]
+       venv/Scripts/python.exe scripts/rebuild_eval_design_v2.py --region mississippi
 """
 import argparse
 import glob
@@ -39,14 +43,17 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from eval_design import (  # noqa: E402
+    dist_coast_at_points,
     exact_block_frame,
+    make_holdout_blocks,
     raster_values_at,
     refresh_blocks,
     sample_points_in_mask,
     training_mask,
 )
 from preprocessing import CANONICAL_BOUNDARY, file_sha256, write_provenance  # noqa: E402
-from scope_mask import scope_area_by_block  # noqa: E402
+from region import add_region_arg, crs_metric  # noqa: E402
+from scope_mask import scope_area_by_block, scope_values_at_points  # noqa: E402
 
 EXCLUDE_LC = (0, 80, 95)
 
@@ -94,6 +101,20 @@ def dropped_old_points(old_points, scope_path, worldcover, exclude):
     return out[out["reason"] != ""]
 
 
+def log_point_summary(points, blocks, scope_path, dist_raster, coast_km):
+    """Chi bao cao: diem theo lop WC (pixel 30 m chua diem) va ven bien (dist_coast_km <= coast_km)."""
+    a = scope_values_at_points(points, scope_path)
+    d = dist_coast_at_points(points, dist_raster)
+    t = pd.DataFrame({"nhom": np.where(points["is_holdout"], "giu_rieng", "cv"), "wc_class": a["wc_class"].to_numpy(),
+                      "ven_bien": d <= coast_km})
+    n_hold_blk = int(blocks["is_holdout"].sum())
+    log(f"Tom tat: {len(points)} diem, {len(blocks)} khoi ({n_hold_blk} giu rieng); diem/khoi giu rieng "
+        f"{int(points['is_holdout'].sum()) / max(n_hold_blk, 1):.0f}; ven bien <= {coast_km:g} km "
+        f"{int(t['ven_bien'].sum())} (NaN khoang cach {int(np.isnan(d).sum())})")
+    log(t.groupby(["wc_class", "nhom"]).size().unstack(fill_value=0).to_string())
+    log(t.groupby(["ven_bien", "nhom"]).size().unstack(fill_value=0).to_string())
+
+
 def check_grids(grids_dir, blocks, points):
     """Bang kiem tung luoi: o huan luyen cham vung kiem tra (phai 0), diem khong co o (phai 0)."""
     rows = []
@@ -116,26 +137,37 @@ def check_grids(grids_dir, blocks, points):
 
 def main(args):
     boundary = gpd.read_file(args.boundary).to_crs(4326)
+    dbscl = args.region == "dbscl"
+    if not dbscl:  # canh thang dai (vd 31N cua MS) chieu sang UTM thanh day cung -> lech toi ~400 m; chia nho canh
+        boundary = boundary.set_geometry(boundary.segmentize(0.005))
     blocks_path = os.path.join(args.out_dir, "holdout_blocks.geojson")
     points_path = os.path.join(args.out_dir, "eval_points.geojson")
     dep_dir = os.path.join(args.out_dir, "deprecated_v1")
-    backup([blocks_path, points_path], dep_dir)  # chi lan dau (ban v1); chay lai khong ghi de
+    if dbscl:
+        backup([blocks_path, points_path], dep_dir)  # chi lan dau (ban v1); chay lai khong ghi de
     prev_dir = os.path.join(args.out_dir, args.backup_name)
     prev = [blocks_path, points_path, os.path.join(args.out_dir, "cv_folds.csv"),
             os.path.join(args.out_dir, "cell_blocks")]
     backup(prev + [p + ".provenance.json" for p in prev[:3]], prev_dir)
     blocks_sha_before = file_sha256(blocks_path) if os.path.exists(blocks_path) else None
-    # Nguon block_id / is_holdout = ban v1 da sao luu -> chay lai cho cung ket qua (tai lap).
-    old_blocks = gpd.read_file(os.path.join(dep_dir, "holdout_blocks.geojson"))
+    utm = crs_metric(args.region)
+    if dbscl:  # nguon block_id / is_holdout = ban v1 da sao luu -> chay lai cho cung ket qua (tai lap)
+        old_blocks = gpd.read_file(os.path.join(dep_dir, "holdout_blocks.geojson"))
+    else:  # cung quy tac ban v1 DBSCL (ty le dien tich dat trong ranh gioi, seed co dinh)
+        old_blocks = make_holdout_blocks(boundary, args.block_km, args.holdout_frac, args.seed_blocks, utm=utm)
 
-    blocks, added = refresh_blocks(old_blocks, boundary, args.block_km)
+    blocks, added = refresh_blocks(old_blocks, boundary, args.block_km, utm=utm)
+    # cac buoc sau (build_cv_folds, cell_block_table, point_eval) dung lai khoi bang estimate_utm_crs
+    if blocks.estimate_utm_crs().to_epsg() != int(utm.split(":")[1]):
+        raise SystemExit(f"LOI: UTM uoc luong cua khoi {blocks.estimate_utm_crs().to_epsg()} khac {utm}")
     same = blocks.set_index("block_id").loc[old_blocks["block_id"], "is_holdout"].to_numpy()
     assert (same == old_blocks["is_holdout"].astype(bool).to_numpy()).all(), "is_holdout bi doi"
     log(f"Khoi: {len(old_blocks)} cu, them {len(added)} {added} | giu rieng "
         f"{sorted(blocks.loc[blocks['is_holdout'], 'block_id'])}")
 
     log(f"Dien tich mat na pham vi theo khoi ({args.scope_mask}) ...")
-    area = scope_area_by_block(exact_block_frame(blocks)[["block_id", "geometry"]], args.scope_mask)
+    area = scope_area_by_block(exact_block_frame(blocks, utm=utm, block_km=args.block_km)[["block_id", "geometry"]],
+                               args.scope_mask)
     blocks = blocks.assign(mask_km2=blocks["block_id"].map(area.set_index("block_id")["scope_km2"]).to_numpy())
     hold_mask = blocks.loc[blocks["is_holdout"], "mask_km2"].sum()
     cv_mask = blocks.loc[~blocks["is_holdout"], "mask_km2"].sum()
@@ -143,7 +175,6 @@ def main(args):
     log(f"  mat na dat: giu rieng {hold_mask:.1f} km2, khong giu rieng {cv_mask:.1f} km2 "
         f"-> {args.n_holdout} + {n_cv} diem (mat do {args.n_holdout / hold_mask:.4f} diem/km2)")
 
-    utm = boundary.estimate_utm_crs()
     land = boundary.to_crs(utm).geometry.union_all()
     bl_utm = blocks.to_crs(utm)
     with rasterio.open(args.scope_mask) as src:
@@ -202,11 +233,13 @@ def main(args):
     common = dict(scope_mask=args.scope_mask, scope_mask_sha256=file_sha256(args.scope_mask),
                   rule="diem nhan khi pixel 30 m chua diem co scope = 1 (v2 ∩ WC khong 0/80/95 ∩ dau chan Zenodo)",
                   exclude_worldcover=list(EXCLUDE_LC), worldcover=args.worldcover)
-    write_provenance(blocks_path, args.boundary, note="block_id/is_holdout giu tu ban v1; land_km2 tinh lai",
-                     added_blocks=added)
+    blk_note = ("block_id/is_holdout giu tu ban v1; land_km2 tinh lai" if dbscl else
+                f"sinh moi: make_holdout_blocks holdout_frac={args.holdout_frac} seed={args.seed_blocks}")
+    write_provenance(blocks_path, args.boundary, note=blk_note, added_blocks=added, region=args.region, crs_metric=utm)
     write_provenance(points_path, args.boundary, n_holdout=args.n_holdout, n_cv=n_cv,
-                     seed_holdout=args.seed_holdout, seed_cv=args.seed_cv, **common)
+                     seed_holdout=args.seed_holdout, seed_cv=args.seed_cv, region=args.region, **common)
     log(f"Ghi {blocks_path}, {points_path}")
+    log_point_summary(points, blocks, args.scope_mask, args.dist_raster, args.coast_km)
     if blocks_sha_before is not None:
         log(f"File khoi {'KHONG doi' if file_sha256(blocks_path) == blocks_sha_before else 'DA DOI'} so voi ban truoc")
 
@@ -244,4 +277,13 @@ if __name__ == "__main__":
     ap.add_argument("--n-holdout", type=int, default=3000)
     ap.add_argument("--seed-holdout", type=int, default=42)
     ap.add_argument("--seed-cv", type=int, default=43)
+    ap.add_argument("--holdout-frac", type=float, default=0.2, help="Vung doi chung: ty le dien tich dat giu rieng")
+    ap.add_argument("--seed-blocks", type=int, default=42, help="Vung doi chung: seed chon khoi giu rieng")
+    ap.add_argument("--dist-raster", default=data_path("raw/river/river_distance_90m.tif"),
+                    help="Raster co band dist_coast_km (chi bao cao diem ven bien)")
+    ap.add_argument("--coast-km", type=float, default=20.0)
+    add_region_arg(ap, {"boundary": "boundary", "grids_dir": "grids_dir", "out_dir": "eval_dir",
+                        "dist_raster": "river",
+                        "report": lambda p: os.path.join(p["report_dir"], "dot4_thiet_ke_danh_gia.csv")},
+                   extra={"worldcover": lambda p: p["worldcover"], "scope_mask": lambda p: p["scope"]})
     main(ap.parse_args())

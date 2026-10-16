@@ -14,9 +14,9 @@ from shapely.geometry import box
 from shapely.prepared import prep
 
 
-def make_holdout_blocks(boundary: gpd.GeoDataFrame, block_km=50.0, holdout_frac=0.2, seed=42):
-    """Tra ve GeoDataFrame (EPSG:4326): block_id, land_km2, is_holdout, geometry."""
-    utm = boundary.estimate_utm_crs()
+def make_holdout_blocks(boundary: gpd.GeoDataFrame, block_km=50.0, holdout_frac=0.2, seed=42, utm=None):
+    """Tra ve GeoDataFrame (EPSG:4326): block_id, land_km2, is_holdout, geometry. utm = CRS met cua vung."""
+    utm = utm or boundary.estimate_utm_crs()
     land = boundary.to_crs(utm).geometry.union_all()
     size = block_km * 1000.0
     minx, miny, maxx, maxy = land.bounds
@@ -85,13 +85,13 @@ def training_mask(grid: gpd.GeoDataFrame, blocks: gpd.GeoDataFrame):
 # -----------------------------------------------------------------------------------------------
 # Thiet ke danh gia tren ranh gioi v2 (An duyet 2026-10-03): GIU khoi giu rieng, diem tren mat na dat.
 # -----------------------------------------------------------------------------------------------
-def refresh_blocks(blocks: gpd.GeoDataFrame, boundary: gpd.GeoDataFrame, block_km=50.0):
+def refresh_blocks(blocks: gpd.GeoDataFrame, boundary: gpd.GeoDataFrame, block_km=50.0, utm=None):
     """Giu nguyen block_id / is_holdout; tinh lai land_km2 = dien tich (khoi giao ranh gioi moi).
 
     Khoi cung luoi (neo boi so canh) ma ranh gioi moi cham toi nhung chua co trong file duoc THEM voi
     is_holdout = False (khong doi tap giu rieng). Tra ve (blocks_moi EPSG:4326, danh sach id them).
     """
-    utm = boundary.estimate_utm_crs()
+    utm = utm or boundary.estimate_utm_crs()
     land = boundary.to_crs(utm).geometry.union_all()
     old = blocks.to_crs(utm).copy()
     size = block_km * 1000.0

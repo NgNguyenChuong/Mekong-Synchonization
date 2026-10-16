@@ -128,3 +128,53 @@ def test_ghep_khong_thuy_van_hybrid_cot_vang_mat():
     assert t["rain_mm"].isna().sum() == 1 and t["dem_mean"].isna().sum() == 2  # NaN giu, khong dien 0
     with pytest.raises(ValueError, match="muc tieu"):
         merge_sources(labels, era5, static, None, None)  # mac dinh van doi cot salinity
+
+
+def test_eval_dir_vung_doi_chung(monkeypatch):
+    monkeypatch.setenv("DOI_CHUNG_OUT", "X:/ra")
+    for name in ("mississippi", "nile"):
+        p = region.region_paths(name)
+        assert p["eval_dir"] == f"X:/ra/{name}/eval" and p["report_dir"] == f"X:/ra/{name}/reports"
+        assert p["river"] == f"X:/ra/{name}/features/river/river_distance_90m.tif"
+
+
+@pytest.mark.parametrize("name,lon", [("mississippi", -89.9), ("nile", 29.2)])
+def test_khoi_50km_neo_crs_vung(tmp_path, name, lon):
+    import geopandas as gpd
+
+    from eval_design import make_holdout_blocks, refresh_blocks
+
+    # ranh gioi nam o mui UTM ke ben: estimate_utm_crs chon mui khac -> phai dung CRS truyen vao
+    bnd = gpd.read_file(_boundary(tmp_path, lon, 30.4, d=0.6))
+    crs = region.crs_metric(name)
+    assert bnd.estimate_utm_crs().to_epsg() != region.get_region(name)["epsg"]
+    size = 50_000
+    blk = make_holdout_blocks(bnd, 50.0, 0.2, 42, utm=crs)
+    assert blk["is_holdout"].any() and not blk["is_holdout"].all()
+    ref, added = refresh_blocks(blk, bnd, 50.0, utm=crs)
+    assert added == [] and ref["block_id"].tolist() == blk["block_id"].tolist()
+    assert ref["is_holdout"].tolist() == blk["is_holdout"].tolist()
+    for bid, g in zip(ref["block_id"], ref.to_crs(crs).geometry):
+        i, j = (int(v) for v in bid.split("_")[1:])
+        assert np.allclose(g.bounds, (i * size, j * size, (i + 1) * size, (j + 1) * size), atol=1.0)
+    land = bnd.to_crs(crs).geometry.union_all()
+    assert np.isclose(ref["land_km2"].sum(), land.area / 1e6, rtol=1e-6)
+
+
+def test_unified_dot7_bang_goc_ndwi_khong_thuy_van():
+    from unified_table import NDWI_LABEL_COLS, SAL_TRAIN_COL, TRAIN_COL, target_table
+
+    keys = pd.DataFrame([(c, s) for c in ("a", "b") for s in (2019, 2020)], columns=["cell_id", "season"])
+    base = keys.assign(ndwi=[0.1, np.nan, 0.2, 0.3], n_valid_px=100.0, valid_frac=0.5, train_ok=[True, False, True, True],
+                       train_ok_10pct=True, train_ok_scope=[True, False, True, True], rain_mm=[1.0, 2.0, 3.0, 4.0],
+                       dem_mean=[1.0, 1.0, np.nan, np.nan], dist_coast_km=5.0)
+    lab = keys.assign(rain_chirps=[5.0, 6.0, np.nan, 8.0], lbl_cover_frac=1.0, lbl_valid_px=3, lbl_ok=True)
+    t, dropped = target_table(base, lab, "rain_chirps", ("lbl_cover_frac", "lbl_valid_px", "lbl_ok"),
+                              base_label_cols=NDWI_LABEL_COLS)
+    assert dropped == ["rain_mm"] and "ndwi" not in t.columns and "salinity" not in t.columns
+    assert not {"tch_wl_p20c", "zos_coast_p90", "dist_mouth_river_km", "sluice_frac", "zos_mouth_p90"} & set(t.columns)
+    assert t[SAL_TRAIN_COL].tolist() == [True, False, True, True]
+    assert t[TRAIN_COL].tolist() == [True, False, False, True]  # nhan moi NaN -> khong huan luyen
+    assert t["dem_mean"].isna().sum() == 2  # NaN giu, khong dien 0
+    with pytest.raises(ValueError, match="thieu cot"):
+        target_table(base, lab, "rain_chirps")  # mac dinh doi bang goc do man
