@@ -15,7 +15,7 @@ rieng tac dong cua quy tac DEM).
 Da co CSV -> bo qua luoi do (tru --force); bao cao van tinh lai tu CSV.
 
 CHG-09 (DEM): DEM thieu khi DEM == 0 VA co WBM > 0 (--dem-flags, band WBM). CHG-10: scope_mask_v3.
-WorldCover: LandCover_DBSCL_2021_v2.tif (dem 25 km, bien xa da dien 80).
+WorldCover: dem 25 km, bien xa -> 80 (dbscl: LandCover_DBSCL_2021_v2.tif; doi chung: LandCover_<L>_2021_pad25.tif).
 
 Chay:  venv/Scripts/python.exe scripts/build_static_features.py [--grids h3_res_7 ...] [--force]
        [--prev-dir <DATA_ROOT>/features/static/deprecated_v2 --control-stack <scratch>/static_scope_30m_doi_chung.tif]
@@ -44,20 +44,27 @@ from region import add_region_arg, crs_metric  # noqa: E402
 from static_features import (DEM_RULE, LANDCOVER_PREFIX, RIVER_BANDS, SCOPE_FEATURES,  # noqa: E402
                              SCOPE_FRAC_COL, build_scope_stack, cell_static_features)
 
-SAMPLING = {
-    "scope": "mat na pham vi (--scope; mac dinh scope_mask_v3.tif: v2 ∩ WorldCover {10,20,30,40} tai tam pixel 30 m "
-             "∩ dau chan Zenodo, CHG-10; ban truoc scope_mask_v2.tif: WorldCover khong {0,80,95}) band 'scope' == 1",
-    "dem": "DEM GLO30 30 m cung luoi pixel scope (lech so nguyen pixel) -> lay dung pixel; chi pixel scope; "
-           "co WBM (DEM_DBSCL_flags_v2.tif, lech nguyen pixel) lay dung pixel, khong noi suy; " + DEM_RULE,
-    "river": "raster khoang cach 90 m: moi pixel scope 30 m nhan gia tri pixel 90 m chua TAM no (nearest) = trong "
-             "so pixel 90 m theo so tam pixel scope 30 m ben trong; chi pixel scope",
-    "aggregation": "trung binh co trong so dien tich phu (exactextract mean) tren raster 30 m NaN ngoai scope; "
-                   "o khong co pixel scope -> NaN",
-    "scope_frac": "exactextract sum(scope) * 900 m2 / dien tich o EPSG:32648 - cot chat luong",
-    "landcover": "WorldCover 2021 10 m (ban v2: dem 25 km quanh ranh gioi v2, bien xa unmask 80), ty le dien "
-                 "tich tren TOAN O (exactextract frac); ma 0 khong sinh cot nhung van o mau so",
-}
-CHANGES = ["CHG-09 (DEM == 0 & WBM > 0 -> NaN)", "CHG-10 (scope_mask_v3)", "WorldCover v2 dem 25 km (An chot c)"]
+def sampling_text(a):
+    """Mo ta lay mau ghi vao provenance: EPSG, ten file DEM flags, WorldCover dung theo vung (dbscl = chu cu)."""
+    reg, epsg = a.region, crs_metric(a.region)
+    wc_note = ("ban v2: dem 25 km quanh ranh gioi v2, bien xa unmask 80" if reg == "dbscl" else
+               f"{os.path.basename(a.worldcover)}: trong ranh gioi + dem 25 km, ngoai vung phu WorldCover (bien xa) -> 80")
+    return {
+        "scope": "mat na pham vi (--scope; mac dinh scope_mask_v3.tif: v2 ∩ WorldCover {10,20,30,40} tai tam pixel 30 m "
+                 "∩ " + ("dau chan Zenodo" if reg == "dbscl" else "NDWIchen huu han >= 1 nam") + ", CHG-10) band 'scope' == 1",
+        "dem": "DEM GLO30 30 m cung luoi pixel scope (lech so nguyen pixel) -> lay dung pixel; chi pixel scope; "
+               f"co WBM ({os.path.basename(a.dem_flags)}, lech nguyen pixel) lay dung pixel, khong noi suy; " + DEM_RULE,
+        "river": "raster khoang cach 90 m: moi pixel scope 30 m nhan gia tri pixel 90 m chua TAM no (nearest) = trong "
+                 "so pixel 90 m theo so tam pixel scope 30 m ben trong; chi pixel scope",
+        "aggregation": "trung binh co trong so dien tich phu (exactextract mean) tren raster 30 m NaN ngoai scope; "
+                       "o khong co pixel scope -> NaN",
+        "scope_frac": f"exactextract sum(scope) * 900 m2 / dien tich o {epsg} - cot chat luong",
+        "landcover": f"WorldCover 2021 10 m ({wc_note}), ty le dien tich tren TOAN O (exactextract frac); "
+                     "ma 0 khong sinh cot nhung van o mau so",
+    }
+
+
+CHANGES = ["CHG-09 (DEM == 0 & WBM > 0 -> NaN)", "CHG-10 (scope_mask_v3)", "WorldCover dem 25 km"]
 KNOWN_POINTS = {  # skill data-audit; dist_coast ky vong: Can Tho ~76, Chau Doc ~66, My Tho ~46, Rach Gia ~0,3
     "Can Tho": (105.78, 10.03), "Chau Doc": (105.12, 10.70), "My Tho": (106.36, 10.36),
     "Rach Gia": (105.08, 10.01), "Ca Mau": (105.15, 9.18),
@@ -92,7 +99,7 @@ def ensure_stack(a, shas):
     log(f"  thong ke pixel scope: {stats}")
     write_provenance(a.stack, a.boundary, function="static_features.build_scope_stack", bands=list(SCOPE_FEATURES),
                      inputs={"scope": a.scope, "dem": a.dem, "dem_flags": a.dem_flags, "river": a.river},
-                     input_sha256=want, dem_rule=DEM_RULE, changes=CHANGES, sampling=SAMPLING, stats=stats)
+                     input_sha256=want, dem_rule=DEM_RULE, changes=CHANGES, sampling=sampling_text(a), stats=stats)
 
 
 def ensure_control_stack(a, shas):
@@ -135,7 +142,7 @@ def build_grid(a, path, shas):
     df.to_csv(tmp, index=False)
     os.replace(tmp, out)
     write_provenance(out, a.boundary, grid=os.path.basename(path), grid_sha256=file_sha256(path),
-                     stack=os.path.basename(a.stack), sampling=SAMPLING,
+                     stack=os.path.basename(a.stack), sampling=sampling_text(a),
                      inputs={"scope": a.scope, "dem": a.dem, "dem_flags": a.dem_flags, "river": a.river,
                              "worldcover": a.worldcover},
                      input_sha256=shas, dem_rule=DEM_RULE, changes=CHANGES, columns=list(df.columns))
@@ -378,7 +385,7 @@ if __name__ == "__main__":
     ap.add_argument("--force", action="store_true", help="ghi lai CSV da co")
     ap.add_argument("--force-stack", action="store_true", help="dung lai raster trung gian")
     add_region_arg(ap, {"scope": "scope", "dem": "dem", "river": "river", "dem_flags": "dem_flags",
-                        "worldcover": "worldcover", "boundary": "boundary", "grids_dir": "grids_dir",
+                        "worldcover": "worldcover_static", "boundary": "boundary", "grids_dir": "grids_dir",
                         "out_dir": lambda p: f"{p['features_dir']}/static", "report_dir": "report_dir"},
                    extra={"worldcover_prev": None, "old_river_dir": None, "no_report": True})
     args = ap.parse_args()

@@ -52,6 +52,8 @@ def test_vung_doi_chung_dau_vao_dau_ra(monkeypatch):
     assert p["grids_dir"] == "X:/ra/mississippi/grids" and p["scope"] == "X:/ra/mississippi/features/scope_mask_v3.tif"
     assert p["boundary"] == data_path("doi_chung", "mississippi", "boundary.geojson")
     assert p["worldcover"].endswith("doi_chung/mississippi/static/LandCover_MS_2021.tif")
+    assert p["worldcover_static"].endswith("doi_chung/mississippi/static/LandCover_MS_2021_pad25.tif")
+    assert region.region_paths()["worldcover_static"] == region.region_paths()["worldcover"]
     assert p["dem_flags"].endswith("static/DEM_MS_flags.tif") and p["jrc"].endswith("static/JRC_GSW_MS.tif")
     assert p["raw_dir"] == data_path("doi_chung", "mississippi", "raw")
     assert region.landsat_file("nile", "ndwi", 2020).endswith("doi_chung/nile/landsat/2020_NL_dry_NDWIchen_l8_sf3.tif")

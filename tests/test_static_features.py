@@ -151,6 +151,18 @@ def test_landcover_code_zero_has_no_column_but_stays_in_denominator(rasters, tmp
     assert df.loc["c", "landcover_class_Cropland"] == pytest.approx(0.5, rel=1e-6)
 
 
+def test_landcover_sums_to_one_when_wc_frame_is_padded(rasters, tmp_path):
+    # o 180 m lo ra ngoai ranh: WC co dem (bien xa = 80) phu het o -> tong lop = 1 (khong chia lai cho tong)
+    wc = np.full((30, 30), 80, "uint8")
+    wc[6:24, 6:15] = 40
+    _write(tmp_path / "wcpad.tif", [wc], 10, x0=X0 - 60, y0=Y0 + 60, dtype="uint8", names=["Map"])
+    rasters["wc"] = str(tmp_path / "wcpad.tif")
+    df, _ = _run(rasters, _cells([box(X0 - 30, Y0 - 150, X0 + 150, Y0 + 30)], ["c"]))
+    tot = df[[c for c in df.columns if c.startswith(sf.LANDCOVER_PREFIX)]].sum(axis=1)["c"]
+    assert tot == pytest.approx(1.0, abs=1e-6)
+    assert df.loc["c", "landcover_class_Water"] > 0.5
+
+
 def test_unknown_worldcover_code_raises(rasters, tmp_path):
     wc = np.full((18, 18), 40, "uint8")
     wc[0, 0] = 70

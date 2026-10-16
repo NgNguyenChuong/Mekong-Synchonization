@@ -12,6 +12,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # cung cach 
 DEFAULT_REGION = "dbscl"
 # Ca 3 vung cung cua so mua kho 01/11 -> 29/04 (tinh bang src/seasons.py).
 SEASON_WINDOW = ((11, 1), (4, 29))
+WC_PAD_KM = 25  # WorldCover vung doi chung xuat them dem 25 km (fetch_doi_chung --static-buffer-km)
 
 REGIONS = {
     "dbscl": {"label": "MD", "epsg": 32648, "landsat_suffix": "_l8_v2"},
@@ -51,6 +52,7 @@ def region_paths(name=DEFAULT_REGION) -> dict:
             "features_dir": data_path("features"),
             "scope": data_path("features/scope_mask_v3.tif"),
             "worldcover": data_path("gee/LandCover_DBSCL_2021_v2.tif"),
+            "worldcover_static": data_path("gee/LandCover_DBSCL_2021_v2.tif"),
             "dem": data_path("gee/DEM_DBSCL.tif"),
             "dem_flags": data_path("gee/DEM_DBSCL_flags_v2.tif"),
             "jrc": None,
@@ -67,7 +69,8 @@ def region_paths(name=DEFAULT_REGION) -> dict:
         "labels_dir": f"{out}/labels",
         "features_dir": f"{out}/features",
         "scope": f"{out}/features/scope_mask_v3.tif",
-        "worldcover": f"{src}/static/LandCover_{lab}_2021.tif",
+        "worldcover": f"{src}/static/LandCover_{lab}_2021.tif",  # trong ranh gioi: scope/nhan
+        "worldcover_static": f"{src}/static/LandCover_{lab}_2021_pad{WC_PAD_KM}.tif",  # dem 25 km nhu DBSCL v2: dac trung tinh
         "dem": f"{src}/static/DEM_{lab}.tif",
         "dem_flags": f"{src}/static/DEM_{lab}_flags.tif",
         "jrc": f"{src}/static/JRC_GSW_{lab}.tif",
