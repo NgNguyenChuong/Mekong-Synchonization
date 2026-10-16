@@ -33,7 +33,7 @@ HYDRO_COLS = ("tch_wl_p20c", "zos_coast_p90", "tch_wl_ok", "zos_ok")
 QUALITY_COLS = ("n_valid_px", "valid_frac", "train_ok", "train_ok_10pct", TRAIN_COL, "era5_cover_frac", "era5_fill_frac",
                 "scope_frac", "tch_wl_ok", "zos_ok", "sluice_frac_from2021", "graph_lateral_km",
                 "zos_cmems_far_frac", "scope_cx", "scope_cy", "scope_n_px")
-# scope_cx/scope_cy: tam pixel dat scope cua o (EPSG:32648) - CHI de dat nhan o cho IDW, KHONG phai dac trung
+# scope_cx/scope_cy: tam pixel dat scope cua o (CRS met cua vung) - CHI de dat nhan o cho IDW, KHONG phai dac trung
 # (toa do bi cam trong bo chinh).
 
 
@@ -85,29 +85,38 @@ def _same_keyset(a, b, name_a, name_b):
                          f"(vd {list(only_a[:3])}), {len(only_b)} chi co o {name_b} (vd {list(only_b[:3])})")
 
 
-def merge_sources(labels, era5, static, hydro, hybrid, hydro_cols=HYDRO_COLS) -> pd.DataFrame:
-    """Ghep 5 nguon thanh bang (cell_id, season). Xem quy tac o docstring module."""
-    labels, era5, static, hydro, hybrid = (_normalize(d) for d in (labels, era5, static, hydro, hybrid))
+def merge_sources(labels, era5, static, hydro, hybrid, hydro_cols=HYDRO_COLS, target_col=TARGET_COL) -> pd.DataFrame:
+    """Ghep 5 nguon thanh bang (cell_id, season). Xem quy tac o docstring module.
+
+    hydro/hybrid = None (vung doi chung): bo nguon do, cot cua no VANG MAT (khong dien)."""
+    labels, era5, static = (_normalize(d) for d in (labels, era5, static))
+    hydro = None if hydro is None else _normalize(hydro)
+    hybrid = None if hybrid is None else _normalize(hybrid)
     for df, keys, name in ((labels, KEY_COLS, "nhan"), (era5, KEY_COLS, "ERA5"), (hybrid, KEY_COLS, "hybrid"),
                            (static, ("cell_id",), "tinh"), (hydro, ("season",), "thuy van")):
-        _check_keys(df, keys, name)
-    if TARGET_COL not in labels.columns:
-        raise ValueError(f"nhan: thieu cot muc tieu '{TARGET_COL}'")
+        if df is not None:
+            _check_keys(df, keys, name)
+    if target_col not in labels.columns:
+        raise ValueError(f"nhan: thieu cot muc tieu '{target_col}'")
     _same_keyset(labels, era5, "nhan", "ERA5")
-    _same_keyset(labels, hybrid, "nhan", "hybrid")
+    if hybrid is not None:
+        _same_keyset(labels, hybrid, "nhan", "hybrid")
     miss_cells = sorted(set(labels["cell_id"]) - set(static["cell_id"]))
     if miss_cells:
         raise ValueError(f"tinh: thieu {len(miss_cells)} o (vd {miss_cells[:3]})")
-    miss_seasons = sorted(set(labels["season"]) - set(hydro["season"]))
-    if miss_seasons:
-        raise ValueError(f"thuy van: thieu mua {miss_seasons}")
-    absent = [c for c in hydro_cols if c not in hydro.columns]
-    if absent:
-        raise ValueError(f"thuy van: thieu cot {absent}")
-    hydro = hydro[["season", *hydro_cols]]
+    if hydro is not None:
+        miss_seasons = sorted(set(labels["season"]) - set(hydro["season"]))
+        if miss_seasons:
+            raise ValueError(f"thuy van: thieu mua {miss_seasons}")
+        absent = [c for c in hydro_cols if c not in hydro.columns]
+        if absent:
+            raise ValueError(f"thuy van: thieu cot {absent}")
+        hydro = hydro[["season", *hydro_cols]]
 
     seen = {c: "nhan" for c in labels.columns}
     for df, name in ((era5, "ERA5"), (static, "tinh"), (hydro, "thuy van"), (hybrid, "hybrid")):
+        if df is None:
+            continue
         clash = [c for c in df.columns if c not in KEY_COLS and c in seen]
         if clash:
             raise ValueError(f"Cot trung ten giua {name} va {[seen[c] for c in clash]}: {clash}")
@@ -115,8 +124,10 @@ def merge_sources(labels, era5, static, hydro, hybrid, hydro_cols=HYDRO_COLS) ->
 
     out = labels.merge(era5, on=list(KEY_COLS), how="left", validate="one_to_one")
     out = out.merge(static, on="cell_id", how="left", validate="many_to_one")
-    out = out.merge(hydro, on="season", how="left", validate="many_to_one")
-    out = out.merge(hybrid, on=list(KEY_COLS), how="left", validate="one_to_one")
+    if hydro is not None:
+        out = out.merge(hydro, on="season", how="left", validate="many_to_one")
+    if hybrid is not None:
+        out = out.merge(hybrid, on=list(KEY_COLS), how="left", validate="one_to_one")
     if len(out) != len(labels):
         raise ValueError(f"So dong doi sau ghep: {len(labels)} -> {len(out)}")
     if "train_ok" not in out.columns or "scope_frac" not in out.columns:
@@ -129,8 +140,8 @@ def merge_sources(labels, era5, static, hydro, hybrid, hydro_cols=HYDRO_COLS) ->
         # vun = cung loai "o khong co pixel dat hop le" (2026-10-04; chi xay ra o bo phu).
         out[TRAIN_COL] &= out["scope_n_px"].fillna(0) > 0
     quality = [c for c in QUALITY_COLS if c in out.columns]
-    rest = [c for c in out.columns if c not in (*KEY_COLS, TARGET_COL, *quality)]
-    return out[[*KEY_COLS, TARGET_COL, *quality, *rest]].sort_values(list(KEY_COLS)).reset_index(drop=True)
+    rest = [c for c in out.columns if c not in (*KEY_COLS, target_col, *quality)]
+    return out[[*KEY_COLS, target_col, *quality, *rest]].sort_values(list(KEY_COLS)).reset_index(drop=True)
 
 
 def nan_report(table, feature_cols, mask_col=TRAIN_COL) -> pd.DataFrame:

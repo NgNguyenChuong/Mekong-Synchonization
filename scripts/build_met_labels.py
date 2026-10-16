@@ -2,6 +2,7 @@
 """Nhan (o, mua) cho 13 luoi + dap an tai diem cua 4 bien khi tuong Dot 7 (mua CHIRPS, buc xa MCD18, T2m va RH
 ERA5 goc) - quy tac o src/met_cell_labels.py. Ghi <DATA_ROOT>/labels/dot7 + bao cao KE_HOACH/ket-qua/dot7_e5_khi_tuong_*.
 Chay:  venv/Scripts/python.exe scripts/build_met_labels.py [--targets rain dsr temp rh] [--grids ...] [--force]
+       Vung doi chung (diem cham duoc theo points_reference_ndwi.csv): ... --region mississippi
 """
 import argparse
 import glob
@@ -23,6 +24,7 @@ if sys.platform == "win32":
 from met_cell_labels import (MET_RULES_VERSION, MET_TARGETS, cell_count_labels, check_source,  # noqa: E402
                              nan_pattern_changes, point_pixel_values, scope_source_counts)
 from preprocessing import CANONICAL_BOUNDARY, file_sha256, write_provenance  # noqa: E402
+from region import add_region_arg, region_paths  # noqa: E402
 
 DATA = data_path()
 RULE = ("giong dac trung tinh: moi pixel pham vi 30 m (scope v3) gan o theo TAM pixel, nhan gia tri pixel nguon "
@@ -40,15 +42,16 @@ def read_json(p):
 
 
 def load_points(a):
-    """Diem cham duoc = eval_points co ref_salinity huu han o >= 1 mua."""
+    """Diem cham duoc = eval_points co dap an tham chieu (--points-ref-col) huu han o >= 1 mua."""
     import geopandas as gpd
 
     pts = gpd.read_file(a.points)
     pts["point_id"] = pts["point_id"].astype(str)
     if pts["point_id"].duplicated().any():
         raise SystemExit("[LOI] point_id trung trong file diem")
-    ref = pd.read_csv(a.points_ref_sal, dtype={"point_id": str}, usecols=["point_id", "ref_salinity"])
-    ok = set(ref.loc[ref["ref_salinity"].notna(), "point_id"])
+    col = a.points_ref_col
+    ref = pd.read_csv(a.points_ref_sal, dtype={"point_id": str}, usecols=["point_id", col])
+    ok = set(ref.loc[ref[col].notna(), "point_id"])
     pts = pts[pts["point_id"].isin(ok)].reset_index(drop=True)
     if a.n_points_expected and len(pts) != a.n_points_expected:
         raise SystemExit(f"[LOI] so diem cham duoc {len(pts)} != {a.n_points_expected}")
@@ -80,8 +83,13 @@ def outputs_current(path, want):
 def load_target(a, key, years):
     """Kiem + doc raster nguon moi mua (cung luoi pixel)."""
     spec = MET_TARGETS[key]
-    root = DATA if a.data_root is None else a.data_root
-    paths = {s: os.path.join(root, *spec["path"][:-1], spec["path"][-1].format(s=s)) for s in years}
+    if a.data_root is not None or a.region == "dbscl":
+        root = DATA if a.data_root is None else a.data_root
+        paths = {s: os.path.join(root, *spec["path"][:-1], spec["path"][-1].format(s=s)) for s in years}
+    else:  # vung doi chung: raw/ o thu muc dau vao, features/ o thu muc dau ra
+        rp = region_paths(a.region)
+        base = {"raw": rp["raw_dir"], "features": rp["features_dir"]}[spec["path"][0]]
+        paths = {s: os.path.join(base, *spec["path"][1:-1], spec["path"][-1].format(s=s)) for s in years}
     sigs, band_idx = {}, None
     for s, p in paths.items():
         try:
@@ -298,5 +306,12 @@ if __name__ == "__main__":
     ap.add_argument("--years", nargs=2, type=int, default=[2014, 2026], metavar=("TU", "DEN"))
     ap.add_argument("--out-dir", default=f"{DATA}/labels/dot7")
     ap.add_argument("--report-dir", default=os.path.join(ROOT, "KE_HOACH", "ket-qua"))
+    ap.add_argument("--points-ref-col", default="ref_salinity", help="Cot dap an xac dinh diem cham duoc")
     ap.add_argument("--force", action="store_true")
+    add_region_arg(ap, {"scope": "scope", "boundary": "boundary", "grids_dir": "grids_dir", "report_dir": "report_dir",
+                        "points": lambda p: os.path.join(p["eval_dir"], "eval_points.geojson"),
+                        "points_ref_sal": lambda p: f"{p['labels_dir']}/points_reference.csv",
+                        "out_dir": lambda p: f"{p['labels_dir']}/dot7"},
+                   extra={"points_ref_sal": lambda p: f"{p['labels_dir']}/dot7/points_reference_ndwi.csv",
+                          "points_ref_col": "ref_ndwi", "n_points_expected": 0})
     main(ap.parse_args())

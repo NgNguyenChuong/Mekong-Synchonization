@@ -3,13 +3,15 @@
 pham vi v3 (CHG-10, MAC DINH) = ranh gioi v2 (tam pixel nam trong)
         ∩ WorldCover 2021 THUOC {10 cay, 20 bui, 30 co, 40 dat canh tac} (gia tri tai TAM pixel 30 m)
         ∩ dau chan Zenodo: Salinity HUU HAN o >= 1 nam trong cac file nhan dua vao (2014-2023).
+        Vung doi chung (src/region.py): dau chan = NDWIchen Landsat _l8_sf3 huu han (label_band="NDWIchen"); band
+        van ten zenodo_n_years de code doc chung.
 pham vi v2 (truoc CHG-10; chay lai bang exclude=SCOPE_EXCLUDE_LC) = v2 ∩ WorldCover KHONG thuoc {0, 80, 95}
         ∩ dau chan Zenodo.
 Khong phai "co nhan moi nam": pixel khong hop le theo nam do quy tac 5/9 o buoc danh gia xu ly.
 Band wc_class (v3): lop WorldCover tai tam pixel 30 m TRONG ranh gioi v2 (0 = ngoai ranh gioi / ngoai khung WC)
 -> bo phu dung lai duoc: isin(wc_class, cac_lop) & zenodo_n_years >= 1.
 
-Luoi dich = luoi pixel 30 m cua file nhan Zenodo (EPSG:32648; luoi GEE v2 cung goc neo boi so 30 m).
+Luoi dich = luoi pixel 30 m cua file nhan (DBSCL: Zenodo EPSG:32648; vung doi chung: UTM cua vung).
 Doc band theo TEN (Zenodo: band 1 = NDWIchen, band 2 = Salinity). File GEE khong co tag nodata -> khong
 dua vao masked=True; dung np.isfinite.
 """
@@ -133,7 +135,7 @@ def build_scope_mask(boundary_geom, wc_path, label_paths, ref_path=None, exclude
         if log:
             log(f"  dau chan: {p}")
     scope = (in_b & wc_ok & (n_years >= 1)).astype(np.uint8)
-    rule = f"v2 (tam pixel) ∩ {rule_txt} (gia tri tai tam pixel 30 m) ∩ Salinity huu han >= 1 nam"
+    rule = f"v2 (tam pixel) ∩ {rule_txt} (gia tri tai tam pixel 30 m) ∩ {label_band} huu han >= 1 nam"
     return {"scope": scope, "zenodo_n_years": n_years, "wc_class": wc_cls, "in_boundary": in_b, "wc_ok": wc_ok,
             "rule": rule, "include": include, "exclude": exclude, "transform": transform, "crs": crs,
             "shape": shape}

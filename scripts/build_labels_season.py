@@ -36,6 +36,8 @@ Mac dinh --target salinity: duong do man KHONG doi (ten file, cot, bao cao nhu c
 Chay:  venv/Scripts/python.exe scripts/build_labels_season.py [--years 2014 2026] [--grids h3_res_5 ...]
            [--out-dir <DATA_ROOT>/labels] [--work-dir <tam>] [--force] [--report-dir KE_HOACH/ket-qua]
        NDWI: venv/Scripts/python.exe scripts/build_labels_season.py --target ndwi
+       Vung doi chung (chi --target ndwi; raster Landsat _l8_sf3 khong co band Salinity -> quy tac NaN = NDWIchen
+       khong huu han): venv/Scripts/python.exe scripts/build_labels_season.py --region mississippi --target ndwi
 """
 import argparse
 import glob
@@ -61,6 +63,7 @@ from label_season import (LABEL_TARGETS, MAIN_LC, MIN_CLEAR, MIN_TRAIN_FRAC, MIN
                           cell_label_rows, clear_ok, comparison_masks, label_values, median_3x3, points_to_pixels,
                           read_aligned, value_summary, variant_masks, variant_point_sets, water_mask)
 from preprocessing import CANONICAL_BOUNDARY, file_sha256, write_provenance  # noqa: E402
+from region import add_region_arg, crs_metric, landsat_file, region_paths  # noqa: E402
 from scope_mask import SCOPE_BANDS_V3, SCOPE_INCLUDE_LC, band_index, wc_at_centers  # noqa: E402
 
 DATA = data_path()
@@ -130,12 +133,16 @@ def unit_note(a):
 
 
 def label_path(a, s):
+    if a.region != "dbscl":
+        return landsat_file(a.region, "ndwi", s)
     if s <= 2023:
         return os.path.join(a.zenodo_dir, f"{s}_MD_dry_NDWIchen_Salinity.tif")
     return os.path.join(a.gee_dir, f"{s}_MD_dry_NDWIchen_Salinity_l8_v2.tif")
 
 
 def mask_path(a, s):
+    if a.region != "dbscl":
+        return landsat_file(a.region, "watermask", s)
     return os.path.join(a.gee_dir, f"{s}_MD_dry_watermask_l8_v2.tif")
 
 
@@ -294,7 +301,8 @@ def season_raster(a, s, st, pts, chunk_rows=1024):
             n = min(chunk_rows, h - r0)
             sl = slice(r0, r0 + n)
             ndwi = read_aligned(lab, "NDWIchen", tr, (n, w), r0, fill=np.nan, dtype="float32")
-            sal = read_aligned(lab, "Salinity", tr, (n, w), r0, fill=np.nan, dtype="float32")
+            sal = (read_aligned(lab, "Salinity", tr, (n, w), r0, fill=np.nan, dtype="float32")
+                   if "Salinity" in lab.descriptions else None)
             # ngoai khung mask: water_freq 0, n_clear 0 -> khong du tin cay (CHG-08) -> NaN
             wf = read_aligned(wm, "water_freq", tr, (n, w), r0, fill=0, dtype="uint8")
             ncl = read_aligned(wm, "n_clear", tr, (n, w), r0, fill=0, dtype="uint8")
@@ -596,7 +604,8 @@ def main(a):
     rep_grid.to_csv(p_grid, index=False, float_format="%.6g")
     common = dict(unit=UNIT_NOTE, rules=RULES, seasons=years, sets=SET_NOTE, dist_coast=os.path.basename(a.dist_raster),
                   dist_coast_sha256=hasher(a.dist_raster), coast_km=COAST_KM,
-                  coastal_rule="tam o (EPSG:32648) <= 20 km, band dist_coast_km pixel 90 m chua tam", **src_prov)
+                  coastal_rule=f"tam o ({crs_metric(a.region)}) <= 20 km, band dist_coast_km pixel 90 m chua tam",
+                  **src_prov)
     write_provenance(p_year, a.boundary, **common)
     write_provenance(p_dec, a.boundary, compared_with=os.path.basename(old_year_p) if old_year is not None else None,
                      **common)
@@ -640,9 +649,18 @@ if __name__ == "__main__":
                     help="Mac dinh <LABEL_WORK_DIR hoac TEMP>/mekong_label_season_v3 (+ _<target> neu khac salinity)")
     ap.add_argument("--report-dir", default=os.path.join(ROOT, "KE_HOACH", "ket-qua"))
     ap.add_argument("--force", action="store_true", help="Tinh lai raster mua va bang luoi da co")
+    add_region_arg(ap, {"scope": "scope", "worldcover": "worldcover", "boundary": "boundary",
+                        "points": lambda p: os.path.join(p["eval_dir"], "eval_points.geojson"),
+                        "points_source": lambda p: os.path.join(p["eval_dir"], "deprecated_v2b", "eval_points.geojson"),
+                        "grids_dir": "grids_dir", "report_dir": "report_dir"},
+                   extra={"points_source": lambda p: os.path.join(p["eval_dir"], "eval_points.geojson"),
+                          "dist_raster": lambda p: p["river"]})
     args = ap.parse_args()
+    if args.region != "dbscl" and args.target == "salinity":
+        ap.error("vung doi chung khong co nhan do man - dung --target ndwi")
     if args.out_dir is None:
-        args.out_dir = os.environ.get("LABELS_DIR", f"{DATA}/labels")
+        args.out_dir = (os.environ.get("LABELS_DIR", f"{DATA}/labels") if args.region == "dbscl"
+                        else region_paths(args.region)["labels_dir"])
         if args.target != "salinity":
             args.out_dir = os.path.join(args.out_dir, "dot7")
     if args.work_dir is None:
@@ -650,4 +668,10 @@ if __name__ == "__main__":
                                        os.path.join(tempfile.gettempdir(), "mekong_label_season_v3"))
         if args.target != "salinity":
             args.work_dir = f"{args.work_dir}_{args.target}"
+        if args.region != "dbscl":  # raster cache rieng tung vung
+            args.work_dir = f"{args.work_dir}_{args.region}"
+    if args.region != "dbscl":
+        RULES["nan_rule"] = "NDWIchen khong huu han (raster vung doi chung khong co band Salinity)"
+        RULES["scope_main"] = "v3: ranh gioi vung ∩ WorldCover {10,20,30,40} ∩ dau chan NDWIchen _l8_sf3"
+        RULES["label_sources"] = f"Landsat 8 GEE <DATA_ROOT>/doi_chung/{args.region}/landsat (_l8_sf3)"
     main(args)

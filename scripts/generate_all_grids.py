@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Sinh 13 khung luoi cho DBSCL va bang doi chieu dien tich (T1-03).
+"""Sinh 13 khung luoi cho mot vung (mac dinh DBSCL; --region) va bang doi chieu dien tich (T1-03).
 
 Kich thuoc o vuong va buoc kinh-vi do duoc chon de khop dien tich trung binh
 CUC BO cua luoi H3 tren ranh gioi chuan (khong phai trung binh toan cau).
@@ -13,6 +13,7 @@ nguyen hinh o; moi file luoi kem <luoi>.geojson.provenance.json (sha256 ranh gio
 Chay:  python scripts/generate_all_grids.py [--previous-dir data/grids/deprecated_centroid_rule]
        python scripts/generate_all_grids.py --shift-frac 0.5 --shift-axis x --output-dir data/grids_pha --report-csv KE_HOACH/ket-qua/dot4_doi_chieu_dien_tich_pha.csv
        (3 luoi o vuong dich goc -> *_sx, hoac y -> *_sy; KHONG ghi vao data/grids)
+       python scripts/generate_all_grids.py --region mississippi   (vung doi chung -> <DOI_CHUNG_OUT>/mississippi/grids)
 """
 import argparse
 import os
@@ -37,6 +38,8 @@ from preprocessing import (  # noqa: E402
     generate_s2_grid,
     generate_square_grid,
 )
+from config import CRS_METRIC  # noqa: E402
+from region import add_region_arg, crs_metric  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = os.path.join(ROOT, "data", "grids")
 DEFAULT_REPORT = os.path.join(ROOT, "KE_HOACH", "ket-qua", "dot4_doi_chieu_dien_tich.csv")
@@ -51,27 +54,36 @@ GRID_SPECS = [
     ("S2", "level_10", 6, lambda b: generate_s2_grid(b, 10)),  # luoi kep o res 6
     ("S2", "level_11", 6, lambda b: generate_s2_grid(b, 11)),  # luoi chinh o res 6
     ("S2", "level_12", 7, lambda b: generate_s2_grid(b, 12)),
-    ("Square_UTM", "17087m", 5, lambda b: generate_square_grid(b, 17087)),
-    ("Square_UTM", "6458m", 6, lambda b: generate_square_grid(b, 6458)),
-    ("Square_UTM", "2441m", 7, lambda b: generate_square_grid(b, 2441)),
+    ("Square_UTM", "17087m", 5, lambda b, crs: generate_square_grid(b, 17087, crs_metric=crs)),
+    ("Square_UTM", "6458m", 6, lambda b, crs: generate_square_grid(b, 6458, crs_metric=crs)),
+    ("Square_UTM", "2441m", 7, lambda b, crs: generate_square_grid(b, 2441, crs_metric=crs)),
     ("LatLon", "0.1552deg", 5, lambda b: generate_latlon_grid(b, 0.1552)),
     ("LatLon", "0.0586deg", 6, lambda b: generate_latlon_grid(b, 0.0586)),
     ("LatLon", "0.0222deg", 7, lambda b: generate_latlon_grid(b, 0.0222)),
 ]
 
 
+def rel(p):
+    """Duong dan tuong doi ROOT; khac o dia (vd dau ra vung doi chung o C:) -> duong dan tuyet doi."""
+    try:
+        return os.path.relpath(p, ROOT).replace("\\", "/")
+    except ValueError:
+        return os.path.abspath(p).replace("\\", "/")
+
+
 def geodesic_km2(geom) -> float:
     return abs(GEOD.geometry_area_perimeter(geom)[0]) / 1e6
 
 
-def main(boundary, output_dir, report_csv, previous_dir=None, shift_frac=0.0, shift_axis="x", base_report=DEFAULT_REPORT):
+def main(boundary, output_dir, report_csv, previous_dir=None, shift_frac=0.0, shift_axis="x", base_report=DEFAULT_REPORT,
+         crs_metric=CRS_METRIC):
     import geopandas as gpd
 
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(os.path.dirname(report_csv), exist_ok=True)
     bnd = gpd.read_file(boundary).to_crs(4326)
     boundary_km2 = geodesic_km2(bnd.geometry.union_all())
-    boundary_m = bnd.to_crs("EPSG:32648").geometry.union_all()
+    boundary_m = bnd.to_crs(crs_metric).geometry.union_all()
     sha = file_sha256(boundary)
     print(f"Ranh gioi: {boundary} ({boundary_km2:.2f} km2, sha256 {sha[:12]})")
 
@@ -83,14 +95,15 @@ def main(boundary, output_dir, report_csv, previous_dir=None, shift_frac=0.0, sh
         sfx = "_s" + shift_axis
         old = pd.read_csv(base_report)  # chi doc diem H3 tu bang goc; bang goc khong bi ghi
         h3_mean = {int(r.tier_h3_res): float(r.mean_area_km2) for r in old.itertuples() if r.framework == "H3"}
-        specs = [(f, f"{lb}{sfx}", t, (lambda b, e=int(lb[:-1]): generate_square_grid(
-            b, e, shift_x_m=shift_frac * e * (shift_axis == "x"), shift_y_m=shift_frac * e * (shift_axis == "y"))))
+        specs = [(f, f"{lb}{sfx}", t, (lambda b, crs, e=int(lb[:-1]): generate_square_grid(
+            b, e, shift_x_m=shift_frac * e * (shift_axis == "x"), shift_y_m=shift_frac * e * (shift_axis == "y"),
+            crs_metric=crs)))
             for f, lb, t, _ in GRID_SPECS if f == "Square_UTM"]
     for framework, label, tier, build in specs:
         t0 = time.time()
-        gdf = build(boundary)
+        gdf = build(boundary, crs_metric) if framework == "Square_UTM" else build(boundary)
         areas = np.array([geodesic_km2(g) for g in gdf.geometry])
-        planar = gdf.to_crs("EPSG:32648").geometry.area.to_numpy() / 1e6
+        planar = gdf.to_crs(crs_metric).geometry.area.to_numpy() / 1e6
         gdf["area_km2"] = np.round(areas, 6)
         gdf = gdf[["cell_id", "area_km2", "overlap_frac", "geometry"]]
 
@@ -99,8 +112,8 @@ def main(boundary, output_dir, report_csv, previous_dir=None, shift_frac=0.0, sh
         write_provenance(out, boundary, selection_rule="intersects (overlap_frac > 0), o giu nguyen hinh",
                          framework=framework, resolution=label, cells=len(gdf))
 
-        # % ranh gioi khong duoc o nao phu (quy tac giao -> phai = 0), do trong EPSG:32648.
-        cells_m = gdf.to_crs("EPSG:32648").geometry.union_all()
+        # % ranh gioi khong duoc o nao phu (quy tac giao -> phai = 0), do trong CRS met cua vung.
+        cells_m = gdf.to_crs(crs_metric).geometry.union_all()
         uncovered_pct = boundary_m.difference(cells_m).area / boundary_m.area * 100.0
         frac = gdf["overlap_frac"].to_numpy()
         prev = None
@@ -140,7 +153,7 @@ def main(boundary, output_dir, report_csv, previous_dir=None, shift_frac=0.0, sh
             "boundary_sha256": sha,
             "planar_sum_area_km2": round(float(planar.sum()), 2),
             "geo_planar_diff_pct": round(abs(areas.sum() - planar.sum()) / areas.sum() * 100.0, 4),
-            "file": os.path.relpath(out, ROOT).replace("\\", "/"),
+            "file": rel(out),
         })
         print(f"  {framework:10s} {label:10s} {len(gdf):6d} o (truoc {prev}) | TB {mean:9.4f} km2 | lech H3 {diff:+7.2f}% "
               f"| khong phu {uncovered_pct:.2e}% | frac<0.1: {(frac < 0.1).sum()} | {time.time() - t0:5.1f}s", flush=True)
@@ -162,6 +175,9 @@ if __name__ == "__main__":
     ap.add_argument("--shift-frac", type=float, default=0.0, help="Dich goc luoi vuong = frac * canh (vd 0.5)")
     ap.add_argument("--base-report", default=DEFAULT_REPORT, help="Bang dien tich goc (chi doc, lay diem H3)")
     ap.add_argument("--shift-axis", choices=["x", "y"], default="x")
+    add_region_arg(ap, {"boundary": "boundary", "output_dir": "grids_dir",
+                        "report_csv": lambda p: os.path.join(p["report_dir"], os.path.basename(DEFAULT_REPORT)),
+                        "base_report": lambda p: os.path.join(p["report_dir"], os.path.basename(DEFAULT_REPORT))})
     args = ap.parse_args()
     main(args.boundary, args.output_dir, args.report_csv, args.previous_dir, args.shift_frac, args.shift_axis,
-         args.base_report)
+         args.base_report, crs_metric(args.region))

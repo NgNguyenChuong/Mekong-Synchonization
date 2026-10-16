@@ -19,6 +19,7 @@ WorldCover: LandCover_DBSCL_2021_v2.tif (dem 25 km, bien xa da dien 80).
 
 Chay:  venv/Scripts/python.exe scripts/build_static_features.py [--grids h3_res_7 ...] [--force]
        [--prev-dir <DATA_ROOT>/features/static/deprecated_v2 --control-stack <scratch>/static_scope_30m_doi_chung.tif]
+       Vung doi chung (khong bao cao so ban cu/diem quen DBSCL): ... --region mississippi
 """
 import argparse
 import glob
@@ -39,6 +40,7 @@ if sys.platform == "win32":
 
 from preprocessing import CANONICAL_BOUNDARY, file_sha256, provenance_path, write_provenance  # noqa: E402
 from processing import area_weighted_means  # noqa: E402
+from region import add_region_arg, crs_metric  # noqa: E402
 from static_features import (DEM_RULE, LANDCOVER_PREFIX, RIVER_BANDS, SCOPE_FEATURES,  # noqa: E402
                              SCOPE_FRAC_COL, build_scope_stack, cell_static_features)
 
@@ -151,7 +153,7 @@ def compare_grid(a, path, out_csv):
     dem_full.columns = ["cell_id", "dem_mean"]
     full = old.merge(dem_full, on="cell_id", how="outer", validate="1:1")
     m = new.merge(full, on="cell_id", suffixes=("", "_full"), validate="1:1")
-    cen = grid.to_crs(32648).geometry.centroid.to_crs(4326)
+    cen = grid.to_crs(crs_metric(a.region)).geometry.centroid.to_crs(4326)
     m = m.merge(pd.DataFrame({"cell_id": grid["cell_id"], "lon": cen.x.round(4), "lat": cen.y.round(4),
                               "overlap_frac": grid.get("overlap_frac", np.nan)}), on="cell_id")
     for c in SCOPE_FEATURES:
@@ -223,8 +225,8 @@ def wc_frame_cover(grid, wc_path):
     from shapely.geometry import box
 
     with rasterio.open(wc_path) as ds:
-        frame = box(*ds.bounds)
-    g = grid.to_crs(32648).geometry
+        frame, crs = box(*ds.bounds), ds.crs
+    g = grid.to_crs(crs).geometry
     return pd.Series((g.intersection(frame).area / g.area).to_numpy(), index=grid["cell_id"].to_numpy())
 
 
@@ -375,6 +377,10 @@ if __name__ == "__main__":
     ap.add_argument("--min-free-gb", type=float, default=2.0)
     ap.add_argument("--force", action="store_true", help="ghi lai CSV da co")
     ap.add_argument("--force-stack", action="store_true", help="dung lai raster trung gian")
+    add_region_arg(ap, {"scope": "scope", "dem": "dem", "river": "river", "dem_flags": "dem_flags",
+                        "worldcover": "worldcover", "boundary": "boundary", "grids_dir": "grids_dir",
+                        "out_dir": lambda p: f"{p['features_dir']}/static", "report_dir": "report_dir"},
+                   extra={"worldcover_prev": None, "old_river_dir": None, "no_report": True})
     args = ap.parse_args()
     args.stack = args.stack or os.path.join(args.out_dir, "static_scope_30m.tif")
     main(args)

@@ -42,6 +42,7 @@ Chay:  venv/Scripts/python.exe scripts/build_cv_folds.py [--seeds 42 43 44] [--m
 Tai lap quy tac cu (CHG-06): venv/Scripts/python.exe scripts/build_cv_folds.py --tols 0.10 0.15 ...
 Kiem lai dieu kien cua phuong an DA LUU (sau khi doi mat na/diem; khong ghi fold):
        venv/Scripts/python.exe scripts/build_cv_folds.py --check-only
+Vung doi chung: venv/Scripts/python.exe scripts/build_cv_folds.py --region nile
 """
 import argparse
 import glob
@@ -59,6 +60,7 @@ import pandas as pd
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
+from region import add_region_arg  # noqa: E402
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -617,4 +619,9 @@ if __name__ == "__main__":
                     help="Chi kiem lai dieu kien J/I/D cua cac phuong an DA LUU tren mat na/diem hien tai; khong ghi "
                          "fold. Thoat 0 = dat het, 3 = co dieu kien vo")
     ap.add_argument("--check-prefix", default="dot4_scope_v3", help="Tien to bang cua --check-only")
+    add_region_arg(ap, {"blocks": lambda p: os.path.join(p["eval_dir"], "holdout_blocks.geojson"),
+                        "points": lambda p: os.path.join(p["eval_dir"], "eval_points.geojson"),
+                        "grids_dir": "grids_dir", "out_dir": "eval_dir", "report_dir": "report_dir",
+                        "backup_dir": lambda p: os.path.join(p["eval_dir"], "deprecated_v2b"),
+                        "scope_mask": "scope", "dist_coast": "river"})
     main(ap.parse_args())

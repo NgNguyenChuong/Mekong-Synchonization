@@ -70,7 +70,14 @@ def label_values(ndwi, sal, target="salinity"):
     """Gia tri pixel cua bien muc tieu sau quy tac NaN CHUNG (nan_rule) - moi bien cung tap pixel hop le.
 
     salinity -> dung nan_rule(ndwi, sal) (duong cu); ndwi -> NDWIchen tai pixel nan_rule huu han, con lai NaN.
+    sal None (vung doi chung, khong co band Salinity) -> chi nhan target ndwi, NaN = NDWIchen khong huu han.
     """
+    if sal is None:
+        if target != "ndwi":
+            raise ValueError("Khong co band Salinity: chi tinh duoc target 'ndwi'")
+        out = np.asarray(ndwi, dtype=np.float32).copy()
+        out[~np.isfinite(out)] = np.nan
+        return out
     s = nan_rule(ndwi, sal)
     if target == "salinity":
         return s

@@ -13,6 +13,8 @@ Kiem kem (bang o --report-dir):
 Da co file -> khong ghi lai (tru --force). Kem .provenance.json (sha256 ranh gioi, WorldCover, nhan).
 
 Chay:  venv/Scripts/python.exe scripts/build_scope_mask.py [--force]
+Vung doi chung (dau chan = NDWIchen Landsat _l8_sf3 huu han; khong so v2):
+       venv/Scripts/python.exe scripts/build_scope_mask.py --region mississippi
 Chay lai v2 (quy tac cu, 2 band):
        venv/Scripts/python.exe scripts/build_scope_mask.py --worldcover <DATA_ROOT>/gee/LandCover_DBSCL_2021.tif
            --exclude-lc 0 80 95 --no-wc-class --compare-scope none --compare-worldcover none
@@ -34,6 +36,7 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from preprocessing import CANONICAL_BOUNDARY, file_sha256, write_provenance  # noqa: E402
+from region import add_region_arg, landsat_file  # noqa: E402
 from scope_mask import (SCOPE_INCLUDE_LC, band_index, build_scope_mask, compare_worldcover,  # noqa: E402
                         scope_change_by_class, wc_at_centers, write_scope_mask)
 
@@ -58,7 +61,12 @@ def main(a):
     log(f"Cho trong o dich: {free_gb:.1f} GB")
     if free_gb < 1.0:
         raise SystemExit("[LOI] o dich con < 1 GB.")
-    labels = [os.path.join(a.zenodo_dir, f"{y}_MD_dry_NDWIchen_Salinity.tif") for y in range(a.y0, a.y1 + 1)]
+    if a.region == "dbscl":
+        labels = [os.path.join(a.zenodo_dir, f"{y}_MD_dry_NDWIchen_Salinity.tif") for y in range(a.y0, a.y1 + 1)]
+        label_band = "Salinity"
+    else:  # vung doi chung khong co band Salinity -> dau chan theo NDWIchen huu han
+        labels = [landsat_file(a.region, "ndwi", y) for y in range(a.y0, a.y1 + 1)]
+        label_band = "NDWIchen"
     miss = [p for p in labels if not os.path.exists(p)]
     if miss:
         raise SystemExit(f"[LOI] thieu file nhan: {miss}")
@@ -70,7 +78,8 @@ def main(a):
     include = None if a.exclude_lc else a.include_lc
     log(f"Dung mat na tren luoi {labels[0]} ({a.y0}-{a.y1}, {len(labels)} nam); WorldCover {a.worldcover}; "
         f"{'giu ' + str(include) if include else 'bo ' + str(a.exclude_lc)} ...")
-    res = build_scope_mask(boundary, a.worldcover, labels, include=include, exclude=a.exclude_lc or None, log=log)
+    res = build_scope_mask(boundary, a.worldcover, labels, include=include, exclude=a.exclude_lc or None,
+                           label_band=label_band, log=log)
     px_km2 = abs(res["transform"].a * res["transform"].e) / 1e6
     inb, wc, ny, sc = res["in_boundary"], res["wc_ok"], res["zenodo_n_years"], res["scope"].astype(bool)
     cls = res["wc_class"]
@@ -150,7 +159,7 @@ def main(a):
                      change="CHG-10 (2026-10-03): bo chinh chi WorldCover 10, 20, 30, 40" if res["include"] else None,
                      worldcover=a.worldcover, worldcover_sha256=file_sha256(a.worldcover), label_years=[a.y0, a.y1],
                      labels={os.path.basename(p): file_sha256(p) for p in labels},
-                     grid_ref=os.path.basename(labels[0]),
+                     grid_ref=os.path.basename(labels[0]), footprint_band=label_band, region=a.region,
                      bands=["scope", "zenodo_n_years"] + ([] if a.no_wc_class else ["wc_class"]),
                      stats=stats, compare=compare)
     log(f"Ghi {a.out}")
@@ -175,4 +184,6 @@ if __name__ == "__main__":
                     help="WorldCover cu de kiem trung gia tri trong v2 ('none' = bo qua)")
     ap.add_argument("--report-dir", default=os.path.join(ROOT, "KE_HOACH", "ket-qua"))
     ap.add_argument("--force", action="store_true")
+    add_region_arg(ap, {"boundary": "boundary", "worldcover": "worldcover", "out": "scope", "report_dir": "report_dir"},
+                   extra={"compare_scope": "none", "compare_worldcover": "none"})
     main(ap.parse_args())

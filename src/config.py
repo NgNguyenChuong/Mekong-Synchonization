@@ -60,7 +60,16 @@ H3_GRID_GEOJSON = os.path.join(DATA_PROCESSED, "h3_grid.geojson")
 # GEOSPATIAL SETTINGS
 # ============================================================
 CRS_WGS84 = "EPSG:4326"
-CRS_METRIC = "EPSG:32648"  # UTM Zone 48N for accurate area calculation in Vietnam
+CRS_METRIC = "EPSG:32648"  # UTM Zone 48N for accurate area calculation in Vietnam (= crs_metric("dbscl"))
+
+
+def crs_metric(region="dbscl"):
+    """CRS met theo vung (src/region.py); dbscl = CRS_METRIC."""
+    from region import crs_metric as _crs
+
+    return _crs(region)
+
+
 BUFFER_DIST = _env_int("BUFFER_DIST", 0)  # meters
 MIN_ISLAND_AREA_KM2 = _env_float("MIN_ISLAND_AREA_KM2", 600)
 H3_RESOLUTION = _env_int("H3_RESOLUTION", 7)

@@ -207,10 +207,11 @@ def generate_s2_grid(boundary_path=None, level=11, output_path=None) -> gpd.GeoD
 
 
 def generate_square_grid(boundary_path=None, resolution_m=6458, output_path=None,
-                         shift_x_m=0.0, shift_y_m=0.0) -> gpd.GeoDataFrame:
-    """O vuong trong EPSG:32648, goc neo o boi so cua resolution_m theo toa do UTM (+ dich goc shift_x_m/shift_y_m)."""
+                         shift_x_m=0.0, shift_y_m=0.0, crs_metric=CRS_METRIC) -> gpd.GeoDataFrame:
+    """O vuong trong crs_metric (UTM cua vung, mac dinh EPSG:32648), goc neo o boi so cua resolution_m theo toa do UTM
+    (+ dich goc shift_x_m/shift_y_m)."""
     boundary_path = _resolve_boundary_path(boundary_path)
-    union_poly = _load_union(boundary_path, CRS_METRIC)
+    union_poly = _load_union(boundary_path, crs_metric)
 
     minx, miny, maxx, maxy = union_poly.bounds
     size = float(resolution_m)
@@ -225,7 +226,7 @@ def generate_square_grid(boundary_path=None, resolution_m=6458, output_path=None
             geoms_utm.append(box(x, y, x + size, y + size))
     cell_ids, geoms_utm, fracs = _select_intersecting(ids, geoms_utm, union_poly, cell_area=size * size)
 
-    to_wgs = pyproj.Transformer.from_crs(CRS_METRIC, CRS_WGS84, always_xy=True)
+    to_wgs = pyproj.Transformer.from_crs(crs_metric, CRS_WGS84, always_xy=True)
     geoms = [transform(to_wgs.transform, g) for g in geoms_utm]
 
     gdf = gpd.GeoDataFrame({"cell_id": cell_ids, "overlap_frac": fracs}, geometry=geoms, crs=CRS_WGS84)
