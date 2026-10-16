@@ -61,6 +61,7 @@ class Ctx:
         self.boundary = self.root + "/boundary.geojson"
         self.project = a.project
         self.threads = a.threads
+        self.static_buffer_km = getattr(a, "static_buffer_km", 0.0)
         os.makedirs(self.root, exist_ok=True)
 
     def p(self, *parts):
@@ -136,9 +137,9 @@ def cmd_mcd18(c):
 
 
 # ------------------------------------------------------------------ tai theo o (tile) tu GEE
-def grid_of(c, res):
+def grid_of(c, res, buf_m=1000):
     import geopandas as gpd
-    b = gpd.read_file(c.boundary).to_crs(c.utm).buffer(1000).union_all()
+    b = gpd.read_file(c.boundary).to_crs(c.utm).buffer(buf_m).union_all()
     x0, y0, x1, y1 = b.bounds
     X0, Y1 = np.floor(x0 / res) * res, np.ceil(y1 / res) * res
     return b, X0, Y1, int(np.ceil((x1 - X0) / res)), int(np.ceil((Y1 - y0) / res))
@@ -150,7 +151,7 @@ def clip_geom(ee, c, b):
     return ee.Geometry(mapping(__import__("geopandas").GeoSeries([s], crs=c.utm).to_crs(4326).iloc[0]), geodesic=False)
 
 
-def export_tiles(ee, c, make_img, outs, res, tile_px, what, meta):
+def export_tiles(ee, c, make_img, outs, res, tile_px, what, meta, buf_m=1000):
     """make_img(tile_geom) -> anh nhieu band (float32). outs = [(path, [chi so band], dtype, ten band)].
     Ghi tung o vao file .part (khung 512 khop o), nho o da xong trong .done de chay lai; xong -> doi ten + provenance."""
     import rasterio
@@ -159,7 +160,7 @@ def export_tiles(ee, c, make_img, outs, res, tile_px, what, meta):
     from shapely.geometry import box
     if all(os.path.exists(o[0]) and os.path.exists(o[0] + ".provenance.json") for o in outs):
         return log(f"[bo qua] {what}")
-    b, X0, Y1, W, H = grid_of(c, res)
+    b, X0, Y1, W, H = grid_of(c, res, buf_m)
     if free_gb(outs[0][0]) < 1.0:
         raise RuntimeError(f"o dia con {free_gb(outs[0][0]):.1f} GB < 1 GB")
     aff = Affine(res, 0, X0, 0, -res, Y1)
@@ -335,6 +336,19 @@ def cmd_landsat(c, sensors="l8", seasons=None, scene_filter=None, mask_snow=Fals
             log(f"[LOI] landsat {y}: {traceback.format_exc(limit=2)}")
 
 
+def export_wc(ee, c, lab, cg):
+    """WorldCover trong ranh gioi (buffer 0, file cu) hoac + dem static_buffer_km (file _padNN, ngoai vung phu -> 80 nhu DBSCL v2)."""
+    k = c.static_buffer_km
+    pad = f"_pad{k:g}" if k > 0 else ""
+    buf_m = 1000 + k * 1000
+    g = clip_geom(ee, c, grid_of(c, 30, buf_m)[0]) if k > 0 else cg
+    export_tiles(ee, c, lambda _: ee.ImageCollection("ESA/WorldCover/v200").first().select("Map").unmask(80).toFloat().clip(g),
+                 [(c.p("static", f"LandCover_{lab}_2021{pad}.tif"), [0], "uint8", ["Map"])], 10, 2304, "worldcover" + pad,
+                 dict(asset="ESA/WorldCover/v200", buffer_km=k,
+                      product="WorldCover 2021 trong ranh gioi" + (f" + dem {k:g} km" if k > 0 else "") + ", ngoai vung phu WorldCover -> 80 (nuoc)"),
+                 buf_m=buf_m)
+
+
 def cmd_static(c):
     ee = gf._init(c.project)
     b30 = grid_of(c, 30)[0]
@@ -351,10 +365,7 @@ def cmd_static(c):
         (c.p("static", f"DEM_{lab}.tif"), [0], "float32", ["DEM"]),
         (c.p("static", f"DEM_{lab}_flags.tif"), [1, 2], "uint8", ["WBM", "EDM"])], 30, 1536, "dem",
         dict(asset="COPERNICUS/DEM/GLO30_2024_1", product="DEM (m) + WBM/EDM; tai lai tu EPSG:4326 goc ve luoi UTM 30 m (nearest)"))),
-        ("worldcover", lambda: export_tiles(ee, c, lambda g: ee.ImageCollection("ESA/WorldCover/v200").first().select("Map")
-                                            .unmask(80).toFloat().clip(cg), [
-            (c.p("static", f"LandCover_{lab}_2021.tif"), [0], "uint8", ["Map"])], 10, 2304, "worldcover",
-            dict(asset="ESA/WorldCover/v200", product="WorldCover 2021, ngoai vung phu -> 80 (nuoc)"))),
+        ("worldcover", lambda: export_wc(ee, c, lab, cg)),
         ("jrc", lambda: export_tiles(ee, c, lambda g: ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select(["occurrence", "max_extent"])
                                      .unmask(0).toFloat().clip(cg), [
             (c.p("static", f"JRC_GSW_{lab}.tif"), [0, 1], "uint8", ["occurrence", "max_extent"])], 30, 1536, "jrc",
@@ -665,6 +676,8 @@ if __name__ == "__main__":
     ap.add_argument("--root", default=None, help="mac dinh <DATA_ROOT>/doi_chung hoac bien DOI_CHUNG_ROOT")
     ap.add_argument("--project", default=None)
     ap.add_argument("--threads", type=int, default=3)
+    ap.add_argument("--static-buffer-km", type=float, default=0.0,
+                    help="static/worldcover: dem quanh ranh gioi (km), ghi LandCover_<L>_2021_pad<km>.tif; 0 = nhu cu")
     ap.add_argument("--sources", nargs="+", choices=list(STEPS), default=["boundary", "stations", "chirps", "mcd18", "era5", "static", "landsat"])
     ap.add_argument("--seasons", nargs="+", type=int, default=None, help="chi cho landsat")
     ap.add_argument("--crms-file", default=None, help="zip/csv CRMS tai tay (neu khong tai tu dong duoc)")

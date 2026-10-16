@@ -21,6 +21,16 @@ def test_grid_of_snap_and_cover(tmp_path):
         assert x0 <= bx0 and x0 + w * res >= bx1 and y1 >= by1 and y1 - h * res <= by0
 
 
+def test_grid_of_buffer_grows_by_pad(tmp_path):
+    gpd.GeoDataFrame(geometry=[box(-91.0, 29.0, -90.5, 29.4)], crs=4326).to_file(tmp_path / "boundary.geojson", driver="GeoJSON")
+    c = f.Ctx(argparse.Namespace(region="mississippi", root=str(tmp_path.parent), project=None, threads=1))
+    c.boundary = str(tmp_path / "boundary.geojson")
+    assert c.static_buffer_km == 0.0
+    b0, b1 = f.grid_of(c, 10)[0], f.grid_of(c, 10, 26000)[0]
+    assert b1.bounds[0] == __import__("pytest").approx(b0.bounds[0] - 25000, abs=10)
+    assert b1.bounds[3] == __import__("pytest").approx(b0.bounds[3] + 25000, abs=10)
+
+
 def test_regions_utm():
     assert f.REGIONS["mississippi"]["utm"] == 32615 and f.REGIONS["nile"]["utm"] == 32636
 
