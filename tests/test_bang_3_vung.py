@@ -105,3 +105,10 @@ def test_fig7_chi_cap_eligible_muc_vua_nho(results):
     r = f.iloc[0]
     assert r["x"] == pytest.approx(1.0) and r["ci90_low"] == pytest.approx(-1.0) and r["ci95_high"] == pytest.approx(3.0)
     assert f[f.dag].shape[0] == 1 and f[f.cls == "pend"].shape[0] == 1 and f[f.cls == "und"].shape[0] == 1
+
+
+def test_trivial_dem_rieng_va_co_diamond():
+    d = _ledger(["ndwi"], {("ndwi", "fine", 0): dict(decision="Trivial")})
+    c = b3.cell(d[d.level == "fine"])
+    assert (c["eq"], c["inc"], c["triv"]) == (5, 0, 1)
+    assert c["text"] == "5/0/0 ◊1"

@@ -31,7 +31,7 @@ RATIO_MAX = 1.2
 OUT_NAME = "bang_3_vung"
 NEED = ["region", "variable", "grid_a", "grid_b", "level", "area_ratio", "eligible", "ineligible_reason", "G",
         "decision"]
-KNOWN = {"Equivalent", "Inconclusive", "Descriptive", "PendingFinal"}
+KNOWN = {"Equivalent", "Inconclusive", "Descriptive", "PendingFinal", "Trivial"}
 
 
 def loi(msg):
@@ -68,7 +68,7 @@ def load_ledgers(results_dir) -> dict:
 
 def classify(d) -> pd.Series:
     """Eq/Inc/Pend chi cho cap eligible; cap khong du dieu kien luon la Desc (ke ca khi ledger ghi decision khac)."""
-    cls = d["decision"].map({"Equivalent": "Eq", "Inconclusive": "Inc", "PendingFinal": "Pend"})
+    cls = d["decision"].map({"Equivalent": "Eq", "Inconclusive": "Inc", "PendingFinal": "Pend", "Trivial": "Triv"})
     return cls.where(d["eligible"], "Desc")
 
 
@@ -80,17 +80,17 @@ def _reasons(s) -> str:
 def cell(d) -> dict:
     """Mot o (tap cap con cua 1 bien x muc hoac tong)."""
     if d.empty:
-        return dict(text="–", eq=None, inc=None, desc=None, pend=None, reason="", flags="")
+        return dict(text="–", eq=None, inc=None, desc=None, pend=None, triv=None, reason="", flags="")
     cls = classify(d)
-    n = {k: int((cls == k).sum()) for k in ("Eq", "Inc", "Desc", "Pend")}
+    n = {k: int((cls == k).sum()) for k in ("Eq", "Inc", "Desc", "Pend", "Triv")}
     assert sum(n.values()) == len(d)
     reason = _reasons(d.loc[cls == "Desc", "ineligible_reason"])
     flags = ("†" if (d["area_ratio"] > RATIO_MAX).any() else "") + ("‡" if n["Pend"] else "") + \
             ("§" if ((cls == "Desc") & (d["decision"] != "Descriptive")).any() else "")
-    txt = f"{n['Eq']}/{n['Inc']}/{n['Desc']}" + (f"/{n['Pend']}" if n["Pend"] else "")
+    txt = f"{n['Eq']}/{n['Inc']}/{n['Desc']}" + (f"/{n['Pend']}" if n["Pend"] else "") + (f" ◊{n['Triv']}" if n["Triv"] else "")
     if reason:
         txt += f" ({reason})"
-    return dict(text=txt + flags, eq=n["Eq"], inc=n["Inc"], desc=n["Desc"], pend=n["Pend"], reason=reason, flags=flags)
+    return dict(text=txt + flags, eq=n["Eq"], inc=n["Inc"], desc=n["Desc"], pend=n["Pend"], triv=n["Triv"], reason=reason, flags=flags)
 
 
 def table1(led) -> pd.DataFrame:
@@ -142,6 +142,7 @@ NOTES = ("Ô = nEq/nInc/nDesc(/nPend): Equivalent / Inconclusive / Descriptive /
          "đăng ký kiểm định; `truot_cong` = mức kiểm định nhưng trượt cổng học được. Cặp không eligible luôn tính Descriptive.  \n"
          "† ô chứa cặp có tỉ lệ diện tích > 1,2 (MS: S2 L12 vs Square 2,4 km; NL: H3 r7 vs S2 L12; vẫn tính trong số đếm).  \n"
          "‡ có cặp PendingFinal (cho_giu_rieng ở CV, biến không có lượt final).  \n"
+         "◊n = n cặp Trivial: Holm đạt, giữ riêng cùng chiều nhưng |Δ| < Δmin (có ý nghĩa thống kê nhưng nằm trong biên tương đương; đếm riêng).  \n"
          "§ ledger ghi decision khác Descriptive cho cặp không eligible (không tính vào Eq/Inc; xem cột *_raw trong CSV).  \n"
          "– biến không có ở vùng đó (salinity chỉ ĐBSCL).")
 

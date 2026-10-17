@@ -907,7 +907,7 @@ def fig6(res, levels, st, info):
 REG7 = (("dbscl_b", "Mekong Delta", "#0072B2", "o", -0.27), ("ms", "Mississippi Delta", "#E69F00", "s", 0.0),
         ("nl", "Nile Delta", "#009E73", "^", 0.27))
 FIG7_LEVELS = ("medium", "fine")
-FIG7_CLS = {"Equivalent": "eq", "Inconclusive": "und", "PendingFinal": "pend"}
+FIG7_CLS = {"Equivalent": "eq", "Inconclusive": "und", "PendingFinal": "pend", "Trivial": "triv"}
 LIM7, BAND7 = 6.0, 5.0  # % cua MAE trung binh muc; Delta_min = 5 %
 
 
@@ -936,7 +936,7 @@ def fig7_caption(led, f, panels) -> str:
             "blocks; medium and fine levels; only tested pairs; all variables except soil salinity also had to pass the skill gate). ΔMAE = MAE(A) − "
             "MAE(B) for pair 'A vs B' as % of the level-mean MAE; thick bar = 90 % CI (TOST), thin bar = 95 % CI; grey "
             "band = equivalence margin (±5 % = ±Δmin). Filled = equivalent (TOST), open = undetermined, shaded = "
-            "pending held-out result (‡). † area ratio of the pair > 1.2. Mekong Delta uses the feature set without the "
+            "pending held-out result (‡), half-filled = trivial difference (statistically significant yet within the margin). † area ratio of the pair > 1.2. Mekong Delta uses the feature set without the "
             "four hydrological features (as in the other deltas). Number of blocks G and of pairs n per region: "
             f"{reg}. Soil salinity exists for the Mekong Delta only; Solar radiation has no pair passing the gate in "
             "the Mississippi Delta.")
@@ -967,17 +967,20 @@ def fig7(res, levels, st):
                 y = ys[(r.grid_a, r.grid_b)] + off
                 seg(ax, r.ci95_low, r.ci95_high, y, LIM7, color=col, lw=0.6, zorder=2)
                 seg(ax, r.ci90_low, r.ci90_high, y, LIM7, color=col, lw=1.8, zorder=3)
-                face = {"eq": col, "und": "white", "pend": to_rgba(col, 0.3)}[r.cls]
+                face = {"eq": col, "und": "white", "pend": to_rgba(col, 0.3), "triv": col}[r.cls]
                 ax.plot(np.clip(r.x, -LIM7, LIM7), y, ls="", marker=m, ms=3.6, mfc=face, mec=col, mew=0.8, zorder=4,
-                        clip_on=False)
+                        clip_on=False, fillstyle="left" if r.cls == "triv" else "full", mfcalt="white")
                 if r.dag or r.cls == "pend":
                     ax.text(LIM7 * 1.04, y, ("†" if r.dag else "") + ("‡" if r.cls == "pend" else ""), ha="center",
                             va="center", fontsize=7, color=col)
         apply_ticks(ax, ticks)
         ax.set_xlabel("ΔMAE / level-mean MAE (%)")
     h = ([mk(name, m, col, col) for _, name, col, m, _ in REG7] + [mk("Equivalent (TOST)", "o", GREY, GREY),
-         mk("Undetermined", "o", "white", GREY), mk("Pending held-out result", "o", to_rgba(GREY, 0.3), GREY)]
+         mk("Undetermined", "o", "white", GREY), mk("Pending held-out result", "o", to_rgba(GREY, 0.3), GREY),
+         mk("Trivial (significant, within margin)", "o", GREY, GREY)]
          + ci_handles())
+    h[-len(ci_handles()) - 1].set_fillstyle("left")
+    h[-len(ci_handles()) - 1].set_markerfacecoloralt("white")
     fig.legend(handles=h, loc="outside lower center", ncol=5)
     return fig
 

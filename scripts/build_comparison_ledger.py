@@ -44,10 +44,10 @@ def grid_area_key(g):
     raise ValueError(g)
 
 
-SUB_THRESHOLD = {"inconclusive": "Inconclusive", "different_lt_min": "Different", "equivalent": "Equivalent"}
+SUB_THRESHOLD = {"inconclusive": "Inconclusive", "trivial": "Trivial", "equivalent": "Equivalent"}
 
 
-def decide(label, label_cap, sub_threshold="inconclusive"):
+def decide(label, label_cap, sub_threshold="trivial"):
     """label = nhan CV; label_cap = nhan sau giu rieng; sub_threshold = ket luan cho co_y_nghia_duoi_nguong."""
     if label == "tuong_duong":
         return "Equivalent"
@@ -63,7 +63,7 @@ def decide(label, label_cap, sub_threshold="inconclusive"):
 
 
 def ledger_for_target(var, kd, cap, inter, area, region_label="MekongDelta", flag_ratio=False,
-                      sub_threshold="inconclusive"):
+                      sub_threshold="trivial"):
     """kd: kiem_dinh_khoi; cap: bang final (cmp_id|grid_a,grid_b -> label); inter: tuong tac RF; area: grid->km2.
     flag_ratio: them cot ratio_gt_1_2 (chi cho vung; DBSCL giu cot cu)."""
     kd = kd[kd.family == "F1_chinh"]
@@ -148,7 +148,7 @@ def main():
     ap.add_argument("--area-table", default=None, help="mac dinh <res-dir>/dot4_... (vung: bang dien tich cua vung)")
     ap.add_argument("--feature-set", choices=FEATURE_SETS, default=None, help="chi dbscl; xem docstring")
     ap.add_argument("--no-final", nargs="*", default=[], help="bien khong co luot final (xem docstring)")
-    ap.add_argument("--sub-threshold-label", choices=list(SUB_THRESHOLD), default="inconclusive",
+    ap.add_argument("--sub-threshold-label", choices=list(SUB_THRESHOLD), default="trivial",
                     help="decision cho co_y_nghia_duoi_nguong (Holm dat, giu rieng cung chieu, |delta| < delta_min)")
     a = ap.parse_args()
     dbscl = a.region == DEFAULT_REGION

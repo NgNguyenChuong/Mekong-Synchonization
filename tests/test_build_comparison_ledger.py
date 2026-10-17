@@ -54,9 +54,9 @@ def test_decide_final_xac_nhan_la_different():
 
 def test_decide_duoi_nguong_theo_tham_so():
     args = ("cho_giu_rieng", "co_y_nghia_duoi_nguong")
-    assert decide(*args) == "Inconclusive"
+    assert decide(*args) == "Trivial"
     assert decide(*args, "inconclusive") == "Inconclusive"
-    assert decide(*args, "different_lt_min") == "Different"
+    assert decide(*args, "trivial") == "Trivial"
     assert decide(*args, "equivalent") == "Equivalent"
 
 
@@ -65,9 +65,9 @@ def test_ledger_xac_nhan_va_duoi_nguong():
     cap = pd.DataFrame([dict(grid_a="h3_res_5", grid_b="latlon_0.1552deg", label="xac_nhan"),
                         dict(grid_a="h3_res_5", grid_b="square_utm_17087m", label="co_y_nghia_duoi_nguong")])
     area = {g: 1.0 for g in ["h3_res_5", "latlon_0.1552deg", "square_utm_17087m"]}
-    assert [x["decision"] for x in ledger_for_target("v", kd, cap, None, area)] == ["Different", "Inconclusive"]
-    r = ledger_for_target("v", kd, cap, None, area, sub_threshold="different_lt_min")
-    assert [x["decision"] for x in r] == ["Different", "Different"]
+    assert [x["decision"] for x in ledger_for_target("v", kd, cap, None, area)] == ["Different", "Trivial"]
+    r = ledger_for_target("v", kd, cap, None, area, sub_threshold="inconclusive")
+    assert [x["decision"] for x in r] == ["Different", "Inconclusive"]
     assert [x["holdout_confirmed"] for x in r] == ["xac_nhan", "co_y_nghia_duoi_nguong"]
 
 
