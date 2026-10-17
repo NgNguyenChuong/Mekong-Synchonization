@@ -117,7 +117,7 @@ def _fake_results(pp, res):
 
 
 def test_file_ra_du(pp, tmp_path):
-    assert len(pp.outputs("x")) == 24 and {os.path.basename(p) for p in pp.outputs("x")} >= {
+    assert len(pp.outputs("x")) == 26 and {os.path.basename(p) for p in pp.outputs("x")} >= {
         "fig1_study_design.pdf", "fig5_positive_control.pdf", "fig6_main.png", "figS1_model_frame.pdf",
         "figS2_model_frame_mlp.png", "figS3_positive_control_uniform.png", "tableS1_oracle.csv", "tableS1_oracle.md"}
     _fake_results(pp, tmp_path / "res")
@@ -138,7 +138,7 @@ def test_file_ra_du(pp, tmp_path):
 def test_thumb_150dpi_nho_va_trong_guard(pp, tmp_path):
     from PIL import Image
 
-    assert len(pp.outputs("x", thumb=True)) == 35
+    assert len(pp.outputs("x", thumb=True)) == 38
     with pytest.raises(SystemExit) as e:  # anh nho cung bi chan neu nam trong manifest
         pp.main(_args(tmp_path, _manifest(tmp_path, ["out/fig3_same_level_pairs_thumb.png"]), ["fig3"], thumb=True))
     assert e.value.code == 2

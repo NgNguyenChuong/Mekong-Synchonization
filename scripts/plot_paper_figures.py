@@ -2,7 +2,7 @@
 """Hinh bai bao (Fig 1-6, S1-S5) + Bang S1 theo KE_HOACH/quy_uoc_hinh.md: tieng Anh, Okabe-Ito, PDF + PNG 600 dpi.
 Chi doc ket qua da mo; ngoai le duy nhat: dai null Fig 6 mo phong tu se cua cap F1 HistGB.
 
-Chay:  venv/Scripts/python.exe scripts/plot_paper_figures.py [--only fig5 figS3 tableS1] [--thumb]
+Chay:  venv/Scripts/python.exe scripts/plot_paper_figures.py [--only fig5 fig7 figS3 tableS1] [--thumb]
            [--out-dir KE_HOACH/ket-qua/hinh/paper]
 """
 import argparse
@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+import build_bang_3_vung as b3  # noqa: E402
 import plot_dot7_figures as d7  # noqa: E402
 from analyze_cv_family import FROZEN_MANIFESTS, RESULTS, gate_name, out_name  # noqa: E402
 from analyze_e7_chart import AREA_FILE, LEVELS, MAIN_FILE, _bool, grid_table  # noqa: E402
@@ -63,13 +64,13 @@ XCLIP = 4.0
 N_NULL, NULL_SEED = 200_000, 42
 DMIN = r"Δ$_\mathregular{min}$"
 FIGS = {"fig1": "fig1_study_design", "fig2": "fig2_skill_gate", "fig3": "fig3_same_level_pairs",
-        "fig4": "fig4_blocks_100km", "fig5": "fig5_positive_control", "fig6": "fig6_main",
+        "fig4": "fig4_blocks_100km", "fig5": "fig5_positive_control", "fig6": "fig6_main", "fig7": "fig7_three_regions",
         "figS1": "figS1_model_frame", "figS2": "figS2_model_frame_mlp", "figS3": "figS3_positive_control_uniform",
         "figS4": "figS4_hybrid_season_split", "figS5": "figS5_hybrid_loso"}
 TABLES = {"tableS1": "tableS1_oracle"}
 PC_KIND = {"fig5": "lognormal", "figS3": "deu"}
 SIZE_MM = {"fig1": (190, 120), "fig2": (140, 72), "fig3": (190, 170), "fig4": (190, 90), "fig5": (90, 70),
-           "fig6": (140, 80), "figS1": (190, 130), "figS2": (190, 120), "figS3": (90, 70), "figS4": (140, 75),
+           "fig6": (140, 80), "fig7": (190, 105), "figS1": (190, 130), "figS2": (190, 120), "figS3": (90, 70), "figS4": (140, 75),
            "figS5": (140, 75)}
 SPLIT_STYLE = {"mua": (r"Season-level part (I$_\mathregular{season}$)", "o", "#E69F00"),
                "khong_gian": (r"Spatial part (I$_\mathregular{spatial}$)", "s", "#0072B2")}
@@ -363,6 +364,12 @@ def interaction_pairs(res, model, st) -> pd.DataFrame:
 # ---------------------------------------------------------
 # Ve: tien ich
 # ---------------------------------------------------------
+def to_rgba(c, alpha):
+    from matplotlib.colors import to_rgba as _rgba
+
+    return _rgba(c, alpha)
+
+
 def _plt():
     import matplotlib
 
@@ -896,6 +903,85 @@ def fig6(res, levels, st, info):
     return fig
 
 
+# Fig 7: ledger 3 chau tho; DBSCL ve ban (b) (cung bo dac trung voi 2 vung con lai)
+REG7 = (("dbscl_b", "Mekong Delta", "#0072B2", "o", -0.27), ("ms", "Mississippi Delta", "#E69F00", "s", 0.0),
+        ("nl", "Nile Delta", "#009E73", "^", 0.27))
+FIG7_LEVELS = ("medium", "fine")
+FIG7_CLS = {"Equivalent": "eq", "Inconclusive": "und", "PendingFinal": "pend"}
+LIM7, BAND7 = 6.0, 5.0  # % cua MAE trung binh muc; Delta_min = 5 %
+
+
+def fig7_pairs(led) -> pd.DataFrame:
+    """Cap eligible o muc vua/nho: x = delta_rel va CI theo % MAE trung binh muc (CI trong ledger la don vi MAE)."""
+    out = []
+    for k, *_ in REG7:
+        d = led[k]
+        d = d[d["eligible"] & d["level"].isin(FIG7_LEVELS)].copy()
+        if not np.allclose(d["delta_min_thr"] / d["delta_ref"], BAND7 / 100):
+            loi(f"{k}: delta_min_thr khac 5 % delta_ref")
+        for c in ("ci90_low", "ci90_high", "ci95_low", "ci95_high"):
+            d[c] = d[c] / d["delta_ref"] * 100
+        d["x"], d["cls"], d["reg"] = d["delta_rel"] * 100, d["decision"].map(FIG7_CLS), k
+        if d["cls"].isna().any():
+            loi(f"{k}: decision {sorted(set(d['decision']) - set(FIG7_CLS))} chua co ky hieu tren hinh 7")
+        out.append(d.assign(dag=d["area_ratio"] > b3.RATIO_MAX))
+    return pd.concat(out, ignore_index=True)
+
+
+def fig7_caption(led, f, panels) -> str:
+    reg = "; ".join(f"{name}: G = {', '.join(str(g) for g in sorted(led[k]['G'].unique(), reverse=True))}, "
+                    + ", ".join(f"{VAR[t].split(' (')[0]} n = {((f['reg'] == k) & (f['variable'] == t)).sum()}"
+                                for t in panels) for k, name, *_ in REG7)
+    return ("Equivalence of same-level grid pairs across three deltas (HistGB, spatial block cross-validation with 50 km "
+            "blocks; medium and fine levels; only pairs that passed the skill gate and were tested). ΔMAE = MAE(A) − "
+            "MAE(B) for pair 'A vs B' as % of the level-mean MAE; thick bar = 90 % CI (TOST), thin bar = 95 % CI; grey "
+            f"band = equivalence margin (±5 % = ±{DMIN}). Filled = equivalent (TOST), open = undetermined, shaded = "
+            "pending held-out result (‡). † area ratio of the pair > 1.2. Mekong Delta uses the feature set without the "
+            "four hydrological features (as in the other deltas). Number of blocks G and of pairs n per region: "
+            f"{reg}. Soil salinity (Mekong Delta only) has no pair passing the gate with this feature set; Solar "
+            "radiation has none in the Mississippi Delta.")
+
+
+def fig7(res, levels, st):
+    plt = _plt()
+    led = b3.load_ledgers(res)
+    st["used"] += [d.attrs["path"] for d in led.values()]
+    f = fig7_pairs(led)
+    panels = [t for t in ORDER if t in set(f["variable"])]
+    if not panels:
+        loi("fig7: khong co cap eligible o muc vua/nho")
+    CAPTIONS["fig7"] = fig7_caption(led, f, panels)
+    pairs = f.drop_duplicates(["grid_a", "grid_b"]).assign(o=lambda d: d["level"].map(FIG7_LEVELS.index))
+    pairs = pairs.sort_values("o", kind="stable")
+    groups = [(LEVEL[m], [((r.grid_a, r.grid_b), pair_label(r.grid_a, r.grid_b)) for r in
+                          pairs[pairs["level"] == lv].itertuples()]) for m, lv in ((6, "medium"), (7, "fine"))]
+    ys, ticks = forest_rows(groups)
+    fig, axes = plt.subplots(1, len(panels), figsize=(190 * MM, 105 * MM), sharex=True, sharey=True,
+                             layout="constrained", squeeze=False)
+    for i, (ax, t) in enumerate(zip(axes[0], panels)):
+        margin(ax, LIM7, band=BAND7)
+        ax.set_title(VAR[t], loc="left")
+        letter(ax, "abcdef"[i])
+        for k, _, col, m, off in REG7:
+            for r in f[(f["reg"] == k) & (f["variable"] == t)].itertuples():
+                y = ys[(r.grid_a, r.grid_b)] + off
+                seg(ax, r.ci95_low, r.ci95_high, y, LIM7, color=col, lw=0.6, zorder=2)
+                seg(ax, r.ci90_low, r.ci90_high, y, LIM7, color=col, lw=1.8, zorder=3)
+                face = {"eq": col, "und": "white", "pend": to_rgba(col, 0.3)}[r.cls]
+                ax.plot(np.clip(r.x, -LIM7, LIM7), y, ls="", marker=m, ms=3.6, mfc=face, mec=col, mew=0.8, zorder=4,
+                        clip_on=False)
+                if r.dag or r.cls == "pend":
+                    ax.text(LIM7 * 1.04, y, ("†" if r.dag else "") + ("‡" if r.cls == "pend" else ""), ha="center",
+                            va="center", fontsize=7, color=col)
+        apply_ticks(ax, ticks)
+        ax.set_xlabel("ΔMAE / level-mean MAE (%)")
+    h = ([mk(name, m, col, col) for _, name, col, m, _ in REG7] + [mk("Equivalent (TOST)", "o", GREY, GREY),
+         mk("Undetermined", "o", "white", GREY), mk("Pending held-out result", "o", to_rgba(GREY, 0.3), GREY)]
+         + ci_handles())
+    fig.legend(handles=h, loc="outside lower center", ncol=5)
+    return fig
+
+
 def fig_sens(res, levels, st, model, key):
     plt = _plt()
     from matplotlib.patches import Rectangle
@@ -963,6 +1049,8 @@ def build(key, res, levels, st, a, info):
         return fig1(res, levels, st, a)
     if key == "fig6":
         return fig6(res, levels, st, info)
+    if key == "fig7":
+        return fig7(res, levels, st)
     if key in ("figS1", "figS2"):
         return fig_sens(res, levels, st, "rf" if key == "figS1" else "mlp", key)
     if key in PC_KIND:
