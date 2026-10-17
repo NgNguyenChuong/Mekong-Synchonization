@@ -72,8 +72,8 @@ def _init(project):
     return ee
 
 
-def _region(ee, boundary_path, buffer_km):
-    b = gpd.read_file(boundary_path).to_crs(32648).buffer(buffer_km * 1000).to_crs(4326)
+def _region(ee, boundary_path, buffer_km, utm=32648):
+    b = gpd.read_file(boundary_path).to_crs(utm).buffer(buffer_km * 1000).to_crs(4326)
     return ee.Geometry(json.loads(gpd.GeoSeries([b.union_all()], crs=4326).to_json())["features"][0]["geometry"])
 
 
@@ -119,7 +119,7 @@ def _era5_region(ee, args):
             b, e = ds.bounds, 1e-3
         print(f"[vung] theo khung file co san {os.path.basename(path)}: {tuple(round(v, 3) for v in b)}", flush=True)
         return ee.Geometry.Rectangle([b.left + e, b.bottom + e, b.right - e, b.top - e], "EPSG:4326", False)
-    return _region(ee, args.boundary, args.buffer_km)
+    return _region(ee, args.boundary, args.buffer_km, getattr(args, "utm", 32648))
 
 
 def cmd_era5(args):
@@ -197,8 +197,9 @@ def cmd_static(args):
     _export(ee, wc.clip(region), "LandCover_DBSCL_2021", region, 10, args.drive_folder)
 
 
-def _mask_oli(image):
-    qa = image.select("QA_PIXEL").bitwiseAnd(int("11111", 2)).eq(0)
+def _mask_oli(image, snow: bool = False):
+    # snow=True che them bit 5 (tuyet/bang); mac dinh giu nguyen cho pipeline DBSCL
+    qa = image.select("QA_PIXEL").bitwiseAnd(int("111111" if snow else "11111", 2)).eq(0)
     sat = image.select("QA_RADSAT").eq(0)
     optical = image.select("SR_B.").multiply(0.0000275).add(-0.2)
     return image.addBands(optical, None, True).updateMask(qa).updateMask(sat)
@@ -244,10 +245,10 @@ CHIRPS3_ID = "UCSB-CHC/CHIRPS/V3/PENTAD"
 MCD18_ID = "MODIS/062/MCD18A1"
 
 
-def _rect(boundary_path, buffer_km):
+def _rect(boundary_path, buffer_km, utm=32648):
     """KHUNG chu nhat (EPSG:4326) cua ranh gioi + dem `buffer_km` (nhu cmd_era5) -> [xmin, ymin, xmax, ymax].
     Xuat ca khung (khong clip theo da giac) de pixel ria van co gia tri; pham vi ap sau khi trich."""
-    b = gpd.read_file(boundary_path).to_crs(32648).buffer(buffer_km * 1000).to_crs(4326)
+    b = gpd.read_file(boundary_path).to_crs(utm).buffer(buffer_km * 1000).to_crs(4326)
     return [round(float(v), 6) for v in b.total_bounds]
 
 
@@ -315,7 +316,7 @@ def cmd_chirps3(args):
     ee = _init(args.project)
     out_dir = args.out or settings.data_path("raw", "chirps3")
     os.makedirs(out_dir, exist_ok=True)
-    rect = _rect(args.boundary, args.buffer_km)
+    rect = _rect(args.boundary, args.buffer_km, getattr(args, "utm", 32648))
     coll = ee.ImageCollection(CHIRPS3_ID)
     rows = []
     for year in args.years:
@@ -392,7 +393,7 @@ def cmd_mcd18(args):
     ee = _init(args.project)
     out_dir = args.out or settings.data_path("raw", "mcd18a1")
     os.makedirs(out_dir, exist_ok=True)
-    rect = _rect(args.boundary, args.buffer_km)
+    rect = _rect(args.boundary, args.buffer_km, getattr(args, "utm", 32648))
     region = ee.Geometry.Rectangle(rect, "EPSG:4326", False)
     coll = ee.ImageCollection(MCD18_ID)
     rows = []
