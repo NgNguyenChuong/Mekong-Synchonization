@@ -929,13 +929,13 @@ def fig7_pairs(led) -> pd.DataFrame:
 
 
 def fig7_caption(led, f, panels) -> str:
-    reg = "; ".join(f"{name}: G = {', '.join(str(g) for g in sorted(led[k]['G'].unique(), reverse=True))}, "
+    reg = "; ".join(f"{name}: G = {', '.join(str(g) for g in sorted(led[k][led[k]['variable'].isin(panels)]['G'].unique(), reverse=True))}, "
                     + ", ".join(f"{VAR[t].split(' (')[0]} n = {((f['reg'] == k) & (f['variable'] == t)).sum()}"
                                 for t in panels) for k, name, *_ in REG7)
     return ("Equivalence of same-level grid pairs across three deltas (HistGB, spatial block cross-validation with 50 km "
             "blocks; medium and fine levels; only pairs that passed the skill gate and were tested). ΔMAE = MAE(A) − "
             "MAE(B) for pair 'A vs B' as % of the level-mean MAE; thick bar = 90 % CI (TOST), thin bar = 95 % CI; grey "
-            f"band = equivalence margin (±5 % = ±{DMIN}). Filled = equivalent (TOST), open = undetermined, shaded = "
+            "band = equivalence margin (±5 % = ±Δmin). Filled = equivalent (TOST), open = undetermined, shaded = "
             "pending held-out result (‡). † area ratio of the pair > 1.2. Mekong Delta uses the feature set without the "
             "four hydrological features (as in the other deltas). Number of blocks G and of pairs n per region: "
             f"{reg}. Soil salinity (Mekong Delta only) has no pair passing the gate with this feature set; Solar "
