@@ -38,7 +38,7 @@ def test_materialize_csvdrop_ghi_sidecar_va_dau_vet(tmp_path):
     sc = json.load(open(out / "features/x/f.csv.provenance.json"))
     assert sc["zenodo_package"]["dropped_columns"] == ["tch_wl_ok"]
     assert sc["zenodo_package"]["source_sha256_before_filter"] == bz.file_sha256(str(src))
-    assert bz.materialize(bz.Item(str(src), "features/x/f.csv", mode="csvdrop"), str(out)) is None  # chay lai: bo qua
+    assert bz.materialize(bz.Item(str(src), "features/x/f.csv", mode="csvdrop"), str(out)) == {"dropped": ["tch_wl_ok"]}  # chay lai: bo qua, van bao cot bo
 
 
 def test_audit_bat_email_env_cot_mrc_va_duong_dan(tmp_path):

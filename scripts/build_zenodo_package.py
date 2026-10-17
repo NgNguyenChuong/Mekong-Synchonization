@@ -147,8 +147,8 @@ def build_plan(repo=ROOT):
             "dot7_*_hoc_duoc*.csv", "dot7_salinity_*.csv"]
         _glob(items, res, pats, dest, r, "", "", "text")
     _glob(items, f"{ket_qua}/dbscl_fs_khong_diem", ["*.csv", "*.md"], "results/dbscl_b", "dbscl", "", "", "text")
-    _glob(items, ket_qua, ["bang_3_vung.*", "pc1_ci.*", "do_nhay_nguong.*", "bang_nhan_dac_trung.md", "dot7_pc1_*.csv",
-                           "dot4_scope_v3_dien_tich.csv"], "results", "", "", "", "text", exclude=[r"\.provenance"])
+    _glob(items, ket_qua, ["bang_3_vung.*", "pc1_ci.*", "do_nhay_nguong.*", "bang_nhan_dac_trung.md", "dot7_pc1_*.csv"], "results", "", "", "", "text", exclude=[r"\.provenance"])
+    _glob(items, ket_qua, ["dot4_scope_v3_dien_tich.csv"], "grids/dbscl", "dbscl", "", "build_scope_mask.py", "text")
     _glob(items, f"{ket_qua}/hinh/paper", ["fig*.png", "fig*.pdf", "table*.csv", "table*.md"], "results/figures", "", "", "plot_paper_figures.py",
           exclude=[r"_thumb"])
     st = data_path("doi_chung", "mississippi", "stations").replace("\\", "/")
@@ -172,12 +172,15 @@ def _sidecar_write(src_sc, dst_sc, extra=None):
 
 
 def materialize(it, out, force=False):
-    """Copy 1 muc + sidecar; tra ve {'dropped': [...]} hoac None neu da co."""
+    """Copy 1 muc + sidecar; tra ve {'dropped': [cot da bo]}."""
     dst = os.path.join(out, it.dest)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     sc_src, sc_dst = it.src + ".provenance.json", dst + ".provenance.json"
-    if os.path.exists(dst) and not force:
-        return None
+    if os.path.exists(dst) and not force:  # chay lai: bo qua, van bao cot da bo (doc tu sidecar)
+        try:
+            return {"dropped": json.load(open(sc_dst, encoding="utf-8"))["zenodo_package"]["dropped_columns"]}
+        except (OSError, KeyError, ValueError):
+            return {"dropped": []}
     extra = None
     if it.mode == "csvdrop":
         dropped = drop_columns_csv(it.src, dst)
