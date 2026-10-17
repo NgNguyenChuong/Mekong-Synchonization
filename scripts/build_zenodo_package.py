@@ -336,10 +336,11 @@ def _patterns():
     return pats
 
 
-def _scan(data, pats, label, hits, tail=b""):
+def _scan(data, pats, label, hits):
     need = {"email": b"@", "abs_path": b":", "gee_project_id": b"project-"}
+    binary = label.lower().endswith((".png", ".jpg"))  # luong nen nen: khop duong dan o dia la ngau nhien
     for k, rx in pats.items():
-        if need.get(k) and need[k] not in data:
+        if (need.get(k) and need[k] not in data) or (binary and k == "abs_path"):
             continue
         for m in rx.finditer(data):
             hits.append((k, label, m.group(0)[:60].decode("utf-8", "replace")))

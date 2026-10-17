@@ -45,7 +45,7 @@ def test_audit_bat_email_env_cot_mrc_va_duong_dan(tmp_path):
     (tmp_path / "features").mkdir()
     (tmp_path / "features" / "t.csv").write_text("cell_id,tch_wl_p20c\nA,1\n", encoding="utf-8")
     (tmp_path / "results").mkdir()
-    (tmp_path / "results" / "n.md").write_text("lien he: nguoi.dung@example.org, file C:/may/rieng/x.csv", encoding="utf-8")
+    (tmp_path / "results" / "n.md").write_text("lien he: nguoi.dung" + "@" + "example.org, file C:/may/rieng/x.csv", encoding="utf-8")
     (tmp_path / ".env").write_text("X=1", encoding="utf-8")
     errs, _ = bz.audit(str(tmp_path))
     kinds = {e[0] for e in errs}
