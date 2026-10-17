@@ -75,9 +75,9 @@ def ledger_for_target(var, kd, cap, inter, area, region_label="MekongDelta", fla
         c = cap_by_pair.get(pair)
         label_cap = NO_FINAL if cap is None else None if c is None else (c.label_cap if hasattr(c, "label_cap") else c.label)
         gate = True if var == "salinity" else getattr(r, "cong_hoc_duoc", True)  # do man khong ap cong hoc duoc
-        if pd.isna(gate):
-            raise ValueError(f"{var} {r.grid_a}|{r.grid_b}: cong_hoc_duoc NaN (chi salinity duoc khong ap cong)")
         muc_kd = getattr(r, "muc_kiem_dinh", True)
+        if muc_kd and pd.isna(gate):  # cap khong kiem dinh thi cong NaN la binh thuong
+            raise ValueError(f"{var} {r.grid_a}|{r.grid_b}: cong_hoc_duoc NaN o cap da kiem dinh (chi salinity khong ap cong)")
         eligible = bool(muc_kd) and bool(gate is True or gate == 1)
         reason = "" if eligible else ("khong_kiem_dinh" if not muc_kd else "truot_cong")
         ia = int_by_pair.get(pair)

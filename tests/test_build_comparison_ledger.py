@@ -77,3 +77,6 @@ def test_cong_nan_bien_khac_salinity_la_loi():
     with pytest.raises(ValueError, match="cong_hoc_duoc NaN"):
         ledger_for_target("ndwi", kd, None, None, area)
     assert ledger_for_target("salinity", kd, None, None, area)[0]["eligible"]
+    kd["muc_kiem_dinh"] = False  # cap khong kiem dinh: cong NaN binh thuong
+    r = ledger_for_target("ndwi", kd, None, None, area)[0]
+    assert not r["eligible"] and r["ineligible_reason"] == "khong_kiem_dinh"
