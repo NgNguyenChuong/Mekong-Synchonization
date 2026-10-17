@@ -597,6 +597,11 @@ def _check_ref_variant(args):
         if tp is not None:
             raise ValueError(f"{args.points_ref}: khong co provenance - khong doi chieu duoc bien the dap an.")
         return None, table_set, "3x3"
+    want_pts = rp.get("points_sha256")
+    if getattr(args, "region", DEFAULT_REGION) != DEFAULT_REGION and want_pts and want_pts != _sha256(args.points):
+        raise ValueError(f"--points-ref ({args.points_ref}) duoc dung tu tap diem khac --points: points_sha256 "
+                         f"{want_pts[:12]}... vs {args.points} {(_sha256(args.points) or '')[:12]}... (vung "
+                         f"{args.region}; dap an cua vung khac?)")
     r_target = rp.get("target", "salinity")
     if r_target != args.target:
         raise ValueError(f"--points-ref co target '{r_target}' khac --target '{args.target}'.")

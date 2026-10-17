@@ -220,3 +220,28 @@ def test_train_kiem_region_trong_provenance_bang(tmp_path):
     check_table_region(str(t), "nile")
     with pytest.raises(ValueError, match="region 'nile' khac --region 'dbscl'"):
         check_table_region(str(t), "dbscl")
+
+
+def test_dap_an_diem_khac_tap_diem_vung_la_loi(tmp_path):
+    """Vung != dbscl: points_sha256 trong provenance dap an phai = sha256(--points); dbscl khong doi."""
+    import argparse
+    import hashlib
+    import json
+
+    from training.train import _check_ref_variant
+
+    pts, ref = tmp_path / "pts.geojson", tmp_path / "ref.csv"
+    pts.write_text("a")
+    ref.write_text("b")
+    prov = {"variant": "main", "target": "ndwi", "points_sha256": hashlib.sha256(b"a").hexdigest()}
+    (tmp_path / "ref.csv.provenance.json").write_text(json.dumps(prov))
+    mk = lambda region: argparse.Namespace(region=region, points=str(pts), points_ref=str(ref), table=None,  # noqa: E731
+                                           target="ndwi", points_ref_variant="main")
+    assert _check_ref_variant(mk("mississippi"))[0] == "main"
+    pts.write_text("khac")
+    with pytest.raises(ValueError, match="points_sha256"):
+        _check_ref_variant(mk("mississippi"))
+    assert _check_ref_variant(mk("dbscl"))[0] == "main"
+    prov.pop("points_sha256")  # dap an cu khong ghi sha: khong chan
+    (tmp_path / "ref.csv.provenance.json").write_text(json.dumps(prov))
+    assert _check_ref_variant(mk("mississippi"))[0] == "main"
