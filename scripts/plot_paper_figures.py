@@ -935,8 +935,10 @@ def fig7_caption(led, f, panels) -> str:
     return ("Equivalence of same-level grid pairs across three deltas (HistGB, spatial block cross-validation with 50 km "
             "blocks; medium and fine levels; only tested pairs; all variables except soil salinity also had to pass the skill gate). ΔMAE = MAE(A) − "
             "MAE(B) for pair 'A vs B' as % of the level-mean MAE; thick bar = 90 % CI (TOST), thin bar = 95 % CI; grey "
-            "band = equivalence margin (±5 % = ±Δmin). Filled = equivalent (TOST), open = undetermined, shaded = "
-            "pending held-out result (‡), half-filled = trivial difference (statistically significant yet within the margin). † area ratio of the pair > 1.2. Mekong Delta uses the feature set without the "
+            "band = equivalence margin (±5 % = ±Δmin). Filled = equivalent (TOST), open = undetermined"
+            + (", shaded = pending held-out result (‡)" if "pend" in set(f["cls"]) else "")
+            + (", half-filled = trivial difference (statistically significant yet within the margin)" if "triv" in set(f["cls"]) else "")
+            + ". † area ratio of the pair > 1.2. Mekong Delta uses the feature set without the "
             "four hydrological features (as in the other deltas). Number of blocks G and of pairs n per region: "
             f"{reg}. Soil salinity exists for the Mekong Delta only; Solar radiation has no pair passing the gate in "
             "the Mississippi Delta.")
@@ -976,11 +978,13 @@ def fig7(res, levels, st):
         apply_ticks(ax, ticks)
         ax.set_xlabel("ΔMAE / level-mean MAE (%)")
     h = ([mk(name, m, col, col) for _, name, col, m, _ in REG7] + [mk("Equivalent (TOST)", "o", GREY, GREY),
-         mk("Undetermined", "o", "white", GREY), mk("Pending held-out result", "o", to_rgba(GREY, 0.3), GREY),
-         mk("Trivial (significant, within margin)", "o", GREY, GREY)]
+         mk("Undetermined", "o", "white", GREY)]
+         + ([mk("Pending held-out result", "o", to_rgba(GREY, 0.3), GREY)] if "pend" in set(f["cls"]) else [])
+         + ([mk("Trivial (significant, within margin)", "o", GREY, GREY)] if "triv" in set(f["cls"]) else [])
          + ci_handles())
-    h[-len(ci_handles()) - 1].set_fillstyle("left")
-    h[-len(ci_handles()) - 1].set_markerfacecoloralt("white")
+    if "triv" in set(f["cls"]):
+        h[-len(ci_handles()) - 1].set_fillstyle("left")
+        h[-len(ci_handles()) - 1].set_markerfacecoloralt("white")
     fig.legend(handles=h, loc="outside lower center", ncol=5)
     return fig
 

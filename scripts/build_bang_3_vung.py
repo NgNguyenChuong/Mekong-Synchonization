@@ -17,6 +17,7 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from md_util import md_table  # noqa: E402
+from run_experiments import git_state  # noqa: E402
 from training.dot7_rules import file_sha256, write_provenance  # noqa: E402
 
 RESULTS = os.path.join(ROOT, "KE_HOACH", "ket-qua")
@@ -189,7 +190,7 @@ def main(a):
     src = {os.path.relpath(d.attrs["path"], ROOT) if d.attrs["path"].startswith(ROOT) else d.attrs["path"]:
            file_sha256(d.attrs["path"]) for d in led.values()}
     for p in (csv, md):
-        write_provenance(p, sha_dau_vao=src)
+        write_provenance(p, sha_dau_vao=src, git=git_state())
     print(open(md, encoding="utf-8").read(), flush=True)
     print(f"ghi {csv}\nghi {md}", flush=True)
 

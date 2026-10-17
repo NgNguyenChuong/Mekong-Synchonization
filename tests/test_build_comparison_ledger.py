@@ -54,14 +54,23 @@ def test_decide_final_xac_nhan_la_different():
 
 def test_decide_duoi_nguong_theo_tham_so():
     args = ("cho_giu_rieng", "co_y_nghia_duoi_nguong")
-    assert decide(*args) == "Trivial"
-    assert decide(*args, "inconclusive") == "Inconclusive"
-    assert decide(*args, "trivial") == "Trivial"
-    assert decide(*args, "equivalent") == "Equivalent"
+    assert decide(*args, "trivial", True) == "Trivial"
+    assert decide(*args, "inconclusive", True) == "Inconclusive"
+    assert decide(*args, "equivalent", True) == "Equivalent"
+    assert decide(*args) == "Inconclusive"  # thieu TOST
+
+
+def test_ledger_duoi_nguong_can_ci90_trong_bien():
+    def run(lo, hi):  # delta_min_thr = 0.5
+        kd = pd.DataFrame([{**_kd("cho_giu_rieng", "h3_res_5", "latlon_0.1552deg"), "ci_tost_low": lo, "ci_tost_high": hi}])
+        cap = pd.DataFrame([dict(grid_a="h3_res_5", grid_b="latlon_0.1552deg", label_cap="co_y_nghia_duoi_nguong")])
+        return ledger_for_target("v", kd, cap, None, {g: 1.0 for g in ["h3_res_5", "latlon_0.1552deg"]})[0]["decision"]
+    assert run(-0.3, 0.4) == "Trivial"
+    assert run(-0.3, 0.6) == "Inconclusive"
 
 
 def test_ledger_xac_nhan_va_duoi_nguong():
-    kd = pd.DataFrame([_kd("cho_giu_rieng", "h3_res_5", "latlon_0.1552deg"), _kd("cho_giu_rieng", "h3_res_5", "square_utm_17087m")])
+    kd = pd.DataFrame([_kd("cho_giu_rieng", "h3_res_5", "latlon_0.1552deg"), {**_kd("cho_giu_rieng", "h3_res_5", "square_utm_17087m"), "ci_tost_low": -0.2, "ci_tost_high": 0.3}])
     cap = pd.DataFrame([dict(grid_a="h3_res_5", grid_b="latlon_0.1552deg", label="xac_nhan"),
                         dict(grid_a="h3_res_5", grid_b="square_utm_17087m", label="co_y_nghia_duoi_nguong")])
     area = {g: 1.0 for g in ["h3_res_5", "latlon_0.1552deg", "square_utm_17087m"]}

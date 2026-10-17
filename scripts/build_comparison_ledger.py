@@ -47,8 +47,9 @@ def grid_area_key(g):
 SUB_THRESHOLD = {"inconclusive": "Inconclusive", "trivial": "Trivial", "equivalent": "Equivalent"}
 
 
-def decide(label, label_cap, sub_threshold="trivial"):
-    """label = nhan CV; label_cap = nhan sau giu rieng; sub_threshold = ket luan cho co_y_nghia_duoi_nguong."""
+def decide(label, label_cap, sub_threshold="trivial", tost=False):
+    """label = nhan CV; label_cap = nhan sau giu rieng; sub_threshold = ket luan cho co_y_nghia_duoi_nguong;
+    tost = CI90 nam trong +-delta_min (thieu thi duoi nguong khong duoc goi Trivial)."""
     if label == "tuong_duong":
         return "Equivalent"
     if label == "cho_giu_rieng":
@@ -56,7 +57,7 @@ def decide(label, label_cap, sub_threshold="trivial"):
             return "PendingFinal"
         if label_cap in ("cho_giu_rieng", "xac_nhan"):  # cho_giu_rieng: nhan mode cv; xac_nhan: mode final
             return "Different"
-        return SUB_THRESHOLD[sub_threshold] if label_cap == "co_y_nghia_duoi_nguong" else "Inconclusive"
+        return SUB_THRESHOLD[sub_threshold] if label_cap == "co_y_nghia_duoi_nguong" and tost else "Inconclusive"
     if label == "mo_ta":
         return "Descriptive"
     return "Inconclusive"
@@ -91,7 +92,7 @@ def ledger_for_target(var, kd, cap, inter, area, region_label="MekongDelta", fla
             delta_min_thr=r.delta_min_thr,
             ci90_low=r.ci_tost_low, ci90_high=r.ci_tost_high, ci95_low=r.ci_low, ci95_high=r.ci_high,
             p_raw=r.p_value, p_holm=r.p_holm, seeds_same_dir=r.seeds_same_dir,
-            label_cv=r.label, decision=decide(r.label, label_cap, sub_threshold), holdout_confirmed=label_cap,
+            label_cv=r.label, decision=decide(r.label, label_cap, sub_threshold, -r.delta_min_thr < r.ci_tost_low and r.ci_tost_high < r.delta_min_thr), holdout_confirmed=label_cap,
             rf_interaction_p_holm=None if ia is None else ia.p_holm,
             rf_interaction_tost=None if ia is None else ia.tost_tuong_tac))
     return rows
