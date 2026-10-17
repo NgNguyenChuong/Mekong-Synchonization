@@ -933,13 +933,13 @@ def fig7_caption(led, f, panels) -> str:
                     + ", ".join(f"{VAR[t].split(' (')[0]} n = {((f['reg'] == k) & (f['variable'] == t)).sum()}"
                                 for t in panels) for k, name, *_ in REG7)
     return ("Equivalence of same-level grid pairs across three deltas (HistGB, spatial block cross-validation with 50 km "
-            "blocks; medium and fine levels; only pairs that passed the skill gate and were tested). ΔMAE = MAE(A) − "
+            "blocks; medium and fine levels; only tested pairs; all variables except soil salinity also had to pass the skill gate). ΔMAE = MAE(A) − "
             "MAE(B) for pair 'A vs B' as % of the level-mean MAE; thick bar = 90 % CI (TOST), thin bar = 95 % CI; grey "
             "band = equivalence margin (±5 % = ±Δmin). Filled = equivalent (TOST), open = undetermined, shaded = "
             "pending held-out result (‡). † area ratio of the pair > 1.2. Mekong Delta uses the feature set without the "
             "four hydrological features (as in the other deltas). Number of blocks G and of pairs n per region: "
-            f"{reg}. Soil salinity (Mekong Delta only) has no pair passing the gate with this feature set; Solar "
-            "radiation has none in the Mississippi Delta.")
+            f"{reg}. Soil salinity exists for the Mekong Delta only; Solar radiation has no pair passing the gate in "
+            "the Mississippi Delta.")
 
 
 def fig7(res, levels, st):
