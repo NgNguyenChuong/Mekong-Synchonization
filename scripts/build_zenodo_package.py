@@ -2,7 +2,7 @@
 """Dung goi Zenodo NHAP (phuong an B): du lieu dan xuat + bang dac trung + ma, KHONG luot mo hinh, du lieu tho, MRC.
 Cot MRC (tch_*, tram_*) bi bo khoi bang dac trung; provenance chuan hoa duong dan may; cuoi cung quet nhay cam.
 
-Chay:  venv/Scripts/python.exe scripts/build_zenodo_package.py [--out DIR] [--ref HEAD] [--license-data-file F] [--dry-run] [--force]
+Chay:  venv/Scripts/python.exe scripts/build_zenodo_package.py [--out DIR] [--ref HEAD] [--license-data-file F] [--license-code {MIT,Apache-2.0}] [--dry-run] [--force]
 """
 import argparse
 import csv
@@ -30,6 +30,23 @@ REGIONS = ("dbscl", "mississippi", "nile")
 DOT7_VARS = ("dsr_mcd18", "ndwi", "rain_chirps", "rh_era5", "t2m_era5")
 MRC_PREFIXES = ("tch_", "tram_")  # chuoi muc nuoc MRC (Tan Chau, 6 tram): khong phan phoi lai dan xuat
 CC_BY_URL = "https://creativecommons.org/licenses/by/4.0/legalcode.txt"
+CODE_LICENSE_URL = {"Apache-2.0": "https://www.apache.org/licenses/LICENSE-2.0.txt"}
+MIT_TEXT = """MIT License
+
+Copyright (c) 2026 The authors of this record
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files
+(the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+"""
 CRMS_ZIP_URL = "https://cims.coastal.louisiana.gov/RequestedDownloads/ZippedFiles/CRMS_Discrete_Hydrographic.zip"
 CRMS_ZIP_SHA256 = "a599cdf7c02d56a1352457273393701d26ddfcf45424760a0c546cd9b564931f"  # zip tai 2026-10-17 (Last-Modified 2026-10-11)
 RESTORE_TEXT = ("Some or all of the associated data and related items of information shown or delivered as part of this "
@@ -139,6 +156,8 @@ def build_plan(repo=ROOT):
         for v in DOT7_VARS:
             _glob(items, os.path.join(F, "unified_dot7", v), ["*_unified.csv"], f"features/{r}/unified_dot7/{v}", r, v,
                   "build_unified_dot7.py", "csvdrop")
+        area = f"{ket_qua}/dot4_doi_chieu_dien_tich.csv" if r == "dbscl" else f"{P['report_dir']}/dot4_doi_chieu_dien_tich.csv".replace("\\", "/")
+        items.append(Item(area, f"grids/{r}/dot4_doi_chieu_dien_tich.csv", r, origin="generate_all_grids.py", mode="text"))
         res = ket_qua if r == "dbscl" else f"{ket_qua}/doi_chung/{r}"
         dest = {"dbscl": "results/dbscl_a"}.get(r, f"results/{r}")
         pats = ["*.csv", "*.md"] if r != "dbscl" else [
@@ -215,20 +234,24 @@ def write_code_zip(out, ref):
     return z
 
 
-def write_extras(out, license_file):
+def _download(url):
+    from urllib.request import Request, urlopen
+    return urlopen(Request(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=60).read().decode("utf-8")
+
+
+def write_extras(out, license_file, license_code=None):
     w = lambda rel, txt: (os.makedirs(os.path.dirname(os.path.join(out, rel)), exist_ok=True),
                           open(os.path.join(out, rel), "w", encoding="utf-8", newline="\n").write(txt))
     if license_file:
         lic = open(license_file, encoding="utf-8").read()
     else:
-        try:
-            from urllib.request import urlopen
-            lic = urlopen(CC_BY_URL, timeout=60).read().decode("utf-8")
-        except Exception as e:  # khong co mang: de ghi chu ro, khong im lang
-            lic = f"[PLACEHOLDER: full CC-BY-4.0 legal code not fetched ({type(e).__name__}); get {CC_BY_URL}]\n"
+        lic = _download(CC_BY_URL)
+    if "Attribution 4.0 International" not in lic or len(lic) < 10000:
+        raise SystemExit("LICENSE_DATA: van ban CC-BY-4.0 khong day du; dung --license-data-file")
     w("LICENSE_DATA", "Data in this record (grids/, eval/, labels/, features/, results/, stations/): CC-BY-4.0 unless a file or README says otherwise.\n"
       "Third-party components keep their own terms (see README, section Licences and sources).\n\n" + lic)
-    w("LICENSE_CODE", "[PLACEHOLDER: MIT or Apache-2.0 - to be chosen by the author before upload]\n")
+    w("LICENSE_CODE", {None: "[PLACEHOLDER: MIT or Apache-2.0 - to be chosen by the author before upload]\n", "MIT": MIT_TEXT}.get(license_code)
+      or _download(CODE_LICENSE_URL[license_code]))
     w("stations/crms/RESTORE_disclaimer.txt", RESTORE_TEXT + "\n")
     w("stations/crms/CRMS_SOURCE.json", json.dumps({
         "source": "CPRA CRMS Discrete Hydrographic (CIMS), column Soil Porewater Salinity (ppt), filtered extract",
@@ -389,7 +412,7 @@ def audit(out):
     return errs, warns
 
 
-def run(out, ref="HEAD", license_file=None, dry_run=False, force=False):
+def run(out, ref="HEAD", license_file=None, dry_run=False, force=False, license_code=None):
     items = build_plan()
     est = sum(os.path.getsize(i.src) for i in items)
     free = shutil.disk_usage(os.path.dirname(os.path.abspath(out))).free if os.path.isdir(os.path.dirname(os.path.abspath(out))) else 0
@@ -407,7 +430,7 @@ def run(out, ref="HEAD", license_file=None, dry_run=False, force=False):
         if k % 100 == 0:
             print(f"  {k}/{len(items)}", flush=True)
     z = write_code_zip(out, ref)
-    write_extras(out, license_file)
+    write_extras(out, license_file, license_code)
     meta[os.path.relpath(z, out).replace("\\", "/")] = {"origin": "git archive", "region": "", "variable": ""}
     dsum = "\n".join(f"- `{', '.join(c)}` removed from {len(v)} files (e.g. `{v[0]}`)" for c, v in dropped.items()) or "- (none)"
     commit = open(os.path.join(out, "code", "COMMIT.txt"), encoding="utf-8").read().splitlines()[0].split(": ")[1][:12]
@@ -431,7 +454,8 @@ Unit of analysis: (grid cell, dry season), dry season of year Y = 1 Nov (Y-1) to
 
 Included: grids, evaluation design (held-out blocks, evaluation points, cross-validation folds), per-cell season labels,
 per-cell season feature tables, final result tables and paper figures, public station extracts (NOAA, USGS, CRMS), the code.
-Not included: raw rasters, per-run model outputs and predictions, and **Mekong River Commission (MRC) water-level data**
+Not included: raw rasters, per-run model outputs and predictions (so the auxiliary feature subsets `keep*`, the scope mask raster and
+the per-run model results are not shipped: they are intermediate, large and regenerated by the scripts), and **Mekong River Commission (MRC) water-level data**
 (not redistributed; see `fetch_scripts/fetch_mrc_timeseries.py`; obtain under MRC terms). The MRC-derived feature columns were
 removed from the feature tables:
 
@@ -446,7 +470,8 @@ released as computed. `zos_*` columns (CMEMS sea level) and all other columns ar
 ```
 README.md  LICENSE_DATA  LICENSE_CODE  MANIFEST.csv   (path, bytes, sha256, origin script, region, variable)
 code/            git archive of the repository at {{COMMIT}} (see code/COMMIT.txt)
-grids/<region>/  13 grid GeoJSON + study boundary (+ area table for the Delta)
+grids/<region>/  13 grid GeoJSON + study boundary + `dot4_doi_chieu_dien_tich.csv` (cell-area table per grid; `file` column = source path, normalised);
+                 Delta also `dot4_scope_v3_dien_tich.csv` (land-cover area lost per class when the scope mask is applied, not a grid-area table)
 eval/<region>/   eval_points, holdout_blocks, cv_folds (seeds 42/43/44), cell_blocks (+ khoi100 for the Delta)
 labels/<region>/ per-cell season labels: salinity (Delta only, labels/dbscl/salinity) and 5 labels in dot7/ (ndwi, dsr_mcd18, rain_chirps, rh_era5, t2m_era5)
 features/<region>/ unified (base table) and unified_dot7/<variable>/ (tables per label), 13 grids each
@@ -478,7 +503,17 @@ The sha256 fields inside a sidecar refer to the file as generated; for feature t
 6. Evaluation design: `scripts/build_eval_design.py` / `rebuild_eval_design_v2.py`, `build_cv_folds.py`.
 7. Experiments: `scripts/run_experiments.py --prefix cv1 --target <variable> ...` (HistGB and baseline; RF/MLP as sensitivity).
 8. Analysis: `scripts/analyze_final.py`, `build_comparison_ledger.py`, `build_bang_3_vung.py`, `pc1_wilson_ci.py`, `threshold_sensitivity.py`, `plot_paper_figures.py`.
-9. Tests: `pytest -q` (synthetic data only).
+9. Tests: `pytest -q` (synthetic data; needs `.env` with `DATA_ROOT` set, otherwise collection fails).
+
+Rebuilding the three-region table and the control-region ledgers from this record (folder layout differs from the working repository):
+
+```
+python scripts/build_bang_3_vung.py --package-root <record root> --out-dir <new dir>
+python scripts/build_comparison_ledger.py --region nile --res-dir <record root>/results/nile --area-table <record root>/grids/nile/dot4_doi_chieu_dien_tich.csv
+```
+
+(same for `--region mississippi`; the ledger is written into `--res-dir`, so work on a copy.) Folder map: `results/dbscl_a` = `KE_HOACH/ket-qua`,
+`results/dbscl_b` = `KE_HOACH/ket-qua/dbscl_fs_khong_diem`, `results/<region>` = `KE_HOACH/ket-qua/doi_chung/<region>`.
 
 This draft is a snapshot of the working repository; a refactored publication tree is planned. The released files are frozen outputs;
 `MANIFEST.csv` sha256 values are the reference for byte-identity.
@@ -488,15 +523,17 @@ This draft is a snapshot of the working repository; a refactored publication tre
 - Data created here (grids, eval design, labels, features, results, figures): CC-BY-4.0 (`LICENSE_DATA`).
 - Code: `LICENSE_CODE` [PLACEHOLDER: MIT or Apache-2.0 - to be chosen].
 - Salinity labels 2014-2023 re-aggregated from Wang et al. (2025), Commun. Earth Environ. 6, 503; data: Zenodo https://doi.org/10.5281/zenodo.15653696 (CC-BY); formula of Nguyen et al. (2020). Labels 2024-2026 re-created with the same recipe from Landsat 8 (NDWIchen, Salinity = EC1:5 dS/m).
-- Landsat 8 Collection 2 Level 2 (USGS), via Google Earth Engine (`LANDSAT/LC08/C02/T1_L2`).
+- Landsat 8 Collection 2 Level 2 (USGS), via Google Earth Engine (`LANDSAT/LC08/C02/T1_L2`); Landsat 9 is not used.
 - ERA5-Land (Copernicus Climate Change Service; Munoz-Sabater et al. 2021, Earth Syst. Sci. Data 13, 4349).
 - CHIRPS v3 (Climate Hazards Center, UC Santa Barbara; `CHC/CHIRPS/V3/PENTAD`).
 - MODIS MCD18A1 v6.2 downward shortwave radiation (NASA LP DAAC; `MODIS/062/MCD18A1`).
-- Copernicus DEM GLO-30 (ESA; `COPERNICUS/DEM/GLO30`).
+- Copernicus DEM GLO-30 (ESA; `COPERNICUS/DEM/GLO30_2024_1`).
 - ESA WorldCover v200 (Zanaga et al. 2022; `ESA/WorldCover/v200`).
 - JRC Global Surface Water v1.4 (Pekel et al. 2016, Nature 540, 418-422).
 - CMEMS global ocean physics reanalysis, sea surface height `zos` (`cmems_mod_glo_phy_my_0.083deg_P1D-m`).
-- OpenStreetMap waterways (c) OpenStreetMap contributors, ODbL 1.0, via Geofabrik; released distance features are derived values, the OSM extracts are not redistributed.
+- OpenStreetMap waterways (c) OpenStreetMap contributors, ODbL 1.0, via Geofabrik; released river-distance features are derived values, the OSM extracts are not redistributed.
+  Contains information from OpenStreetMap, (c) OpenStreetMap contributors. Open question for the authors: whether the ODbL share-alike clause applies to
+  these derived features (and thus to the record) has not been decided; do not treat the CC-BY-4.0 label of the features as final until resolved.
 - HydroRIVERS v1.0 (Lehner & Grill 2013, Hydrol. Process. 27, 2171-2186): cross-check only, not a feature.
 - Coastline: Sayre et al. (2019). Boundaries: geoBoundaries gbOpen (Mekong Delta), TIGER/2018 States (Louisiana), FAO GAUL 2015 (Nile Delta).
 - NOAA CO-OPS tide gauges and USGS NWIS gauges (US Government public data), `stations/noaa_usgs_mississippi/`.
@@ -512,12 +549,13 @@ def main():
     ap.add_argument("--out", default=os.getenv("ZENODO_PKG_DIR") or os.path.join(os.path.dirname(doi_chung_out()), "zenodo_pkg"))
     ap.add_argument("--ref", default="HEAD", help="commit/tag cua ma nguon dong goi")
     ap.add_argument("--license-data-file", help="van ban CC-BY-4.0 (mac dinh tai tu creativecommons.org)")
+    ap.add_argument("--license-code", choices=["MIT", "Apache-2.0"], help="giay phep ma (mac dinh: placeholder cho den khi tac gia chot)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--force", action="store_true", help="ghi de file da co")
     ap.add_argument("--audit-only", action="store_true")
     a = ap.parse_args()
     if not a.audit_only:
-        run(a.out, a.ref, a.license_data_file, a.dry_run, a.force)
+        run(a.out, a.ref, a.license_data_file, a.dry_run, a.force, a.license_code)
     if a.dry_run:
         return
     errs, warns = audit(a.out)

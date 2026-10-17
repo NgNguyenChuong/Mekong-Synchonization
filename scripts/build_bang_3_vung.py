@@ -2,7 +2,7 @@
 """Bang tong hop 3 vung (DBSCL (a)/(b), Mississippi, Nile) tu 4 comparison_ledger: dem Eq/Inc/Desc(/Pend) theo bien x muc
 + bang cong hoc duoc. Chi doc ledger da mo.
 
-Chay:  venv/Scripts/python.exe scripts/build_bang_3_vung.py [--results-dir KE_HOACH/ket-qua] [--out-dir <results-dir>]
+Chay:  venv/Scripts/python.exe scripts/build_bang_3_vung.py [--results-dir KE_HOACH/ket-qua | --package-root <goi Zenodo>] [--out-dir <results-dir>]
 """
 import argparse
 import os
@@ -39,10 +39,15 @@ def loi(msg):
     sys.exit(f"LOI: {msg}")
 
 
-def load_ledgers(results_dir) -> dict:
+PACKAGE_LEDGERS = {"dbscl_a": "dbscl_a/comparison_ledger.csv", "dbscl_b": "dbscl_b/comparison_ledger__fs-khong_diem.csv",
+                   "ms": "mississippi/comparison_ledger.csv", "nl": "nile/comparison_ledger.csv"}
+
+
+def load_ledgers(results_dir, package=False) -> dict:
     """key -> ledger da kiem: du cot, 12 cap/bien (3/3/6 theo muc), decision thuoc tap biet, eligible bool."""
     out = {}
     for k, (_, rel) in LEDGERS.items():
+        rel = PACKAGE_LEDGERS[k] if package else rel
         path = os.path.join(results_dir, rel)
         if not os.path.isfile(path):
             loi(f"thieu ledger {path}")
@@ -176,7 +181,7 @@ def with_raw(t1, led) -> pd.DataFrame:
 
 
 def main(a):
-    led = load_ledgers(a.results_dir)
+    led = load_ledgers(a.results_dir, bool(a.package_root))
     t1, t2, g = with_raw(table1(led), led), table2(led), g_row(led)
     for k, d in led.items():  # tong khop so ledger: 12 cap/bien/vung
         tot = t1[(t1.variable == "TOTAL") & (t1.level == "all")].iloc[0]
@@ -198,7 +203,10 @@ def main(a):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--results-dir", default=RESULTS)
+    ap.add_argument("--package-root", help="goc goi Zenodo: doc ledger o <goc>/results/{dbscl_a,dbscl_b,mississippi,nile}")
     ap.add_argument("--out-dir", default=None, help="mac dinh = --results-dir")
     args = ap.parse_args()
+    if args.package_root:
+        args.results_dir = os.path.join(args.package_root, "results")
     args.out_dir = args.out_dir or args.results_dir
     main(args)

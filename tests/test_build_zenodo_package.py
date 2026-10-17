@@ -56,3 +56,17 @@ def test_audit_sach(tmp_path):
     (tmp_path / "features").mkdir()
     (tmp_path / "features" / "t.csv").write_text("cell_id,zos_mouth_p90\nA,1\n", encoding="utf-8")
     assert bz.audit(str(tmp_path)) == ([], [])
+
+
+def test_license_code_mit_va_data_khong_placeholder(tmp_path, monkeypatch):
+    lic = tmp_path / "cc.txt"
+    lic.write_text("Attribution 4.0 International\n" + "x" * 10000, encoding="utf-8")
+    monkeypatch.setattr(bz, "FETCH_SCRIPTS", ())
+    monkeypatch.setattr(bz, "sources_csv", lambda: "")
+    bz.write_extras(str(tmp_path / "o"), str(lic), "MIT")
+    assert open(tmp_path / "o" / "LICENSE_CODE").read().startswith("MIT License")
+    assert "PLACEHOLDER" not in open(tmp_path / "o" / "LICENSE_DATA").read()
+    lic.write_text("ngan", encoding="utf-8")  # van ban cut: phai dung, khong ghi placeholder
+    import pytest
+    with pytest.raises(SystemExit):
+        bz.write_extras(str(tmp_path / "o2"), str(lic))
