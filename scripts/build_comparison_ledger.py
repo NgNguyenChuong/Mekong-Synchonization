@@ -44,20 +44,26 @@ def grid_area_key(g):
     raise ValueError(g)
 
 
-def decide(label, label_cap):
-    """label = nhan CV; label_cap = nhan sau giu rieng."""
+SUB_THRESHOLD = {"inconclusive": "Inconclusive", "different_lt_min": "Different", "equivalent": "Equivalent"}
+
+
+def decide(label, label_cap, sub_threshold="inconclusive"):
+    """label = nhan CV; label_cap = nhan sau giu rieng; sub_threshold = ket luan cho co_y_nghia_duoi_nguong."""
     if label == "tuong_duong":
         return "Equivalent"
     if label == "cho_giu_rieng":
         if label_cap == NO_FINAL:
             return "PendingFinal"
-        return "Different" if label_cap == "cho_giu_rieng" else "Inconclusive"
+        if label_cap in ("cho_giu_rieng", "xac_nhan"):  # cho_giu_rieng: nhan mode cv; xac_nhan: mode final
+            return "Different"
+        return SUB_THRESHOLD[sub_threshold] if label_cap == "co_y_nghia_duoi_nguong" else "Inconclusive"
     if label == "mo_ta":
         return "Descriptive"
     return "Inconclusive"
 
 
-def ledger_for_target(var, kd, cap, inter, area, region_label="MekongDelta", flag_ratio=False):
+def ledger_for_target(var, kd, cap, inter, area, region_label="MekongDelta", flag_ratio=False,
+                      sub_threshold="inconclusive"):
     """kd: kiem_dinh_khoi; cap: bang final (cmp_id|grid_a,grid_b -> label); inter: tuong tac RF; area: grid->km2.
     flag_ratio: them cot ratio_gt_1_2 (chi cho vung; DBSCL giu cot cu)."""
     kd = kd[kd.family == "F1_chinh"]
@@ -69,6 +75,8 @@ def ledger_for_target(var, kd, cap, inter, area, region_label="MekongDelta", fla
         c = cap_by_pair.get(pair)
         label_cap = NO_FINAL if cap is None else None if c is None else (c.label_cap if hasattr(c, "label_cap") else c.label)
         gate = True if var == "salinity" else getattr(r, "cong_hoc_duoc", True)  # do man khong ap cong hoc duoc
+        if pd.isna(gate):
+            raise ValueError(f"{var} {r.grid_a}|{r.grid_b}: cong_hoc_duoc NaN (chi salinity duoc khong ap cong)")
         muc_kd = getattr(r, "muc_kiem_dinh", True)
         eligible = bool(muc_kd) and bool(gate is True or gate == 1)
         reason = "" if eligible else ("khong_kiem_dinh" if not muc_kd else "truot_cong")
@@ -83,7 +91,7 @@ def ledger_for_target(var, kd, cap, inter, area, region_label="MekongDelta", fla
             delta_min_thr=r.delta_min_thr,
             ci90_low=r.ci_tost_low, ci90_high=r.ci_tost_high, ci95_low=r.ci_low, ci95_high=r.ci_high,
             p_raw=r.p_value, p_holm=r.p_holm, seeds_same_dir=r.seeds_same_dir,
-            label_cv=r.label, decision=decide(r.label, label_cap), holdout_confirmed=label_cap,
+            label_cv=r.label, decision=decide(r.label, label_cap, sub_threshold), holdout_confirmed=label_cap,
             rf_interaction_p_holm=None if ia is None else ia.p_holm,
             rf_interaction_tost=None if ia is None else ia.tost_tuong_tac))
     return rows
@@ -140,6 +148,8 @@ def main():
     ap.add_argument("--area-table", default=None, help="mac dinh <res-dir>/dot4_... (vung: bang dien tich cua vung)")
     ap.add_argument("--feature-set", choices=FEATURE_SETS, default=None, help="chi dbscl; xem docstring")
     ap.add_argument("--no-final", nargs="*", default=[], help="bien khong co luot final (xem docstring)")
+    ap.add_argument("--sub-threshold-label", choices=list(SUB_THRESHOLD), default="inconclusive",
+                    help="decision cho co_y_nghia_duoi_nguong (Holm dat, giu rieng cung chieu, |delta| < delta_min)")
     a = ap.parse_args()
     dbscl = a.region == DEFAULT_REGION
     fs = a.feature_set
@@ -164,7 +174,7 @@ def main():
         cap = None if t in a.no_final else read_checked(cap_p, a.region, seen, inputs, fs)
         p = res / f"dot7_{t}_tuong_tac_mo_hinh__rf.csv"
         inter = read_checked(p, a.region, seen, inputs) if p.exists() and not fs else None
-        rows += ledger_for_target(t, kd, cap, inter, area, REGION_LABEL[a.region], flag_ratio=not dbscl)
+        rows += ledger_for_target(t, kd, cap, inter, area, REGION_LABEL[a.region], flag_ratio=not dbscl, sub_threshold=a.sub_threshold_label)
     if len(seen) > 1:
         raise SystemExit(f"LOI: cac bang dau vao khac pairs_mode {sorted(seen)}")
     df = pd.DataFrame(rows)
@@ -172,7 +182,7 @@ def main():
     df.to_csv(out_csv, index=False)
     if not dbscl or fs:  # DBSCL bo day du: giu nguyen (khong sidecar)
         write_provenance(out_csv, region=a.region, pairs_mode=sorted(seen)[0] if seen else None,
-                         **({"feature_set": fs} if fs else {}), no_final=list(a.no_final),
+                         **({"feature_set": fs} if fs else {}), no_final=list(a.no_final), sub_threshold_label=a.sub_threshold_label,
                          inputs={**inputs, str(area_path).replace("\\", "/"): file_sha256(area_path)},
                          git=git_state(), n_rows=len(df))
     n_cap = df.groupby("variable").size().max()

@@ -1,5 +1,6 @@
 """Test build_comparison_ledger: gom dong cap khung cung muc x bien tu bang tong hop gia lap."""
 import pandas as pd
+import pytest
 
 import os
 import sys
@@ -33,12 +34,9 @@ def test_khong_co_luot_final_cho_giu_rieng_la_pending():
     assert {x["holdout_confirmed"] for x in r} == {"khong_co_luot_final"}
 
 
-def test_salinity_khong_ap_cong_bien_khac_van_ap():
-    kd = pd.DataFrame([{**_kd("tuong_duong", "h3_res_5", "latlon_0.1552deg"), "cong_hoc_duoc": float("nan")}])
-    area = {g: 1.0 for g in ["h3_res_5", "latlon_0.1552deg"]}
-    s = ledger_for_target("salinity", kd, None, None, area)[0]
-    assert s["eligible"] and s["ineligible_reason"] == ""
-    n = ledger_for_target("ndwi", kd, None, None, area)[0]
+def test_bien_khac_truot_cong_van_ap():
+    kd = pd.DataFrame([{**_kd("tuong_duong", "h3_res_5", "latlon_0.1552deg"), "cong_hoc_duoc": False}])
+    n = ledger_for_target("ndwi", kd, None, None, {g: 1.0 for g in ["h3_res_5", "latlon_0.1552deg"]})[0]
     assert not n["eligible"] and n["ineligible_reason"] == "truot_cong"
 
 
@@ -46,3 +44,36 @@ def test_decide():
     assert decide("cho_giu_rieng", "cho_giu_rieng") == "Different"
     assert decide("mo_ta", None) == "Descriptive"
     assert decide("chua_phan_dinh", "chua_phan_dinh") == "Inconclusive"
+
+
+def test_decide_final_xac_nhan_la_different():
+    assert decide("cho_giu_rieng", "xac_nhan") == "Different"
+    assert decide("cho_giu_rieng", "khong_tai_lap") == "Inconclusive"
+    assert decide("cho_giu_rieng", "khong_tai_lap_cap_ho") == "Inconclusive"
+
+
+def test_decide_duoi_nguong_theo_tham_so():
+    args = ("cho_giu_rieng", "co_y_nghia_duoi_nguong")
+    assert decide(*args) == "Inconclusive"
+    assert decide(*args, "inconclusive") == "Inconclusive"
+    assert decide(*args, "different_lt_min") == "Different"
+    assert decide(*args, "equivalent") == "Equivalent"
+
+
+def test_ledger_xac_nhan_va_duoi_nguong():
+    kd = pd.DataFrame([_kd("cho_giu_rieng", "h3_res_5", "latlon_0.1552deg"), _kd("cho_giu_rieng", "h3_res_5", "square_utm_17087m")])
+    cap = pd.DataFrame([dict(grid_a="h3_res_5", grid_b="latlon_0.1552deg", label="xac_nhan"),
+                        dict(grid_a="h3_res_5", grid_b="square_utm_17087m", label="co_y_nghia_duoi_nguong")])
+    area = {g: 1.0 for g in ["h3_res_5", "latlon_0.1552deg", "square_utm_17087m"]}
+    assert [x["decision"] for x in ledger_for_target("v", kd, cap, None, area)] == ["Different", "Inconclusive"]
+    r = ledger_for_target("v", kd, cap, None, area, sub_threshold="different_lt_min")
+    assert [x["decision"] for x in r] == ["Different", "Different"]
+    assert [x["holdout_confirmed"] for x in r] == ["xac_nhan", "co_y_nghia_duoi_nguong"]
+
+
+def test_cong_nan_bien_khac_salinity_la_loi():
+    kd = pd.DataFrame([{**_kd("tuong_duong", "h3_res_5", "latlon_0.1552deg"), "cong_hoc_duoc": float("nan")}])
+    area = {g: 1.0 for g in ["h3_res_5", "latlon_0.1552deg"]}
+    with pytest.raises(ValueError, match="cong_hoc_duoc NaN"):
+        ledger_for_target("ndwi", kd, None, None, area)
+    assert ledger_for_target("salinity", kd, None, None, area)[0]["eligible"]
