@@ -560,6 +560,8 @@ def main(a):
                    points_source_sha256=hasher(a.points_source), **{**src_prov, **target_prov(a)})
     if not is_salinity(a):
         pt_prov["ref_rule_kind"] = "3x3"
+    if a.region != "dbscl":  # runner doi chieu region cua dap an (dbscl: khong ghi, giu byte cu)
+        pt_prov["region"] = a.region
     for v in out_variants(a):
         sub = ptab[ptab[f"in_{v}"]]
         cols = {"point_id": sub["point_id"], "block_id": sub["block_id"], "is_holdout": sub["is_holdout"],

@@ -144,6 +144,16 @@ def merge_sources(labels, era5, static, hydro, hybrid, hydro_cols=HYDRO_COLS, ta
     return out[[*KEY_COLS, target_col, *quality, *rest]].sort_values(list(KEY_COLS)).reset_index(drop=True)
 
 
+def drop_no_era5(table) -> tuple[int, int]:
+    """TRAIN_COL &= (era5_cover_frac + era5_fill_frac) > 0 theo (o, mua), sua tai cho. Tra (n_o, n_dong) bi loai khoi tap."""
+    cov = table[["era5_cover_frac", "era5_fill_frac"]]
+    if cov.isna().any().any():  # NaN > 0 la False -> loai lang (bai CHG-22)
+        raise ValueError("era5_cover_frac/era5_fill_frac co NaN")
+    lost = table[TRAIN_COL].astype(bool) & ~(cov.sum(axis=1) > 0)
+    table[TRAIN_COL] = table[TRAIN_COL].astype(bool) & ~lost
+    return int(table.loc[lost, "cell_id"].nunique()), int(lost.sum())
+
+
 def nan_report(table, feature_cols, mask_col=TRAIN_COL) -> pd.DataFrame:
     """So NaN theo cot dac trung tren toan bang va tren dong `mask_col` == True."""
     m = table[mask_col].astype(bool) if mask_col in table.columns else pd.Series(True, index=table.index)

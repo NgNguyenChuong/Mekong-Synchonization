@@ -29,7 +29,7 @@ from preprocessing import CANONICAL_BOUNDARY, file_sha256, write_provenance  # n
 from region import add_region_arg, crs_metric  # noqa: E402
 from training.features import DEFAULT_ALLOWED_FEATURES, find_leak_columns, resolve_feature_list  # noqa: E402
 from unified_table import (KEY_COLS, LABEL_SETS, QUALITY_COLS, TARGET_COL, TRAIN_COL,  # noqa: E402
-                           finite_or_nan, label_suffix, merge_sources, nan_report)
+                           drop_no_era5, finite_or_nan, label_suffix, merge_sources, nan_report)
 
 STATIC_FEATURES = ("dem_mean", "dist_main_river_km", "dist_any_water_km", "dist_coast_km")
 HYBRID_FEATURES = ("dist_mouth_river_km", "zos_mouth_p90", "sluice_frac")
@@ -104,6 +104,11 @@ def build_one(a, grid, label_set):
     static = rd["static"].merge(rd["centroid"], on="cell_id", how="left", validate="one_to_one")
     target = TARGET_COL if a.region == "dbscl" else "ndwi"
     table = merge_sources(rd["labels"], rd["era5"], static, rd.get("hydro"), rd.get("hybrid"), target_col=target)
+    dropped = None
+    if a.drop_no_era5:  # o khong co ERA5 sau lap 1 pixel (CHG-11) -> khoi tap huan luyen; dong van o trong bang
+        dropped = dict(zip(("n_cells", "n_rows"), drop_no_era5(table)))
+        if a.region == "dbscl" and dropped["n_rows"]:
+            raise ValueError(f"{grid}: dbscl phai loai 0 dong, thuc te {dropped} (khong dung lai bang dong bang)")
     no_xy = table[TRAIN_COL].astype(bool) & table["scope_cx"].isna()
     if no_xy.any():
         raise ValueError(f"{grid}: {int(no_xy.sum())} dong huan luyen khong co tam phan dat (scope_n_px = 0)")
@@ -125,7 +130,8 @@ def build_one(a, grid, label_set):
                      sources={k: {"path": p, "sha256": file_sha256(p)} for k, p in src.items()},
                      key_cols=list(KEY_COLS), target=target, region=a.region,
                      quality_cols=[c for c in QUALITY_COLS if c in table.columns],
-                     default_features=feats, rule="tuan 3 viec 3; ERA5 _filled (CHG-11); hybrid CHG-16")
+                     default_features=feats, rule="tuan 3 viec 3; ERA5 _filled (CHG-11); hybrid CHG-16",
+                     **({"dropped_no_era5": dropped} if dropped else {}))
     ok = table[TRAIN_COL].astype(bool)
     for group, cols in (("tinh", STATIC_FEATURES), ("hybrid", HYBRID_FEATURES)):
         if group == "hybrid" and "hybrid" not in src:
@@ -137,7 +143,7 @@ def build_one(a, grid, label_set):
     if bad_nan:  # vd ERA5 / thuy van thieu ca mua lot vao tap huan luyen
         raise ValueError(f"{grid}/{label_set or 'chinh'}: NaN ngoai danh sach cho phep trong dong {TRAIN_COL}: {bad_nan}")
     nr = nan_report(table, feats)
-    row = {"grid": grid, "label_set": label_set or "chinh", "rows": len(table), "cells": table["cell_id"].nunique(),
+    row = {**({"rows_dropped_no_era5": dropped["n_rows"]} if dropped else {}), "grid": grid, "label_set": label_set or "chinh", "rows": len(table), "cells": table["cell_id"].nunique(),
            "rows_label": int(table[target].notna().sum()), "rows_train_ok": int(table["train_ok"].sum()),
            "rows_train_ok_scope": int(ok.sum()),
            "rows_dropped_scope0": int(table["train_ok"].astype(bool).sum() - ok.sum()),
@@ -194,6 +200,8 @@ if __name__ == "__main__":
     ap.add_argument("--force-centroids", action="store_true", help="Tinh lai tam phan dat da cache")
     ap.add_argument("--report", default=os.path.join(ROOT, "KE_HOACH", "ket-qua", "dot4_bang_hop_nhat.csv"))
     ap.add_argument("--boundary", default=CANONICAL_BOUNDARY)
+    ap.add_argument("--drop-no-era5", action="store_true",
+                    help="Loai o (o, mua) khong co ERA5 (cover+fill = 0) khoi train_ok_scope; dbscl: bat buoc 0 dong")
     add_region_arg(ap, {"labels_dir": "labels_dir", "features_dir": "features_dir", "grids_dir": "grids_dir",
                         "out_dir": lambda p: f"{p['features_dir']}/unified", "scope": "scope", "boundary": "boundary",
                         "report": lambda p: os.path.join(p["report_dir"], "dot4_bang_hop_nhat.csv")},

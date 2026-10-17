@@ -113,6 +113,8 @@ def write_points(a, t, pts, years, scope_sha):
     pp = os.path.join(a.out_dir, f"points_reference_{col}.csv")
     want = {"rules_version": MET_RULES_VERSION, "target": col, "sources_sha256": t["src_sha"], "seasons": years,
             "points_sha256": file_sha256(a.points), "points_ref_sal_sha256": file_sha256(a.points_ref_sal)}
+    if a.region != "dbscl":  # runner doi chieu region cua dap an (dbscl: khong ghi, giu byte cu)
+        want["region"] = a.region
     xy = pts.to_crs(t["crs"])
     pv = point_pixel_values(t["values"], t["transform"], xy.geometry.x.to_numpy(), xy.geometry.y.to_numpy(),
                             spec["nan_seasons"])
