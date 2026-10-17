@@ -282,7 +282,8 @@ Run from the unpacked `code/` tree after creating `.env` from `.env.example` (DA
 def group_table(rows):
     g = {}
     for r in rows:
-        k = "/".join(r["path"].split("/")[:2])
+        parts = r["path"].split("/")
+        k = "/".join(parts[:2]) if len(parts) > 2 else parts[0] + "/(top level)"
         e = g.setdefault(k, {"n": 0, "b": 0, "o": set()})
         e["n"] += 1
         e["b"] += r["bytes"]
