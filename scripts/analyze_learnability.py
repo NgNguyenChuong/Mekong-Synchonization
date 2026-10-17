@@ -5,6 +5,7 @@ gop dot7_cong_kiem_dinh.csv (bien, muc, hop_le) - analyze_cv_family doc bang nay
 --model rf|mlp: mo hinh do vs season_mean, ghi dot7_<bien>_hoc_duoc__<model>.csv + cong rieng
 dot7_cong_kiem_dinh__<model>.csv (them cot model), khong cham cong HistGB.
 --region/--pairs-mode/--exclude-points nhu analyze_cv_family; vung: m Holm cong = so luoi thuc (khong dung EXPECTED_GATE_M).
+--feature-set khong_diem (chi dbscl): HistGB luot __fs-<bo> vs season_mean luot (a); file ra hau to __fs-<bo>.
 
 Chay:  venv/Scripts/python.exe scripts/analyze_learnability.py --targets ndwi rain_chirps dsr_mcd18 t2m_era5 rh_era5
            [--prefix cv1] [--model hist_gb|rf|mlp] [--allowed-tags TAG ...] [--scope muc_kiem_dinh|cap_f1]
@@ -34,15 +35,15 @@ NULL_MODEL = "season_mean"
 DOT7_TARGETS = ("ndwi", "rain_chirps", "dsr_mcd18", "t2m_era5", "rh_era5")
 
 
-def out_name(target, model="hist_gb"):
-    return model_name(f"dot7_{target}_hoc_duoc.csv", model)
+def out_name(target, model="hist_gb", feature_set=None):
+    return acf.fs_name(model_name(f"dot7_{target}_hoc_duoc.csv", model), feature_set)
 
 
 def run_target(a, target, levels, pair_grids):
     infos = []
     model = run_model(a.model)
     err = pd.concat([acf.load_errors(a.exp_root, a.prefix, m, a.schemes, target=target, infos=infos,
-                                     region=a.region, exclude=a.exclude)
+                                     region=a.region, exclude=a.exclude, feature_set=a.feature_set)
                      for m in (model, NULL_MODEL)], ignore_index=True)
     e, n_common = acf.common_subset(err)
     pu, cv_units, ho_units = acf.point_units(e, a.folds_csv, **a.eval_kw)
@@ -60,7 +61,7 @@ def run_target(a, target, levels, pair_grids):
     for t in (hoc, gate):
         t["git_tag"], t["points_ref_sha256"] = same["git_tag"], same["points_ref_sha256"]
     info = {"git_tag": same["git_tag"], "points_ref_sha256": same["points_ref_sha256"], "n_luot": len(infos),
-            **acf.tag_info(same, a.allowed_tags, a.tags_reason)}
+            **acf.tag_info(same, a.allowed_tags, a.tags_reason), **acf.feature_info(infos, a.feature_set)}
     if a.region != DEFAULT_REGION:
         info.update(acf.region_info(a, cv_units, hoc), holm_m_cong=int(hoc["holm_m"].max()))
     return hoc, gate, info
@@ -72,11 +73,12 @@ def main(a):
         acf.loi(f"target khong hop le {bad}")
     acf.resolve_region(a)
     os.makedirs(a.out_dir, exist_ok=True)
-    outs = {t: os.path.join(a.out_dir, out_name(t, a.model)) for t in a.targets}
-    gate_path = os.path.join(a.out_dir, acf.gate_name(a.model))
+    outs = {t: os.path.join(a.out_dir, out_name(t, a.model, a.feature_set)) for t in a.targets}
+    gate_path = os.path.join(a.out_dir, acf.gate_name(a.model, a.feature_set))
     files = [*outs.values(), gate_path]
     guard_frozen(files + [provenance_path(p) for p in files], a.frozen_manifest)
-    sidecar = a.model != "hist_gb" or bool(a.allowed_tags) or a.region != DEFAULT_REGION  # dbscl hist_gb: nhu cu
+    sidecar = (a.model != "hist_gb" or bool(a.allowed_tags) or a.region != DEFAULT_REGION
+               or bool(a.feature_set))  # dbscl hist_gb: nhu cu
     at = acf.area_table(a.area_table)
     levels = area_levels(at)  # moi luoi cua muc (gom s2_level_9/10/11)
     main_pairs, _ = acf.select_pairs(at, a.region, a.pairs_mode)
@@ -105,6 +107,7 @@ def main(a):
     if sidecar:
         write_provenance(gate_path, prefix=a.prefix, scope=a.scope, null_model=NULL_MODEL,
                          bien_luot_nay=list(a.targets), **model_provenance(a.model), theo_bien=infos,
+                         **({"feature_set": a.feature_set} if a.feature_set else {}),
                          **({} if a.region == DEFAULT_REGION else {"region": a.region, "pairs_mode": a.pairs_mode}))
     print(f"Ghi: {list(outs.values())} + {gate_path}")
 

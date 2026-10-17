@@ -18,6 +18,8 @@ trong manifest dong bang -> LOI ma 2. --no-table: khong in bang so (buoc mo niem
 --model rf|mlp: chi ho do_nhay_<model> (+ tung cach chia), cot vai_tro, file hau to __<model>, cong cua chinh mo hinh.
 --region mississippi|nile: luot/bang dien tich/fold/diem cua vung, ra KE_HOACH/ket-qua/doi_chung/<vung>/; run_meta.region
 phai khop; --pairs-mode bat buoc (dbscl12 | ratio); --exclude-points (mac dinh configs/exclude_points/<vung>.txt).
+--feature-set khong_diem (chi dbscl): doc luot __fs-<bo>, file ra hau to __fs-<bo> o KE_HOACH/ket-qua/dbscl_fs_<bo>/;
+season_mean (khong dung dac trung) lay luot (a); khong chay ho phu linear/idw.
 
 Chay:  venv/Scripts/python.exe scripts/analyze_cv_family.py --prefix cv1 [--target ndwi] [--out-dir KE_HOACH/ket-qua]
            [--model hist_gb|rf|mlp] [--holm-scope cong|muc_kiem_dinh] [--allowed-tags TAG ...] [--no-table]
@@ -55,6 +57,8 @@ FROZEN_MANIFESTS = [os.path.join(RESULTS, "dot_dong_bang_do_man_manifest.csv"),
                     os.path.join(RESULTS, "dot7_dong_bang_histgb_manifest.csv"),
                     os.path.join(RESULTS, "dot7_dong_bang_rfmlp_manifest.csv")]
 GATE_FILE = "dot7_cong_kiem_dinh.csv"
+FEATURE_SETS = ("khong_diem",)
+FEATURE_FREE_MODELS = ("season_mean",)  # khong dung dac trung -> luot (a) dung chung cho moi bo
 EXP_ROOT = os.path.join(ROOT, "artifacts", "experiments")
 AREA_FILE = "dot4_doi_chieu_dien_tich.csv"
 PAIRS_MODES = ("dbscl12", "ratio")
@@ -72,19 +76,32 @@ def loi(msg):
     raise SystemExit(f"LOI: {msg}")
 
 
-def out_name(target, prefix):
-    return f"dot5_{prefix}_kiem_dinh_khoi.csv" if target == "salinity" else f"dot7_{target}_{prefix}_kiem_dinh_khoi.csv"
+def fs_name(name, feature_set=None):
+    """Hau to __fs-<bo> truoc phan mo rong; None -> giu nguyen."""
+    if not feature_set:
+        return name
+    root, ext = os.path.splitext(name)
+    return f"{root}__fs-{feature_set}{ext}"
 
 
-def gate_name(model="hist_gb"):
-    return model_name(GATE_FILE, model)
+def fs_of(model, feature_set):
+    return None if model in FEATURE_FREE_MODELS else feature_set
 
 
-def scope_outputs(target, prefix, gate, scope):
+def out_name(target, prefix, feature_set=None):
+    n = f"dot5_{prefix}_kiem_dinh_khoi.csv" if target == "salinity" else f"dot7_{target}_{prefix}_kiem_dinh_khoi.csv"
+    return fs_name(n, feature_set)
+
+
+def gate_name(model="hist_gb", feature_set=None):
+    return fs_name(model_name(GATE_FILE, model), feature_set)
+
+
+def scope_outputs(target, prefix, gate, scope, feature_set=None):
     """[(pham vi, ten file)]: cong -> file chinh (+ file do nhay khi hai pham vi khac nhau); muc_kiem_dinh -> mot file."""
     differ = scopes_differ(target, gate)
     scopes = ["cong", "muc_kiem_dinh"] if scope == "cong" and differ else [scope]
-    return [(s, scoped_name(out_name(target, prefix), s, differ)) for s in scopes]
+    return [(s, scoped_name(out_name(target, prefix, feature_set), s, differ)) for s in scopes]
 
 
 def area_table(path):
@@ -111,7 +128,13 @@ def region_defaults(region):
 
 def resolve_region(a):
     """Dien mac dinh theo --region cho tham so chua truyen; vung doi chung bat buoc --pairs-mode."""
-    for k, v in region_defaults(a.region).items():
+    a.feature_set = getattr(a, "feature_set", None)
+    if a.feature_set and a.region != DEFAULT_REGION:
+        loi(f"--feature-set chi cho --region {DEFAULT_REGION}")
+    defaults = region_defaults(a.region)
+    if a.feature_set:
+        defaults["out_dir"] = os.path.join(RESULTS, f"dbscl_fs_{a.feature_set}")
+    for k, v in defaults.items():
         if getattr(a, k, None) is None:
             setattr(a, k, v)
     if a.pairs_mode is None:
@@ -226,9 +249,9 @@ def _read_json(path, name):
         return json.load(f)
 
 
-def check_run(run_dir, name, target, mode, region=DEFAULT_REGION):
+def check_run(run_dir, name, target, mode, region=DEFAULT_REGION, feature_set=False):
     """run_meta + config cua mot luot: ma 0, dung mode, khong co allow_*, target (thieu = salinity) == --target,
-    region (thieu = dbscl) == --region."""
+    region (thieu = dbscl) == --region; feature_set (None = bo day du) khac False thi run_meta.feature_set phai khop."""
     meta = _read_json(os.path.join(run_dir, "run_meta.json"), name)
     cfg = _read_json(os.path.join(run_dir, "config.json"), name)
     if str(meta.get("returncode")) != "0":
@@ -243,6 +266,8 @@ def check_run(run_dir, name, target, mode, region=DEFAULT_REGION):
     for src, got in (("run_meta", meta.get("region", DEFAULT_REGION)), ("config", cfg.get("region", DEFAULT_REGION))):
         if got != region:
             loi(f"{name}: {src}.region '{got}' khac --region '{region}'")
+    if feature_set is not False and meta.get("feature_set") != feature_set:
+        loi(f"{name}: run_meta.feature_set '{meta.get('feature_set')}' khac '{feature_set}'")
     return {"run": name, "git_tag": meta.get("git_tag"), "points_ref_sha256": meta.get("points_ref_sha256"),
             "meta": meta, "config": cfg}
 
@@ -270,6 +295,16 @@ def check_consistent(infos, allowed_tags=None):
     return out
 
 
+def feature_info(infos, feature_set) -> dict:
+    """Khoa provenance bo dac trung: ten + sha256 danh sach dac trung (phai duy nhat giua cac luot dung bo do)."""
+    if not feature_set:
+        return {}
+    shas = {i["meta"].get("features_sha256") for i in infos if i["meta"].get("feature_set") == feature_set}
+    if len(shas) != 1 or None in shas:
+        loi(f"features_sha256 khong duy nhat/thieu giua cac luot {feature_set}: {sorted(map(str, shas))}")
+    return {"feature_set": feature_set, "features_sha256": shas.pop()}
+
+
 def tag_info(same, allowed_tags, reason=MULTI_TAG_REASON) -> dict:
     """Khoa provenance khi cho phep nhieu tag; khong khai bao -> {}."""
     if not allowed_tags:
@@ -279,15 +314,16 @@ def tag_info(same, allowed_tags, reason=MULTI_TAG_REASON) -> dict:
 
 
 def load_errors(exp_root, prefix, model, schemes, grids=GRIDS, target="salinity", infos=None, region=DEFAULT_REGION,
-                exclude=()):
+                exclude=(), feature_set=None):
     """err_long (grid, model, seed=cach chia, point_id, season, err, pred_source, unit_id) tu oof_points.csv;
     bo dong cua diem trong `exclude`."""
     parts = []
+    fs = fs_of(model, feature_set)
     for g in grids:
         for s in schemes:
-            name = run_name(prefix, g, model, s, "", None, target)
+            name = run_name(prefix, g, model, s, "", fs, target)
             run_dir = os.path.join(exp_root, name, "cv")
-            info = check_run(run_dir, name, target, "cv", region)
+            info = check_run(run_dir, name, target, "cv", region, fs)
             if infos is not None:
                 infos.append(info)
             p = os.path.join(run_dir, "oof_points.csv")
@@ -350,15 +386,16 @@ def main(a):
         loi(f"--target '{a.target}' khong co trong TESTED_TIERS")
     resolve_region(a)
     os.makedirs(a.out_dir, exist_ok=True)
-    names = all_scoped_names(os.path.join(a.out_dir, out_name(a.target, a.prefix)), a.model)
+    fsn = a.feature_set
+    names = all_scoped_names(os.path.join(a.out_dir, out_name(a.target, a.prefix, fsn)), a.model)
     guard_frozen(names + [provenance_path(p) for p in names], a.frozen_manifest)
-    gate_path = a.gate or os.path.join(a.out_dir, gate_name(a.model))
+    gate_path = a.gate or os.path.join(a.out_dir, gate_name(a.model, fsn))
     try:
         gate = load_gate(gate_path, a.target, required=gate_required(a.target, a.model), model=a.model)
     except ValueError as exc:
         loi(str(exc))
     outs = [(s, os.path.join(a.out_dir, model_name(n, a.model)))
-            for s, n in scope_outputs(a.target, a.prefix, gate, a.holm_scope)]
+            for s, n in scope_outputs(a.target, a.prefix, gate, a.holm_scope, fsn)]
     at = area_table(a.area_table)
     main_pairs, warn = select_pairs(at, a.region, a.pairs_mode)
     for w in warn:
@@ -367,11 +404,11 @@ def main(a):
     s2_pairs = side_pairs(at, main_pairs)
     infos, results = [], {s: [] for s, _ in outs}
     main_fam = main_family(a.model)
-    phu = (("linear", "phu_linear"), ("idw", "phu_idw")) if a.region == DEFAULT_REGION else ()  # vung: chi chay HistGB
+    phu = (("linear", "phu_linear"), ("idw", "phu_idw")) if a.region == DEFAULT_REGION and not fsn else ()  # vung/bo: chi HistGB
     fams = ((("hist_gb", main_fam), *phu) if a.model == "hist_gb" else ((run_model(a.model), main_fam),))
     for model, fam in fams:
         err = load_errors(a.exp_root, a.prefix, model, a.schemes, target=a.target, infos=infos, region=a.region,
-                          exclude=a.exclude)
+                          exclude=a.exclude, feature_set=fsn)
         pu, cv_units, ho_units = point_units(err, a.folds_csv, **a.eval_kw)
         check_excluded(a.exclude, pu)
         for scope, _ in outs:
@@ -405,7 +442,7 @@ def main(a):
         write_provenance(out, **hp, prefix=a.prefix,
                          git_tag=same["git_tag"], points_ref_sha256=same["points_ref_sha256"], n_luot=len(infos),
                          **model_provenance(a.model), **tag_info(same, a.allowed_tags, a.tags_reason),
-                         **region_info(a, cv_units, res, main_pairs, warn))
+                         **feature_info(infos, fsn), **region_info(a, cv_units, res, main_pairs, warn))
         if i == 0 and not a.no_table:
             cols = [c for c in ["family", "grid_a", "grid_b", "kiem_dinh", "delta_hat", "ci_low", "ci_high",
                                 "p_holm", "seeds_same_dir", "k_over_G", "label"] if c in res.columns]
@@ -457,6 +494,8 @@ def add_common_args(ap):
     ap.add_argument("--allowed-tags", nargs="+", default=None,
                     help="cho phep nhieu git_tag giua cac luot (tap tag thuc te phai la tap con)")
     ap.add_argument("--tags-reason", default=MULTI_TAG_REASON, help="ly do nhieu tag ghi vao provenance")
+    ap.add_argument("--feature-set", choices=FEATURE_SETS, default=None,
+                    help="doc luot __fs-<bo> (chi dbscl); file ra hau to __fs-<bo>, mac dinh KE_HOACH/ket-qua/dbscl_fs_<bo>")
 
 
 if __name__ == "__main__":

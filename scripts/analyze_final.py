@@ -4,6 +4,7 @@ bien, con lai mo_ta; bang mo ta nhom test (khong_gian / thoi_gian / ca_hai) tu c
 in "rong (khai bao truoc)". --holm-scope nhu analyze_cv_family; doi chieu voi file CV cung pham vi (tap cap kiem
 dinh phai trung). --model rf|mlp: bang cap va bang nhom chi mo hinh do, file doc/ghi hau to __<model>.
 --region/--pairs-mode/--exclude-points nhu analyze_cv_family (vung: doc/ghi KE_HOACH/ket-qua/doi_chung/<vung>/).
+--feature-set khong_diem (chi dbscl): luot final __fs-<bo> (season_mean: luot (a)); bang nhom mac dinh hist_gb + season_mean.
 
 Chay:  venv/Scripts/python.exe scripts/analyze_final.py --target ndwi [--prefix cv1] [--min-frac 0.8]
            [--model hist_gb|rf|mlp] [--holm-scope cong|muc_kiem_dinh] [--no-table]
@@ -38,12 +39,13 @@ DESC_MODELS = ("hist_gb", "linear", "idw", "season_mean")
 SPATIAL_GROUP = "khong_gian"
 
 
-def out_names(target, prefix):
-    return f"dot7_{target}_{prefix}_final_cap.csv", f"dot7_{target}_{prefix}_final_nhom.csv"
+def out_names(target, prefix, feature_set=None):
+    return (acf.fs_name(f"dot7_{target}_{prefix}_final_cap.csv", feature_set),
+            acf.fs_name(f"dot7_{target}_{prefix}_final_nhom.csv", feature_set))
 
 
 def final_dir(a, grid, model):
-    name = run_name(a.prefix, grid, model, FINAL_SCHEME, "", None, a.target)
+    name = run_name(a.prefix, grid, model, FINAL_SCHEME, "", acf.fs_of(model, a.feature_set), a.target)
     return name, os.path.join(a.exp_root, name, "final")
 
 
@@ -51,7 +53,7 @@ def load_final_points(a, grid, infos):
     """final_points cua mo hinh --model s42, CHI nhom khong_gian (khoi giu rieng, mua != 2020); seed = cach chia."""
     model = run_model(a.model)
     name, run_dir = final_dir(a, grid, model)
-    infos.append(acf.check_run(run_dir, name, a.target, "final", a.region))
+    infos.append(acf.check_run(run_dir, name, a.target, "final", a.region, acf.fs_of(model, a.feature_set)))
     p = os.path.join(run_dir, "final_points.csv")
     if not os.path.isfile(p):
         acf.loi(f"{name}: thieu {p}")
@@ -97,7 +99,7 @@ def _declared(meta):
 def group_rows(a, grid, model, level, infos):
     """Mot luot final -> dong mo ta moi nhom; nhom rong chi hop le khi khai bao truoc."""
     name, run_dir = final_dir(a, grid, model)
-    info = acf.check_run(run_dir, name, a.target, "final", a.region)
+    info = acf.check_run(run_dir, name, a.target, "final", a.region, acf.fs_of(model, a.feature_set))
     infos.append(info)
     cfg, declared = info["config"], _declared(info["meta"])
     if "point_metrics_by_group" not in cfg:
@@ -141,16 +143,17 @@ def main(a):
     acf.resolve_region(a)
     models = desc_models(a)
     os.makedirs(a.out_dir, exist_ok=True)
-    cand = [p for n in out_names(a.target, a.prefix) for p in all_scoped_names(os.path.join(a.out_dir, n), a.model)]
+    cand = [p for n in out_names(a.target, a.prefix, a.feature_set)
+            for p in all_scoped_names(os.path.join(a.out_dir, n), a.model)]
     guard_frozen(cand + [provenance_path(p) for p in cand], a.frozen_manifest)
-    gate_path = a.gate or os.path.join(a.out_dir, acf.gate_name(a.model))
+    gate_path = a.gate or os.path.join(a.out_dir, acf.gate_name(a.model, a.feature_set))
     try:
         gate = load_gate(gate_path, a.target, required=gate_required(a.target, a.model), model=a.model)
     except ValueError as exc:
         acf.loi(str(exc))
     differ = scopes_differ(a.target, gate)
     out_cap, out_nhom = (os.path.join(a.out_dir, scoped_name(n, a.holm_scope, differ, a.model))
-                         for n in out_names(a.target, a.prefix))
+                         for n in out_names(a.target, a.prefix, a.feature_set))
     model, fam = run_model(a.model), main_family(a.model)
     ht = holm_tiers(a.target, gate, a.holm_scope)
     at = acf.area_table(a.area_table)
@@ -163,7 +166,7 @@ def main(a):
 
     infos = []
     err_cv = acf.load_errors(a.exp_root, a.prefix, model, a.schemes, target=a.target, infos=infos, region=a.region,
-                             exclude=a.exclude)
+                             exclude=a.exclude, feature_set=a.feature_set)
     e_cv, n_cv = acf.common_subset(err_cv)
     fin = pd.concat([load_final_points(a, g, infos) for g in acf.GRIDS], ignore_index=True)
     e_fin, n_fin = acf.common_subset(fin)
@@ -180,7 +183,7 @@ def main(a):
     res.insert(2, "n_final_point_seasons", n_fin)
     res["final_nhom"] = SPATIAL_GROUP
     cv_path = os.path.join(a.cv_dir or a.out_dir,
-                           scoped_name(acf.out_name(a.target, a.prefix), a.holm_scope, differ, a.model))
+                           scoped_name(acf.out_name(a.target, a.prefix, a.feature_set), a.holm_scope, differ, a.model))
     matched = check_against_cv(res, cv_path, family=fam)
     res["doi_chieu_cv"] = matched
 
@@ -204,7 +207,8 @@ def main(a):
         write_csv_atomic(t, p)
         write_provenance(p, **hp, **cv_info, git_tag=same["git_tag"], points_ref_sha256=same["points_ref_sha256"],
                          n_luot=len(infos), **model_provenance(a.model),
-                         **acf.tag_info(same, a.allowed_tags, a.tags_reason), **ri)
+                         **acf.tag_info(same, a.allowed_tags, a.tags_reason), **acf.feature_info(infos, a.feature_set),
+                         **ri)
 
     if not a.no_table:
         cols = ["grid_a", "grid_b", "kiem_dinh", "delta_hat", "p_holm", "delta_holdout", "holdout_same_dir", "label"]
@@ -220,6 +224,12 @@ def main(a):
 def desc_models(a) -> list:
     """Mo hinh cho bang nhom: hist_gb -> --models (mac dinh DESC_MODELS); rf/mlp -> chi mo hinh do."""
     if a.model == "hist_gb":
+        if a.feature_set:  # linear/idw khong co luot theo bo dac trung
+            ms = list(a.models or ("hist_gb", "season_mean"))
+            bad = [m for m in ms if m not in ("hist_gb", *acf.FEATURE_FREE_MODELS)]
+            if bad:
+                acf.loi(f"--feature-set {a.feature_set}: khong co luot cua mo hinh {bad}")
+            return ms
         return list(a.models or DESC_MODELS)
     own = [run_model(a.model)]
     if a.models and list(a.models) != own:

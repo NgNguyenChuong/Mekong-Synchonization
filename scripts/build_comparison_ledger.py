@@ -1,6 +1,7 @@
 """Comparison Ledger: mot dong cho moi cap khung cung muc x 6 bien (ho F1_chinh), chi tong hop file da mo.
 --region mississippi|nile: doc KE_HOACH/ket-qua/doi_chung/<vung>/, bo salinity; provenance dau vao phai cung region.
 
+--feature-set khong_diem (chi dbscl): doc/ghi file hau to __fs-<bo> trong KE_HOACH/ket-qua/dbscl_fs_<bo>/, co provenance.
 Vung: them cot ratio_gt_1_2 (area_ratio > 1,2) va ghi comparison_ledger.csv.provenance.json (sha dau vao, region, git).
 
 Chay: venv/Scripts/python.exe scripts/build_comparison_ledger.py --res-dir KE_HOACH/ket-qua [--region mississippi]
@@ -18,7 +19,7 @@ from md_util import md_table
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
-from analyze_cv_family import MAX_RATIO  # noqa: E402
+from analyze_cv_family import FEATURE_SETS, MAX_RATIO, fs_name  # noqa: E402
 from region import DEFAULT_REGION, REGIONS, region_paths  # noqa: E402
 from training.dot7_rules import file_sha256, write_provenance  # noqa: E402
 
@@ -108,8 +109,9 @@ def git_state():
     return {"commit": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain", "--untracked-files=no"))}
 
 
-def read_checked(path, region, seen, inputs=None):
-    """CSV + kiem provenance (neu co): region (thieu = dbscl) == --region; gom pairs_mode vao `seen`, sha vao `inputs`."""
+def read_checked(path, region, seen, inputs=None, feature_set=None):
+    """CSV + kiem provenance (neu co): region (thieu = dbscl) == --region, feature_set (thieu = None) == --feature-set;
+    gom pairs_mode vao `seen`, sha vao `inputs`."""
     if inputs is not None:
         inputs[str(path).replace("\\", "/")] = file_sha256(path)
     pv = Path(f"{path}.provenance.json")
@@ -118,10 +120,12 @@ def read_checked(path, region, seen, inputs=None):
         got = info.get("region", DEFAULT_REGION)
         if got != region:
             raise SystemExit(f"LOI: {path}: provenance region '{got}' khac --region '{region}'")
+        if info.get("feature_set") != feature_set:
+            raise SystemExit(f"LOI: {path}: provenance feature_set '{info.get('feature_set')}' khac '{feature_set}'")
         if "pairs_mode" in info:
             seen.add(info["pairs_mode"])
-    elif region != DEFAULT_REGION:
-        raise SystemExit(f"LOI: {path}: thieu provenance - khong kiem duoc vung")
+    elif region != DEFAULT_REGION or feature_set:
+        raise SystemExit(f"LOI: {path}: thieu provenance - khong kiem duoc vung/bo dac trung")
     return pd.read_csv(path)
 
 
@@ -130,10 +134,15 @@ def main():
     ap.add_argument("--res-dir", default=None, help="mac dinh KE_HOACH/ket-qua (vung: KE_HOACH/ket-qua/doi_chung/<vung>)")
     ap.add_argument("--region", choices=list(REGIONS), default=DEFAULT_REGION)
     ap.add_argument("--area-table", default=None, help="mac dinh <res-dir>/dot4_... (vung: bang dien tich cua vung)")
+    ap.add_argument("--feature-set", choices=FEATURE_SETS, default=None, help="chi dbscl; xem docstring")
     a = ap.parse_args()
     dbscl = a.region == DEFAULT_REGION
-    res = Path(a.res_dir or ("KE_HOACH/ket-qua" if dbscl else f"KE_HOACH/ket-qua/doi_chung/{a.region}"))
-    area_path = a.area_table or (res / "dot4_doi_chieu_dien_tich.csv" if dbscl else
+    fs = a.feature_set
+    if fs and not dbscl:
+        raise SystemExit(f"LOI: --feature-set chi cho --region {DEFAULT_REGION}")
+    res = Path(a.res_dir or ("KE_HOACH/ket-qua" if dbscl and not fs else f"KE_HOACH/ket-qua/dbscl_fs_{fs}" if fs
+                             else f"KE_HOACH/ket-qua/doi_chung/{a.region}"))
+    area_path = a.area_table or ((Path("KE_HOACH/ket-qua") if fs else res) / "dot4_doi_chieu_dien_tich.csv" if dbscl else
                                  f"{region_paths(a.region)['report_dir']}/dot4_doi_chieu_dien_tich.csv")
     ar = pd.read_csv(area_path)
     area = {}
@@ -143,21 +152,22 @@ def main():
     targets = TARGETS if dbscl else [t for t in TARGETS if t != "salinity"]  # vung doi chung khong co nhan do man
     rows, seen, inputs = [], set(), {}
     for t in targets:
-        if t == "salinity":
-            kd = read_checked(res / "dot5_cv1_kiem_dinh_khoi.csv", a.region, seen, inputs)
-            cap = read_checked(res / "dot5_final_so_cap_voi_cv.csv", a.region, seen, inputs)
-        else:
-            kd = read_checked(res / f"dot7_{t}_cv1_kiem_dinh_khoi.csv", a.region, seen, inputs)
-            cap = read_checked(res / f"dot7_{t}_cv1_final_cap.csv", a.region, seen, inputs)
+        kd_p = res / fs_name("dot5_cv1_kiem_dinh_khoi.csv" if t == "salinity" else f"dot7_{t}_cv1_kiem_dinh_khoi.csv", fs)
+        # DBSCL cu: salinity doc bang final dot5; bo dac trung: moi bien doc dot7_<bien>_cv1_final_cap
+        cap_p = res / (fs_name(f"dot7_{t}_cv1_final_cap.csv", fs) if fs or t != "salinity" else "dot5_final_so_cap_voi_cv.csv")
+        kd = read_checked(kd_p, a.region, seen, inputs, fs)
+        cap = read_checked(cap_p, a.region, seen, inputs, fs)
         p = res / f"dot7_{t}_tuong_tac_mo_hinh__rf.csv"
-        inter = read_checked(p, a.region, seen, inputs) if p.exists() else None
+        inter = read_checked(p, a.region, seen, inputs) if p.exists() and not fs else None
         rows += ledger_for_target(t, kd, cap, inter, area, REGION_LABEL[a.region], flag_ratio=not dbscl)
     if len(seen) > 1:
         raise SystemExit(f"LOI: cac bang dau vao khac pairs_mode {sorted(seen)}")
     df = pd.DataFrame(rows)
-    df.to_csv(res / "comparison_ledger.csv", index=False)
-    if not dbscl:  # DBSCL: giu nguyen (khong sidecar)
-        write_provenance(res / "comparison_ledger.csv", region=a.region, pairs_mode=sorted(seen)[0] if seen else None,
+    out_csv, out_md = res / fs_name("comparison_ledger.csv", fs), res / fs_name("comparison_ledger.md", fs)
+    df.to_csv(out_csv, index=False)
+    if not dbscl or fs:  # DBSCL bo day du: giu nguyen (khong sidecar)
+        write_provenance(out_csv, region=a.region, pairs_mode=sorted(seen)[0] if seen else None,
+                         **({"feature_set": fs} if fs else {}),
                          inputs={**inputs, str(area_path).replace("\\", "/"): file_sha256(area_path)},
                          git=git_state(), n_rows=len(df))
     n_cap = df.groupby("variable").size().max()
@@ -168,7 +178,7 @@ def main():
                        "eligible", "ineligible_reason", "G", "delta_rel",
                        "p_holm", "decision", "holdout_confirmed", "rf_interaction_p_holm"]]),
           summary_md(df)]
-    (res / "comparison_ledger.md").write_text("\n".join(md), encoding="utf-8")
+    out_md.write_text("\n".join(md), encoding="utf-8")
     print(summary_md(df))
 
 
