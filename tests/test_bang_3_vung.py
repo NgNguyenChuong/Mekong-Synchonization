@@ -35,8 +35,8 @@ def _desc(reason):
 @pytest.fixture()
 def results(tmp_path):
     spec = {"dbscl_a": ("comparison_ledger.csv", ["salinity", "ndwi"], {}),
-            "dbscl_b": (b3.LEDGERS["dbscl_b"][1], ["salinity", "ndwi"],
-                        {("salinity", lv, i): dict(eligible=False, ineligible_reason="truot_cong")  # decision van Equivalent
+            "dbscl_b": (b3.LEDGERS["dbscl_b"][1], ["salinity", "ndwi", "rain_chirps"],
+                        {("rain_chirps", lv, i): dict(eligible=False, ineligible_reason="truot_cong")  # decision van Equivalent
                          for lv, i in PAIRS}),
             "ms": (b3.LEDGERS["ms"][1], ["ndwi", "rain_chirps", "rh_era5"],
                    {(v, lv, i): _desc("khong_kiem_dinh") for v in ("rain_chirps", "rh_era5") for lv, i in PAIRS}
@@ -52,7 +52,7 @@ def results(tmp_path):
 def test_o_dem_theo_eligible_va_co(results, monkeypatch):
     monkeypatch.setattr(b3, "VARS", ("salinity", "ndwi", "rain_chirps", "rh_era5"))
     led = b3.load_ledgers(str(results))
-    c = b3.cell(led["dbscl_b"][(led["dbscl_b"].variable == "salinity") & (led["dbscl_b"].level == "fine")])
+    c = b3.cell(led["dbscl_b"][(led["dbscl_b"].variable == "rain_chirps") & (led["dbscl_b"].level == "fine")])
     assert (c["eq"], c["inc"], c["desc"]) == (0, 0, 6) and c["text"] == "0/0/6 (truot_cong)§"  # § = decision Equivalent nhung truot cong
     c = b3.cell(led["ms"][(led["ms"].variable == "ndwi") & (led["ms"].level == "fine")])
     assert c["text"] == "5/1/0†"
@@ -77,7 +77,8 @@ def test_tong_12_cap_moi_bien_va_g_le(results, monkeypatch):
 def test_cong_hoc_duoc(results, monkeypatch):
     monkeypatch.setattr(b3, "VARS", ("salinity", "ndwi", "rain_chirps", "rh_era5"))
     t = b3.table2(b3.load_ledgers(str(results))).set_index(["variable", "level"])
-    assert t.loc[("salinity", "coarse"), "dbscl_a"] == "QUA 3/3" and t.loc[("salinity", "coarse"), "dbscl_b"] == "TRƯỢT"
+    assert t.loc[("salinity", "coarse"), "dbscl_a"] == t.loc[("salinity", "coarse"), "dbscl_b"] == "Không áp cổng"
+    assert t.loc[("salinity", "coarse"), "ms"] == "–" and t.loc[("rain_chirps", "coarse"), "dbscl_b"] == "TRƯỢT"
     assert t.loc[("rain_chirps", "fine"), "ms"] == "Không kiểm định" and t.loc[("rain_chirps", "fine"), "nl"] == "–"
 
 
@@ -98,7 +99,8 @@ def test_fig7_chi_cap_eligible_muc_vua_nho(results):
     spec.loader.exec_module(pp)
     f = pp.fig7_pairs(b3.load_ledgers(str(results)))
     assert set(f["level"]) == {"medium", "fine"}
-    assert set(f["reg"]) == {"dbscl_b", "ms", "nl"} and not ((f.reg == "dbscl_b") & (f.variable == "salinity")).any()
+    assert set(f["reg"]) == {"dbscl_b", "ms", "nl"} and not ((f.reg == "dbscl_b") & (f.variable == "rain_chirps")).any()
+    assert ((f.reg == "dbscl_b") & (f.variable == "salinity")).sum() == 9  # do man khong ap cong: eligible o medium+fine
     assert not ((f.reg == "ms") & (f.variable == "rain_chirps")).any()  # khong eligible
     r = f.iloc[0]
     assert r["x"] == pytest.approx(1.0) and r["ci90_low"] == pytest.approx(-1.0) and r["ci95_high"] == pytest.approx(3.0)

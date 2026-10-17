@@ -33,6 +33,15 @@ def test_khong_co_luot_final_cho_giu_rieng_la_pending():
     assert {x["holdout_confirmed"] for x in r} == {"khong_co_luot_final"}
 
 
+def test_salinity_khong_ap_cong_bien_khac_van_ap():
+    kd = pd.DataFrame([{**_kd("tuong_duong", "h3_res_5", "latlon_0.1552deg"), "cong_hoc_duoc": float("nan")}])
+    area = {g: 1.0 for g in ["h3_res_5", "latlon_0.1552deg"]}
+    s = ledger_for_target("salinity", kd, None, None, area)[0]
+    assert s["eligible"] and s["ineligible_reason"] == ""
+    n = ledger_for_target("ndwi", kd, None, None, area)[0]
+    assert not n["eligible"] and n["ineligible_reason"] == "truot_cong"
+
+
 def test_decide():
     assert decide("cho_giu_rieng", "cho_giu_rieng") == "Different"
     assert decide("mo_ta", None) == "Descriptive"

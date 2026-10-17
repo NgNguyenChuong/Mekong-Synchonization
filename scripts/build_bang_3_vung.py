@@ -117,7 +117,8 @@ def g_row(led) -> dict:
 
 
 def table2(led) -> pd.DataFrame:
-    """Cong hoc duoc theo bien x muc x vung: QUA x/n | TRUOT | Khong kiem dinh (muc khong dang ky kiem dinh)."""
+    """Cong hoc duoc theo bien x muc x vung: QUA x/n | TRUOT | Khong kiem dinh (muc khong dang ky kiem dinh);
+    salinity (chi DBSCL) khong ap cong."""
     rows = []
     for v in VARS:
         for lv in LEVELS:
@@ -126,6 +127,8 @@ def table2(led) -> pd.DataFrame:
                 s = d[(d.variable == v) & (d.level == lv)]
                 if s.empty:
                     r[k] = "–"
+                elif v == "salinity":
+                    r[k] = "Không áp cổng"
                 elif (x := int(s.eligible.sum())):
                     r[k] = f"QUA {x}/{len(s)}"
                 else:
@@ -154,7 +157,7 @@ def to_md(led, t1, t2, g) -> str:
     b = b[["Biến × mức", *led]].rename(columns=names)
     return "\n\n".join([
         "# Bảng 1. Tổng hợp 3 vùng: Eq/Inc/Desc(/Pend) theo biến × mức", md_table(pd.concat([show, gr])), NOTES,
-        "# Bảng 2. Cổng học được theo biến × mức × vùng (QUA x/n = số cặp eligible/số cặp của ô)", md_table(b)]) + "\n"
+        "# Bảng 2. Cổng học được theo biến × mức × vùng (QUA x/n = số cặp eligible/số cặp của ô; độ mặn không áp cổng)", md_table(b)]) + "\n"
 
 
 def with_raw(t1, led) -> pd.DataFrame:

@@ -68,7 +68,7 @@ def ledger_for_target(var, kd, cap, inter, area, region_label="MekongDelta", fla
         pair = frozenset((r.grid_a, r.grid_b))
         c = cap_by_pair.get(pair)
         label_cap = NO_FINAL if cap is None else None if c is None else (c.label_cap if hasattr(c, "label_cap") else c.label)
-        gate = getattr(r, "cong_hoc_duoc", True)
+        gate = True if var == "salinity" else getattr(r, "cong_hoc_duoc", True)  # do man khong ap cong hoc duoc
         muc_kd = getattr(r, "muc_kiem_dinh", True)
         eligible = bool(muc_kd) and bool(gate is True or gate == 1)
         reason = "" if eligible else ("khong_kiem_dinh" if not muc_kd else "truot_cong")
