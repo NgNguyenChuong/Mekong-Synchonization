@@ -401,3 +401,107 @@ def test_holdout_season_bang_nan_2020_khong_vao_huan_luyen(setup):
             fp = pd.read_csv(out / "final_points.csv")
             tg = fp[fp["test_group"] == "thoi_gian"]
             assert len(tg) and set(tg["season"]) == {2019} and np.isfinite(fp["err"]).all()
+
+
+# ------------------------------------------------------------------ Dot 8: vung doi chung (--region)
+def _region_setup(tmp, region="mississippi", grids=("h3_res_5", "s2_level_9")):
+    """Cay <DOI_CHUNG_OUT>/<vung>/ gia: 2 luoi DBSCL (hinh hoc khong quan trong), bang ndwi chi dac trung doi_chung."""
+    from static_features import WORLDCOVER_NAMES
+
+    rng = np.random.default_rng(11)
+    out = tmp / "out" / region
+    for sub in ("grids", "eval", "features/unified_dot7/ndwi", "labels/dot7"):
+        (out / sub).mkdir(parents=True)
+    shutil.copy(FOLDS, out / "eval" / "cv_folds_s42.csv")
+    shutil.copy(os.path.join(ROOT, "data", "eval", "holdout_blocks.geojson"), out / "eval" / "holdout_blocks.geojson")
+    (out / "eval" / "holdout_blocks.geojson.provenance.json").write_text(json.dumps({"region": region}))
+    shutil.copy(POINTS, out / "eval" / "eval_points.geojson")
+    (out / "eval" / "eval_points.geojson.provenance.json").write_text(json.dumps({"region": region}))
+    feats = ["rain_mm", "solar", "temp_c", "temp_max_c", "temp_min_c", "rh_percent", "dem_mean", "dist_main_river_km",
+             "dist_any_water_km", "dist_coast_km"] + [f"landcover_class_{n}" for n in WORLDCOVER_NAMES.values()]
+    for grid in grids:
+        src = os.path.join(ROOT, "data", "grids", f"{grid}.geojson")
+        shutil.copy(src, out / "grids" / f"{grid}.geojson")
+        cells = gpd.read_file(src)["cell_id"].astype(str).tolist()
+        t = pd.DataFrame([(c, s) for c in cells for s in range(2018, 2022)], columns=["cell_id", "season"])
+        for f in feats:
+            t[f] = rng.uniform(0, 1, len(t))
+        t["ndwi"] = 0.3 - 0.2 * t["dem_mean"] + rng.normal(0, 0.01, len(t))
+        t["train_ok"] = t["train_ok_scope"] = True
+        p = out / "features" / "unified_dot7" / "ndwi" / f"{grid}_unified.csv"
+        t.to_csv(p, index=False)
+        p.with_name(p.name + ".provenance.json").write_text(json.dumps(
+            {"target": "ndwi", "label_set": "chinh", "region": region}))
+    pts = gpd.read_file(POINTS)
+    ref = pd.DataFrame([(q, s) for q in pts["point_id"] for s in range(2018, 2022)], columns=["point_id", "season"])
+    ref["n_valid_3x3"], ref["ref_ndwi"] = 9, rng.uniform(0, 0.3, len(ref))
+    rp = out / "labels" / "dot7" / "points_reference_ndwi.csv"
+    ref.to_csv(rp, index=False)
+    rp.with_name(rp.name + ".provenance.json").write_text(json.dumps({"target": "ndwi", "variant": "main"}))
+    fm = tmp / "KE_HOACH" / "ket-qua" / "dong_bang.csv"   # goc repo cua manifest = tmp
+    fm.parent.mkdir(parents=True)
+    pd.DataFrame({"file": ["artifacts/experiments/t_manifest.csv"]}).to_csv(fm, index=False)
+    return out, fm, len(feats)
+
+
+def _run_region(tmp, fm, *extra):
+    cmd = [sys.executable, RUNNER, "--region", "mississippi", "--prefix", "t", "--models", "linear", "--schemes", "42",
+           "--target", "ndwi", "--cwd", str(tmp), "--frozen-manifest", str(fm), "--allow-untagged", "--allow-dirty",
+           *extra]
+    return subprocess.run(cmd, cwd=tmp, capture_output=True, text=True, timeout=900,
+                          env=dict(os.environ, PYTHONIOENCODING="utf-8", DOI_CHUNG_OUT=str(tmp / "out")))
+
+
+@need_real
+def test_region_doi_chung_thu_muc_rieng_meta_va_bo_dac_trung(tmp_path):
+    out, fm, n_feats = _region_setup(tmp_path)
+    p = _run_region(tmp_path, fm)
+    assert p.returncode == 0, p.stdout + p.stderr
+    exp = tmp_path / "artifacts" / "experiments"
+    assert not list(exp.glob("t_*")), "vung doi chung khong duoc ghi vao thu muc DBSCL"
+    man = pd.read_csv(exp / "mississippi" / "t_manifest.csv")
+    assert list(man["status"]) == ["xong", "xong"] and set(man["region"]) == {"mississippi"}
+    run = exp / "mississippi" / "t__h3_res_5__linear__s42__t-ndwi" / "cv"   # khong them __fs-doi_chung
+    meta = json.loads((run / "run_meta.json").read_text(encoding="utf-8"))
+    assert meta["region"] == "mississippi" and meta["crs_metric"] == "EPSG:32615"
+    assert meta["feature_set"] == "doi_chung" and len(meta["features_sha256"]) == 64
+    assert meta["cmd"][meta["cmd"].index("--region") + 1] == "mississippi"
+    assert meta["cmd"][meta["cmd"].index("--table") + 1].replace("\\", "/").startswith(str(out).replace("\\", "/"))
+    for k in ("table_sha256", "cv_folds_sha256", "points_ref_sha256", "grid_sha256", "points_sha256"):
+        assert len(meta[k]) == 64
+    cfg = json.loads((run / "config.json").read_text(encoding="utf-8"))
+    assert cfg["region"] == "mississippi" and cfg["crs_metric"] == "EPSG:32615"
+    assert len(cfg["features"]) == n_feats and not cfg["features_missing"]
+    assert (run / "oof_points.csv").exists()
+    # chay lai: bo qua (khoa region khop)
+    p = _run_region(tmp_path, fm)
+    assert p.returncode == 0 and set(pd.read_csv(exp / "mississippi" / "t_manifest.csv")["status"]) == {"bo_qua_da_xong"}
+
+
+@need_real
+def test_region_tu_choi_bang_khac_vung_va_manifest_dong_bang(tmp_path):
+    out, fm, _ = _region_setup(tmp_path, grids=("h3_res_5",))
+    pd.DataFrame({"file": ["artifacts/experiments/mississippi/t_manifest.csv"]}).to_csv(fm, index=False)
+    p = _run_region(tmp_path, fm)
+    assert p.returncode == 2 and "dong bang" in p.stdout + p.stderr, p.stdout + p.stderr
+    pd.DataFrame({"file": ["khac.csv"]}).to_csv(fm, index=False)
+    prov = out / "features" / "unified_dot7" / "ndwi" / "h3_res_5_unified.csv.provenance.json"
+    prov.write_text(json.dumps({"target": "ndwi", "label_set": "chinh"}))   # thieu region = dbscl
+    p = _run_region(tmp_path, fm)
+    assert p.returncode != 0 and "region 'dbscl' khac --region 'mississippi'" in p.stdout + p.stderr
+    p = _run_region(tmp_path, fm, "--target", "salinity")
+    assert p.returncode != 0 and "khong co nhan do man" in p.stdout + p.stderr
+    assert not (tmp_path / "artifacts" / "experiments" / "mississippi" / "t_manifest.csv").exists()
+
+
+def test_doi_chung_txt_khong_cot_thuy_van_va_ndwi_khong_bo_gi():
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import run_experiments as rx
+    from build_unified_table import HYBRID_FEATURES, HYDRO_FEATURES
+
+    f = os.path.join(ROOT, "configs", "feature_sets", "doi_chung.txt")
+    req, keep, dropped = rx.feature_set_lists(f, "ndwi")
+    assert not set(req) & {*HYDRO_FEATURES, *HYBRID_FEATURES} and "landcover_class_*" in req
+    assert dropped == [] and keep == req
+    _, _, dropped_r = rx.feature_set_lists(f, "rain_chirps")
+    assert dropped_r == ["rain_mm"]   # cot cam theo bien van ap
