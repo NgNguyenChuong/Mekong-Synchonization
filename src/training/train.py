@@ -22,6 +22,7 @@ from sklearn.preprocessing import StandardScaler
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 from config import H3_RESOLUTION  # noqa: E402
+from region import DEFAULT_REGION, REGIONS, crs_metric  # noqa: E402
 from data_validation import format_report, validate_dataset  # noqa: E402
 from dataset import build_feature_dataset, build_season_feature_dataset, merge_season_labels  # noqa: E402
 from salinity.loader import load_salinity_observations  # noqa: E402
@@ -189,6 +190,8 @@ def parse_args():
     parser.add_argument("--model-params", default=None,
                         help="JSON sieu tham so ({\"hist_gb\": {...}} hoac dict phang); mac dinh DEFAULT_MODEL_PARAMS")
     parser.add_argument("--experiment-name", required=True)
+    parser.add_argument("--region", choices=list(REGIONS), default=DEFAULT_REGION,
+                        help="Vung; khac dbscl -> artifacts/experiments/<vung>/..., config ghi region + crs_metric")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--seeds", nargs="+", type=int, default=None,
                         help="Nhieu seed cho --mode cv|final (mac dinh: [--seed])")
@@ -368,6 +371,21 @@ def check_cell_table_provenance(cell_table_path, blocks_path, grid_path, cv_fold
     if errs:
         raise ValueError(f"{cell_table_path}: bang o khong dung tu file dang dung - " + "; ".join(errs))
     return prov
+
+
+def check_table_region(table, region) -> None:
+    """'region' trong provenance bang (thieu = dbscl) phai bang --region; bang khong provenance -> chi cho dbscl."""
+    from preprocessing import provenance_path
+
+    pp = provenance_path(table)
+    if not os.path.exists(pp):
+        if region != DEFAULT_REGION:
+            raise ValueError(f"{table}: thieu provenance (vung {region} bat buoc co 'region')")
+        return
+    with open(pp, encoding="utf-8") as f:
+        got = json.load(f).get("region", DEFAULT_REGION)
+    if got != region:
+        raise ValueError(f"{table}: provenance region '{got}' khac --region '{region}'")
 
 
 def load_cell_table(args) -> tuple[pd.DataFrame, str]:
@@ -737,7 +755,11 @@ def run_eval_mode(args, dataset: pd.DataFrame, target_col: str) -> None:
         "train_filter": train_filter,
         "point_eval": point_info,
     }
-    out_dir = os.path.join("artifacts", "experiments", args.experiment_name, args.mode)
+    region_dir = []
+    if args.region != DEFAULT_REGION:  # dbscl: config giu nguyen byte
+        config.update(region=args.region, crs_metric=crs_metric(args.region))
+        region_dir = [args.region]
+    out_dir = os.path.join("artifacts", "experiments", *region_dir, args.experiment_name, args.mode)
     os.makedirs(out_dir, exist_ok=True)
 
     if args.mode == "cv":
@@ -910,6 +932,11 @@ def main():
         if not os.path.exists(args.table):
             print(f"BLOCKED BY REAL DATA: khong co {args.table}")
             sys.exit(1)
+        try:
+            check_table_region(args.table, args.region)
+        except ValueError as exc:
+            print(f"Loi vung: {exc}", file=sys.stderr, flush=True)
+            sys.exit(2)
         dataset = pd.read_csv(args.table, dtype={"cell_id": str})
         print(f"Bang hop nhat {args.table}: {len(dataset)} dong, {dataset['cell_id'].nunique()} o")
         run_eval_mode(args, dataset, target_col)

@@ -104,6 +104,8 @@ def add_region_arg(ap, mapping=None, extra=None, argv=None):
     name = pre.parse_known_args(argv)[0].region
     if name not in REGIONS:
         return  # argparse se bao loi choices
+    if name == DEFAULT_REGION and not mapping:
+        return  # dbscl giu nguyen mac dinh cu, khong import preprocessing (geopandas)
     p = region_paths(name)
     defaults = {k: (v(p) if callable(v) else p[v]) for k, v in (mapping or {}).items()}
     if name != DEFAULT_REGION:

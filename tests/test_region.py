@@ -180,3 +180,43 @@ def test_unified_dot7_bang_goc_ndwi_khong_thuy_van():
     assert t["dem_mean"].isna().sum() == 2  # NaN giu, khong dien 0
     with pytest.raises(ValueError, match="thieu cot"):
         target_table(base, lab, "rain_chirps")  # mac dinh doi bang goc do man
+
+
+def test_add_region_arg_chi_extra_dbscl_giu_mac_dinh(monkeypatch):
+    """Runner: chi `extra` -> dbscl giu nguyen mac dinh cu (khong goi region_paths); vung doi chung lay duong vung,
+    gia tri None = de main() suy theo --target; nguoi dung truyen -> thang."""
+    monkeypatch.setenv("DOI_CHUNG_OUT", "X:/ra")
+    calls = []
+    monkeypatch.setattr(region, "region_paths", lambda name: calls.append(name) or {"grids_dir": f"X:/ra/{name}/grids"})
+
+    def parse(argv):
+        ap = argparse.ArgumentParser()
+        ap.add_argument("--grids-dir", default="data/grids")
+        ap.add_argument("--tables-dir", default="A:/unified")
+        region.add_region_arg(ap, extra={"grids_dir": lambda p: p["grids_dir"], "tables_dir": None}, argv=argv)
+        return ap.parse_args(argv)
+
+    a = parse([])
+    assert (a.region, a.grids_dir, a.tables_dir) == ("dbscl", "data/grids", "A:/unified") and calls == []
+    b = parse(["--region", "nile"])
+    assert b.grids_dir == "X:/ra/nile/grids" and b.tables_dir is None
+    c = parse(["--region", "nile", "--tables-dir", "rieng"])
+    assert c.tables_dir == "rieng"
+
+
+def test_train_kiem_region_trong_provenance_bang(tmp_path):
+    from training.train import check_table_region
+
+    t = tmp_path / "t.csv"
+    t.write_text("cell_id\n")
+    check_table_region(str(t), "dbscl")   # bang khong provenance: chi dbscl
+    with pytest.raises(ValueError, match="thieu provenance"):
+        check_table_region(str(t), "nile")
+    (tmp_path / "t.csv.provenance.json").write_text(json.dumps({"target": "ndwi"}))
+    check_table_region(str(t), "dbscl")   # thieu khoa = dbscl
+    with pytest.raises(ValueError, match="region 'dbscl' khac --region 'nile'"):
+        check_table_region(str(t), "nile")
+    (tmp_path / "t.csv.provenance.json").write_text(json.dumps({"region": "nile"}))
+    check_table_region(str(t), "nile")
+    with pytest.raises(ValueError, match="region 'nile' khac --region 'dbscl'"):
+        check_table_region(str(t), "dbscl")

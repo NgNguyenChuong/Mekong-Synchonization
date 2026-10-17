@@ -1,0 +1,12 @@
+# Vung doi chung (--region mississippi|nile): dac trung luoi, khong cot thuy van/hybrid DBSCL
+rain_mm
+solar
+temp_c
+temp_max_c
+temp_min_c
+rh_percent
+dem_mean
+dist_main_river_km
+dist_any_water_km
+dist_coast_km
+landcover_class_*
