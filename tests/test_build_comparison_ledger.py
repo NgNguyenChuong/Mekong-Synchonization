@@ -25,6 +25,14 @@ def test_decision_hai_cap():
     assert r[0]["delta_rel"] == 0.1 and r[0]["level"] == "coarse"
 
 
+def test_khong_co_luot_final_cho_giu_rieng_la_pending():
+    kd = pd.DataFrame([_kd("cho_giu_rieng", "h3_res_5", "latlon_0.1552deg"), _kd("tuong_duong", "h3_res_5", "square_utm_17087m")])
+    area = {g: 1.0 for g in ["h3_res_5", "latlon_0.1552deg", "square_utm_17087m"]}
+    r = ledger_for_target("v", kd, None, None, area)
+    assert [x["decision"] for x in r] == ["PendingFinal", "Equivalent"]
+    assert {x["holdout_confirmed"] for x in r} == {"khong_co_luot_final"}
+
+
 def test_decide():
     assert decide("cho_giu_rieng", "cho_giu_rieng") == "Different"
     assert decide("mo_ta", None) == "Descriptive"

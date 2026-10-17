@@ -2,6 +2,7 @@
 --region mississippi|nile: doc KE_HOACH/ket-qua/doi_chung/<vung>/, bo salinity; provenance dau vao phai cung region.
 
 --feature-set khong_diem (chi dbscl): doc/ghi file hau to __fs-<bo> trong KE_HOACH/ket-qua/dbscl_fs_<bo>/, co provenance.
+--no-final <bien...>: bien khong co luot final -> holdout_confirmed = khong_co_luot_final, cap cho_giu_rieng = PendingFinal.
 Vung: them cot ratio_gt_1_2 (area_ratio > 1,2) va ghi comparison_ledger.csv.provenance.json (sha dau vao, region, git).
 
 Chay: venv/Scripts/python.exe scripts/build_comparison_ledger.py --res-dir KE_HOACH/ket-qua [--region mississippi]
@@ -28,6 +29,7 @@ REGION_LABEL = {"dbscl": "MekongDelta", "mississippi": "Mississippi", "nile": "N
 GRIDS = ["h3_res_5", "h3_res_6", "h3_res_7", "s2_level_12", "s2_level_9", "square_utm_17087m", "square_utm_6458m",
          "square_utm_2441m", "latlon_0.1552deg", "latlon_0.0586deg", "latlon_0.0222deg", "s2_level_10", "s2_level_11"]
 LEVEL = {5: "coarse", 6: "medium", 7: "fine"}
+NO_FINAL = "khong_co_luot_final"
 
 
 def grid_area_key(g):
@@ -47,6 +49,8 @@ def decide(label, label_cap):
     if label == "tuong_duong":
         return "Equivalent"
     if label == "cho_giu_rieng":
+        if label_cap == NO_FINAL:
+            return "PendingFinal"
         return "Different" if label_cap == "cho_giu_rieng" else "Inconclusive"
     if label == "mo_ta":
         return "Descriptive"
@@ -57,13 +61,13 @@ def ledger_for_target(var, kd, cap, inter, area, region_label="MekongDelta", fla
     """kd: kiem_dinh_khoi; cap: bang final (cmp_id|grid_a,grid_b -> label); inter: tuong tac RF; area: grid->km2.
     flag_ratio: them cot ratio_gt_1_2 (chi cho vung; DBSCL giu cot cu)."""
     kd = kd[kd.family == "F1_chinh"]
-    cap_by_pair = {frozenset((r.grid_a, r.grid_b)): r for r in cap.itertuples()}
+    cap_by_pair = {} if cap is None else {frozenset((r.grid_a, r.grid_b)): r for r in cap.itertuples()}
     int_by_pair = {frozenset((r.grid_a, r.grid_b)): r for r in inter.itertuples()} if inter is not None else {}
     rows = []
     for r in kd.itertuples():
         pair = frozenset((r.grid_a, r.grid_b))
         c = cap_by_pair.get(pair)
-        label_cap = None if c is None else (c.label_cap if hasattr(c, "label_cap") else c.label)
+        label_cap = NO_FINAL if cap is None else None if c is None else (c.label_cap if hasattr(c, "label_cap") else c.label)
         gate = getattr(r, "cong_hoc_duoc", True)
         muc_kd = getattr(r, "muc_kiem_dinh", True)
         eligible = bool(muc_kd) and bool(gate is True or gate == 1)
@@ -135,6 +139,7 @@ def main():
     ap.add_argument("--region", choices=list(REGIONS), default=DEFAULT_REGION)
     ap.add_argument("--area-table", default=None, help="mac dinh <res-dir>/dot4_... (vung: bang dien tich cua vung)")
     ap.add_argument("--feature-set", choices=FEATURE_SETS, default=None, help="chi dbscl; xem docstring")
+    ap.add_argument("--no-final", nargs="*", default=[], help="bien khong co luot final (xem docstring)")
     a = ap.parse_args()
     dbscl = a.region == DEFAULT_REGION
     fs = a.feature_set
@@ -156,7 +161,7 @@ def main():
         # DBSCL cu: salinity doc bang final dot5; bo dac trung: moi bien doc dot7_<bien>_cv1_final_cap
         cap_p = res / (fs_name(f"dot7_{t}_cv1_final_cap.csv", fs) if fs or t != "salinity" else "dot5_final_so_cap_voi_cv.csv")
         kd = read_checked(kd_p, a.region, seen, inputs, fs)
-        cap = read_checked(cap_p, a.region, seen, inputs, fs)
+        cap = None if t in a.no_final else read_checked(cap_p, a.region, seen, inputs, fs)
         p = res / f"dot7_{t}_tuong_tac_mo_hinh__rf.csv"
         inter = read_checked(p, a.region, seen, inputs) if p.exists() and not fs else None
         rows += ledger_for_target(t, kd, cap, inter, area, REGION_LABEL[a.region], flag_ratio=not dbscl)
@@ -167,13 +172,13 @@ def main():
     df.to_csv(out_csv, index=False)
     if not dbscl or fs:  # DBSCL bo day du: giu nguyen (khong sidecar)
         write_provenance(out_csv, region=a.region, pairs_mode=sorted(seen)[0] if seen else None,
-                         **({"feature_set": fs} if fs else {}),
+                         **({"feature_set": fs} if fs else {}), no_final=list(a.no_final),
                          inputs={**inputs, str(area_path).replace("\\", "/"): file_sha256(area_path)},
                          git=git_state(), n_rows=len(df))
     n_cap = df.groupby("variable").size().max()
     md = ["# Comparison Ledger", "", f"{len(df)} cap (ho F1_chinh, {len(targets)} bien x {n_cap} cap, HistGB, cv1). "
           "decision: Equivalent=tuong_duong; Different=cho_giu_rieng va tai lap o final; "
-          "Inconclusive=chua_phan_dinh hoac co y nghia CV nhung khong tai lap; Descriptive=mo_ta.", "",
+          "Inconclusive=chua_phan_dinh hoac co y nghia CV nhung khong tai lap; Descriptive=mo_ta." + (" PendingFinal=cho_giu_rieng o CV, bien khong co luot final." if a.no_final else ""), "",
           md_table(df[["variable", "grid_a", "grid_b", "level", "area_ratio", *(["ratio_gt_1_2"] if not dbscl else []),
                        "eligible", "ineligible_reason", "G", "delta_rel",
                        "p_holm", "decision", "holdout_confirmed", "rf_interaction_p_holm"]]),
