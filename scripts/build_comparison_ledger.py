@@ -1,15 +1,25 @@
 """Comparison Ledger: mot dong cho moi cap khung cung muc x 6 bien (ho F1_chinh), chi tong hop file da mo.
+--region mississippi|nile: doc KE_HOACH/ket-qua/doi_chung/<vung>/, bo salinity; provenance dau vao phai cung region.
 
-Chay: venv/Scripts/python.exe scripts/build_comparison_ledger.py --res-dir KE_HOACH/ket-qua
+Chay: venv/Scripts/python.exe scripts/build_comparison_ledger.py --res-dir KE_HOACH/ket-qua [--region mississippi]
 """
 import argparse
+import json
+import os
+import sys
 from pathlib import Path
 
 import pandas as pd
 
 from md_util import md_table
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+from region import DEFAULT_REGION, REGIONS, region_paths  # noqa: E402
+
 TARGETS = ["salinity", "dsr_mcd18", "ndwi", "rain_chirps", "rh_era5", "t2m_era5"]
+REGION_LABEL = {"dbscl": "MekongDelta", "mississippi": "Mississippi", "nile": "Nile"}
+GRIDS = ["h3_res_5", "h3_res_6", "h3_res_7", "s2_level_12", "s2_level_9", "square_utm_17087m", "square_utm_6458m",
+         "square_utm_2441m", "latlon_0.1552deg", "latlon_0.0586deg", "latlon_0.0222deg", "s2_level_10", "s2_level_11"]
 LEVEL = {5: "coarse", 6: "medium", 7: "fine"}
 
 
@@ -36,7 +46,7 @@ def decide(label, label_cap):
     return "Inconclusive"
 
 
-def ledger_for_target(var, kd, cap, inter, area):
+def ledger_for_target(var, kd, cap, inter, area, region_label="MekongDelta"):
     """kd: kiem_dinh_khoi; cap: bang final (cmp_id|grid_a,grid_b -> label); inter: tuong tac RF; area: grid->km2."""
     kd = kd[kd.family == "F1_chinh"]
     cap_by_pair = {frozenset((r.grid_a, r.grid_b)): r for r in cap.itertuples()}
@@ -53,7 +63,7 @@ def ledger_for_target(var, kd, cap, inter, area):
         ia = int_by_pair.get(pair)
         a, b = area[r.grid_a], area[r.grid_b]
         rows.append(dict(
-            region="MekongDelta", variable=var, grid_a=r.grid_a, grid_b=r.grid_b,
+            region=region_label, variable=var, grid_a=r.grid_a, grid_b=r.grid_b,
             level=LEVEL[int(r.delta_ref_level)], area_a_km2=a, area_b_km2=b, area_ratio=r.area_ratio,
             eligible=eligible, ineligible_reason=reason, G=r.G, n_point_seasons=r.n_common_point_seasons,
             delta_hat=r.delta_hat, delta_ref=r.delta_ref, delta_rel=r.delta_hat / r.delta_ref,
@@ -83,29 +93,53 @@ def summary_md(df):
     return "\n".join(out) + "\n"
 
 
+def read_checked(path, region, seen):
+    """CSV + kiem provenance (neu co): region (thieu = dbscl) == --region; gom pairs_mode vao `seen`."""
+    pv = Path(f"{path}.provenance.json")
+    if pv.exists():
+        info = json.loads(pv.read_text(encoding="utf-8"))
+        got = info.get("region", DEFAULT_REGION)
+        if got != region:
+            raise SystemExit(f"LOI: {path}: provenance region '{got}' khac --region '{region}'")
+        if "pairs_mode" in info:
+            seen.add(info["pairs_mode"])
+    elif region != DEFAULT_REGION:
+        raise SystemExit(f"LOI: {path}: thieu provenance - khong kiem duoc vung")
+    return pd.read_csv(path)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--res-dir", default="KE_HOACH/ket-qua")
-    res = Path(ap.parse_args().res_dir)
-    ar = pd.read_csv(res / "dot4_doi_chieu_dien_tich.csv")
+    ap.add_argument("--res-dir", default=None, help="mac dinh KE_HOACH/ket-qua (vung: KE_HOACH/ket-qua/doi_chung/<vung>)")
+    ap.add_argument("--region", choices=list(REGIONS), default=DEFAULT_REGION)
+    ap.add_argument("--area-table", default=None, help="mac dinh <res-dir>/dot4_... (vung: bang dien tich cua vung)")
+    a = ap.parse_args()
+    dbscl = a.region == DEFAULT_REGION
+    res = Path(a.res_dir or ("KE_HOACH/ket-qua" if dbscl else f"KE_HOACH/ket-qua/doi_chung/{a.region}"))
+    ar = pd.read_csv(a.area_table or (res / "dot4_doi_chieu_dien_tich.csv" if dbscl else
+                                      f"{region_paths(a.region)['report_dir']}/dot4_doi_chieu_dien_tich.csv"))
     area = {}
-    for g in ["h3_res_5", "h3_res_6", "h3_res_7", "s2_level_12", "s2_level_9", "square_utm_17087m", "square_utm_6458m",
-              "square_utm_2441m", "latlon_0.1552deg", "latlon_0.0586deg", "latlon_0.0222deg"]:
+    for g in GRIDS:
         f, rs = grid_area_key(g)
         area[g] = float(ar[(ar.framework == f) & (ar.resolution == rs)].mean_area_km2.iloc[0])
-    rows = []
-    for t in TARGETS:
+    targets = TARGETS if dbscl else [t for t in TARGETS if t != "salinity"]  # vung doi chung khong co nhan do man
+    rows, seen = [], set()
+    for t in targets:
         if t == "salinity":
-            kd = pd.read_csv(res / "dot5_cv1_kiem_dinh_khoi.csv")
-            cap = pd.read_csv(res / "dot5_final_so_cap_voi_cv.csv")
+            kd = read_checked(res / "dot5_cv1_kiem_dinh_khoi.csv", a.region, seen)
+            cap = read_checked(res / "dot5_final_so_cap_voi_cv.csv", a.region, seen)
         else:
-            kd = pd.read_csv(res / f"dot7_{t}_cv1_kiem_dinh_khoi.csv")
-            cap = pd.read_csv(res / f"dot7_{t}_cv1_final_cap.csv")
+            kd = read_checked(res / f"dot7_{t}_cv1_kiem_dinh_khoi.csv", a.region, seen)
+            cap = read_checked(res / f"dot7_{t}_cv1_final_cap.csv", a.region, seen)
         p = res / f"dot7_{t}_tuong_tac_mo_hinh__rf.csv"
-        rows += ledger_for_target(t, kd, cap, pd.read_csv(p) if p.exists() else None, area)
+        inter = read_checked(p, a.region, seen) if p.exists() else None
+        rows += ledger_for_target(t, kd, cap, inter, area, REGION_LABEL[a.region])
+    if len(seen) > 1:
+        raise SystemExit(f"LOI: cac bang dau vao khac pairs_mode {sorted(seen)}")
     df = pd.DataFrame(rows)
     df.to_csv(res / "comparison_ledger.csv", index=False)
-    md = ["# Comparison Ledger", "", f"{len(df)} cap (ho F1_chinh, 6 bien x 12 cap, HistGB, cv1). "
+    n_cap = df.groupby("variable").size().max()
+    md = ["# Comparison Ledger", "", f"{len(df)} cap (ho F1_chinh, {len(targets)} bien x {n_cap} cap, HistGB, cv1). "
           "decision: Equivalent=tuong_duong; Different=cho_giu_rieng va tai lap o final; "
           "Inconclusive=chua_phan_dinh hoac co y nghia CV nhung khong tai lap; Descriptive=mo_ta.", "",
           md_table(df[["variable", "grid_a", "grid_b", "level", "area_ratio", "eligible", "ineligible_reason", "G", "delta_rel",

@@ -3,9 +3,11 @@
 bien, con lai mo_ta; bang mo ta nhom test (khong_gian / thoi_gian / ca_hai) tu config final, nhom rong khai bao truoc
 in "rong (khai bao truoc)". --holm-scope nhu analyze_cv_family; doi chieu voi file CV cung pham vi (tap cap kiem
 dinh phai trung). --model rf|mlp: bang cap va bang nhom chi mo hinh do, file doc/ghi hau to __<model>.
+--region/--pairs-mode/--exclude-points nhu analyze_cv_family (vung: doc/ghi KE_HOACH/ket-qua/doi_chung/<vung>/).
 
 Chay:  venv/Scripts/python.exe scripts/analyze_final.py --target ndwi [--prefix cv1] [--min-frac 0.8]
            [--model hist_gb|rf|mlp] [--holm-scope cong|muc_kiem_dinh] [--no-table]
+       Vung:  ... --region mississippi --target ndwi --pairs-mode ratio --frozen-manifest <manifest...>
 """
 import argparse
 import os
@@ -22,9 +24,9 @@ if sys.platform == "win32":
 
 import analyze_cv_family as acf  # noqa: E402
 from run_experiments import run_name  # noqa: E402
-from training.block_stats import area_levels, family_verdict, pairs_by_area  # noqa: E402
+from training.block_stats import area_levels, family_verdict  # noqa: E402
 from training.dot7_rules import (HOLM_SCOPES, TESTED_TIERS, all_scoped_names, apply_gate,  # noqa: E402
-                                 compare_tiered, expected_f1_m, file_sha256, gate_required, guard_frozen,
+                                 compare_tiered, file_sha256, gate_required, guard_frozen,
                                  holm_provenance, holm_tiers, load_gate, main_family, model_provenance,
                                  provenance_path, run_model, scoped_name, scopes_differ, write_csv_atomic,
                                  write_provenance)
@@ -49,7 +51,7 @@ def load_final_points(a, grid, infos):
     """final_points cua mo hinh --model s42, CHI nhom khong_gian (khoi giu rieng, mua != 2020); seed = cach chia."""
     model = run_model(a.model)
     name, run_dir = final_dir(a, grid, model)
-    infos.append(acf.check_run(run_dir, name, a.target, "final"))
+    infos.append(acf.check_run(run_dir, name, a.target, "final", a.region))
     p = os.path.join(run_dir, "final_points.csv")
     if not os.path.isfile(p):
         acf.loi(f"{name}: thieu {p}")
@@ -61,7 +63,7 @@ def load_final_points(a, grid, infos):
     if (d["pred_source"] != "final").any():
         acf.loi(f"{name}: co dong khong phai final")
     d["grid"], d["model"], d["seed"] = grid, model, FINAL_SCHEME
-    return d
+    return acf.drop_points(d, a.exclude)
 
 
 def check_against_cv(res, cv_path, tol=1e-9, family="F1_chinh"):
@@ -95,7 +97,7 @@ def _declared(meta):
 def group_rows(a, grid, model, level, infos):
     """Mot luot final -> dong mo ta moi nhom; nhom rong chi hop le khi khai bao truoc."""
     name, run_dir = final_dir(a, grid, model)
-    info = acf.check_run(run_dir, name, a.target, "final")
+    info = acf.check_run(run_dir, name, a.target, "final", a.region)
     infos.append(info)
     cfg, declared = info["config"], _declared(info["meta"])
     if "point_metrics_by_group" not in cfg:
@@ -136,6 +138,7 @@ def group_rows(a, grid, model, level, infos):
 def main(a):
     if a.target not in TESTED_TIERS:
         acf.loi(f"--target '{a.target}' khong co trong TESTED_TIERS")
+    acf.resolve_region(a)
     models = desc_models(a)
     os.makedirs(a.out_dir, exist_ok=True)
     cand = [p for n in out_names(a.target, a.prefix) for p in all_scoped_names(os.path.join(a.out_dir, n), a.model)]
@@ -151,18 +154,23 @@ def main(a):
     model, fam = run_model(a.model), main_family(a.model)
     ht = holm_tiers(a.target, gate, a.holm_scope)
     at = acf.area_table(a.area_table)
-    main_pairs = pairs_by_area(at, max_ratio=1.2, expected_m=12)
+    main_pairs, warn = acf.select_pairs(at, a.region, a.pairs_mode)
+    for w in warn:
+        print(f"CANH BAO cap dbscl12: {w}", flush=True)
+    m_main = acf.f1_m(ht, main_pairs, a.region)
     levels = area_levels(at, pairs=main_pairs)
     all_levels = area_levels(at)
 
     infos = []
-    err_cv = acf.load_errors(a.exp_root, a.prefix, model, a.schemes, target=a.target, infos=infos)
+    err_cv = acf.load_errors(a.exp_root, a.prefix, model, a.schemes, target=a.target, infos=infos, region=a.region,
+                             exclude=a.exclude)
     e_cv, n_cv = acf.common_subset(err_cv)
     fin = pd.concat([load_final_points(a, g, infos) for g in acf.GRIDS], ignore_index=True)
     e_fin, n_fin = acf.common_subset(fin)
     e = pd.concat([e_cv, e_fin], ignore_index=True)
-    pu, cv_units, ho_units = acf.point_units(e, a.folds_csv)
-    res = compare_tiered(e, pu, main_pairs, a.target, levels=levels, expected_m=expected_f1_m(ht), holm_tiers=ht,
+    pu, cv_units, ho_units = acf.point_units(e, a.folds_csv, **a.eval_kw)
+    acf.check_excluded(a.exclude, pu)
+    res = compare_tiered(e, pu, main_pairs, a.target, levels=levels, expected_m=m_main, holm_tiers=ht,
                          cv_units=cv_units, holdout_units=ho_units, holdout_seasons=(2020,), mode="final",
                          delta_min=a.delta_min, delta_min_kind="rel", alpha=a.alpha, delta_ref="level_mean",
                          require_practical=True, model=model, family=fam)
@@ -183,17 +191,20 @@ def main(a):
     nhom = pd.DataFrame(rows)[["target", "grid", "muc", "model", "nhom", "n_diem", "MAE_diem", "R2_diem",
                                "trang_thai", "ghi_chu"]]
     same = acf.check_consistent(infos, a.allowed_tags)
+    acf.warn_g(a.region, cv_units)
     for t in (res, nhom):
         t["git_tag"], t["points_ref_sha256"] = same["git_tag"], same["points_ref_sha256"]
     res["cong_file"] = gate_path if gate is not None else ""
     hp = holm_provenance(a.target, gate, gate_path, a.holm_scope, res)
+    hp["holm_m_f1"] = m_main
+    ri = acf.region_info(a, cv_units, res, main_pairs, warn)
     cv_info = {"cv_ref": os.path.abspath(cv_path).replace("\\", "/") if matched else None,
                "cv_ref_sha256": file_sha256(cv_path) if matched else None}
     for t, p in ((res, out_cap), (nhom, out_nhom)):
         write_csv_atomic(t, p)
         write_provenance(p, **hp, **cv_info, git_tag=same["git_tag"], points_ref_sha256=same["points_ref_sha256"],
                          n_luot=len(infos), **model_provenance(a.model),
-                         **acf.tag_info(same, a.allowed_tags, a.tags_reason))
+                         **acf.tag_info(same, a.allowed_tags, a.tags_reason), **ri)
 
     if not a.no_table:
         cols = ["grid_a", "grid_b", "kiem_dinh", "delta_hat", "p_holm", "delta_holdout", "holdout_same_dir", "label"]
@@ -203,7 +214,7 @@ def main(a):
     empty = nhom[nhom["trang_thai"] == EMPTY_LABEL].groupby(["model", "nhom"]).size()
     for (m, g), k in empty.items():
         print(f"  {m} nhom {g}: {EMPTY_LABEL} ({k} luoi)")
-    print(f"Ghi: {out_cap}, {out_nhom} | git_tag {same['git_tag']} | holm {a.holm_scope} m = {expected_f1_m(ht)}")
+    print(f"Ghi: {out_cap}, {out_nhom} | git_tag {same['git_tag']} | holm {a.holm_scope} m = {m_main}")
 
 
 def desc_models(a) -> list:
@@ -226,13 +237,14 @@ def build_parser():
     ap.add_argument("--alpha", type=float, default=0.05)
     ap.add_argument("--delta-min", type=float, default=0.05)
     ap.add_argument("--min-frac", type=float, default=0.8, help="family_verdict: ti le cap giu chieu toi thieu")
-    ap.add_argument("--area-table", default=os.path.join(acf.RESULTS, "dot4_doi_chieu_dien_tich.csv"))
-    ap.add_argument("--out-dir", default=acf.RESULTS)
+    ap.add_argument("--area-table", default=None, help="mac dinh theo vung (nhu analyze_cv_family)")
+    ap.add_argument("--out-dir", default=None, help="mac dinh theo vung (dbscl: KE_HOACH/ket-qua)")
     ap.add_argument("--cv-dir", default=None, help="thu muc ket qua analyze_cv_family (mac dinh = --out-dir)")
     ap.add_argument("--gate", default=None, help=f"bang cong (mac dinh <out-dir>/{acf.GATE_FILE}; rf/mlp: dot7_cong_kiem_dinh__<model>.csv)")
-    ap.add_argument("--exp-root", default=acf.EXP_ROOT)
-    ap.add_argument("--folds-csv", default=os.path.join(ROOT, "data", "eval", "cv_folds.csv"))
+    ap.add_argument("--exp-root", default=None, help="mac dinh theo vung (dbscl: artifacts/experiments)")
+    ap.add_argument("--folds-csv", default=None, help="mac dinh theo vung (dbscl: data/eval/cv_folds.csv)")
     acf.add_common_args(ap)
+    acf.add_region_args(ap)
     ap.add_argument("--holm-scope", choices=HOLM_SCOPES, default="cong")
     ap.add_argument("--no-table", action="store_true", help="khong in bang so ra stdout")
     return ap
