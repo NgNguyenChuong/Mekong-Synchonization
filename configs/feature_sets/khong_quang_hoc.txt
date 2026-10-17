@@ -1,0 +1,14 @@
+# CHG-31 (Q5 GVHD): mac dinh TRU landcover_class_* va dist_any_water_km (hai nhom co the mang quang hoc gian tiep)
+rain_mm
+solar
+temp_c
+temp_max_c
+temp_min_c
+rh_percent
+dem_mean
+dist_main_river_km
+dist_coast_km
+tch_wl_p20c
+dist_mouth_river_km
+zos_mouth_p90
+sluice_frac

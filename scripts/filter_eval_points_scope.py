@@ -9,7 +9,7 @@
   cach bien (<= 5, 5-20, > 20 km; dist_coast_km tai pixel 90 m chua diem).
 - Provenance moi: sha256 scope v3, sha256 nguon, so diem truoc/sau; giu provenance cu trong muc "parent".
 
-Chay:  venv/Scripts/python.exe scripts/filter_eval_points_scope.py [--dry-run]
+Chay:  venv/Scripts/python.exe scripts/filter_eval_points_scope.py [--dry-run] [--region mississippi]
 """
 import argparse
 import json
@@ -29,6 +29,7 @@ if sys.platform == "win32":
 
 from eval_design import raster_values_at  # noqa: E402
 from preprocessing import CANONICAL_BOUNDARY, file_sha256, provenance_path, write_provenance  # noqa: E402
+from region import add_region_arg  # noqa: E402
 from scope_mask import band_index, scope_values_at_points  # noqa: E402
 
 WC_NAMES = {0: "ngoai_vung", 10: "cay", 20: "bui", 30: "co", 40: "canh_tac", 50: "xay_dung", 60: "dat_trong",
@@ -198,4 +199,8 @@ if __name__ == "__main__":
     ap.add_argument("--boundary", default=CANONICAL_BOUNDARY)
     ap.add_argument("--report-dir", default=os.path.join(ROOT, "KE_HOACH", "ket-qua"))
     ap.add_argument("--dry-run", action="store_true")
+    add_region_arg(ap, {"points": lambda p: os.path.join(p["eval_dir"], "eval_points.geojson"),
+                        "backup_dir": lambda p: os.path.join(p["eval_dir"], "deprecated_v2b"),
+                        "scope": "scope", "dist_raster": "river", "boundary": "boundary", "report_dir": "report_dir"},
+                   extra={"compare_scope": "none"})
     main(ap.parse_args())

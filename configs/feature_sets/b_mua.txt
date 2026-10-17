@@ -1,0 +1,16 @@
+# Bo (c) b_mua tach mua (CHG-26) = khong_diem + phan theo MUA cua 4 dac trung hybrid:
+# tch_wl_p20c, zos_mua_mean (TB khong gian zos_mouth_p90 theo mua), sluice_flag (co thoi ky cong); bang unified_bmua.
+rain_mm
+solar
+temp_c
+temp_max_c
+temp_min_c
+rh_percent
+dem_mean
+dist_main_river_km
+dist_any_water_km
+dist_coast_km
+landcover_class_*
+tch_wl_p20c
+zos_mua_mean
+sluice_flag

@@ -15,8 +15,12 @@ Kiem dinh chinh thuc cua boc tach van o khoi 50 km (analyze_hybrid.py).
 CHG-22 (3 trang thai): thieu file / pred_source khac oof / err NaN / trung (diem, mua) / tap (diem, mua) khac nhau
 giua cac lan chay / tap chung rong hoac != --expected-n -> LOI, dung, khong ghi ket qua (file ket qua cu bi xoa
 khi bat dau; ghi file tam roi os.replace).
+--target (Dot 7; mac dinh salinity = ten file/byte cu): luot run_name ...__t-<t>, (b) ...__fs-khong_diem__t-<t>;
+  run_meta/config ma 0, dung target + feature_set, tag theo --allowed-tags; ra dot7_<t>_hybrid_khoi100.csv + provenance.
+  File ra trong manifest dong bang -> ma 2 truoc khi doc/ghi.
 
 Chay:  venv/Scripts/python.exe scripts/analyze_hybrid_block_size.py
+       Bien Dot 7: ... --target ndwi --allowed-tags nckh-dot7-e6a nckh-dot7-hyb
 """
 import argparse
 import os
@@ -26,11 +30,15 @@ import numpy as np
 import pandas as pd
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "src"))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from analyze_cv_family import GRIDS  # noqa: E402
+from analyze_cv_family import FROZEN_MANIFESTS, GRIDS, check_consistent, check_run, loi, tag_info  # noqa: E402
+from analyze_hybrid import TAGS_REASON  # noqa: E402
+from run_experiments import run_name  # noqa: E402
+from training.dot7_rules import TESTED_TIERS, guard_frozen, provenance_path, write_provenance  # noqa: E402
 
 FEATURE_SET = "khong_diem"
 EXPECTED_N = 86073
@@ -39,9 +47,13 @@ OUT_NAME = "dot6_hybrid_khoi100.csv"
 CAU_TRONG_DAI = "khong co bang chung hieu ung thay doi theo kich thuoc khoi"
 
 
-def run_dir(exp_root, prefix, grid, scheme, feature_set=None):
-    name = f"{prefix}__{grid}__hist_gb__s{scheme}" + (f"__fs-{feature_set}" if feature_set else "")
-    return os.path.join(exp_root, name, "cv", "oof_points.csv")
+def out_name(target):
+    return OUT_NAME if target == "salinity" else f"dot7_{target}_hybrid_khoi100.csv"
+
+
+def run_dir(exp_root, prefix, grid, scheme, feature_set=None, target="salinity"):
+    return os.path.join(exp_root, run_name(prefix, grid, "hist_gb", scheme, "", feature_set, target), "cv",
+                        "oof_points.csv")
 
 
 def read_err(path) -> pd.Series:
@@ -64,20 +76,28 @@ def runs(a):
         for arm, fs in (("a", None), ("b", a.feature_set)):
             for g in GRIDS:
                 for s in SEEDS[design]:
-                    yield design, arm, g, s, run_dir(a.exp_root, prefix, g, s, fs)
+                    yield design, arm, g, s, fs, run_dir(a.exp_root, prefix, g, s, fs, a.target)
 
 
-def mae_table(a):
-    """MAE moi lan chay tren tap (diem, mua) chung - moi lan chay phai CUNG tap (khong cat giao am tham)."""
+def mae_table(a, infos=None):
+    """MAE moi lan chay tren tap (diem, mua) chung - moi lan chay phai CUNG tap (khong cat giao am tham).
+    infos (list) -> kiem run_meta/config tung luot va noi vao infos."""
     keys, ref_path, rows = None, None, []
-    for design, arm, g, s, p in runs(a):
+    expected_n = a.expected_n if a.expected_n is not None or a.target != "salinity" else EXPECTED_N
+    for design, arm, g, s, fs, p in runs(a):
+        if infos is not None:
+            name = os.path.basename(os.path.dirname(os.path.dirname(p)))
+            info = check_run(os.path.dirname(p), name, a.target, "cv")
+            if info["meta"].get("feature_set") != fs:
+                loi(f"{name}: feature_set '{info['meta'].get('feature_set')}' khac '{fs}'")
+            infos.append(info)
         e = read_err(p)
         if keys is None:
             keys, ref_path = e.index, p
             if len(keys) == 0:
                 raise SystemExit("LOI: tap (diem, mua) chung rong")
-            if a.expected_n is not None and len(keys) != a.expected_n:
-                raise SystemExit(f"LOI: tap (diem, mua) {len(keys)} != ky vong {a.expected_n} ({p})")
+            if expected_n is not None and len(keys) != expected_n:
+                raise SystemExit(f"LOI: tap (diem, mua) {len(keys)} != ky vong {expected_n} ({p})")
         elif not e.index.equals(keys):
             raise SystemExit(f"LOI: {p} khac tap (diem, mua) voi {ref_path} "
                              f"({len(e.index.difference(keys))} chi o file nay, {len(keys.difference(e.index))} thieu)")
@@ -119,16 +139,29 @@ def summary_lines(t: pd.DataFrame) -> list:
 
 
 def main(a):
+    salt = a.target == "salinity"
+    if a.target not in TESTED_TIERS:
+        loi(f"--target '{a.target}' khong co trong TESTED_TIERS {sorted(TESTED_TIERS)}")
+    out = os.path.join(a.out_dir, out_name(a.target))
+    guard_frozen([out, provenance_path(out)], a.frozen_manifest)  # truoc khi xoa ket qua cu
     os.makedirs(a.out_dir, exist_ok=True)
-    out = os.path.join(a.out_dir, OUT_NAME)
-    if os.path.exists(out):  # dung giua chung (LOI) khong de lai ket qua cu
-        os.remove(out)
-    m, n_keys = mae_table(a)
+    for p in (out, provenance_path(out)):
+        if os.path.exists(p):  # dung giua chung (LOI) khong de lai ket qua cu
+            os.remove(p)
+    infos = None if salt else []
+    m, n_keys = mae_table(a, infos)
+    same = None if salt else check_consistent(infos, a.allowed_tags)
     print(f"(diem, mua) chung: {n_keys}", flush=True)
     t = block_size_table(m, n_keys)
     tmp = out + ".tmp"
     t.to_csv(tmp, index=False)
     os.replace(tmp, out)
+    if not salt:  # do man: giu dung file cu (khong sidecar)
+        write_provenance(out, target=a.target, quy_tac="CHG-21 mo ta: I_100 so voi dai nhieu cach chia 50 km",
+                         prefix50=a.prefix50, prefix100=a.prefix100, feature_set_b=a.feature_set,
+                         schemes={k: list(v) for k, v in SEEDS.items()}, grids=list(GRIDS), expected_n=a.expected_n,
+                         n_diem_mua_chung=n_keys, git_tag=same["git_tag"], points_ref_sha256=same["points_ref_sha256"],
+                         n_luot=len(infos), **tag_info(same, a.allowed_tags, a.tags_reason))
     with pd.option_context("display.width", 240, "display.max_columns", 30):
         print(t.round(4).to_string(index=False))
     print("\n".join(summary_lines(t)))
@@ -138,9 +171,14 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--prefix50", default="cv1")
     ap.add_argument("--prefix100", default="k100")
+    ap.add_argument("--target", default="salinity", help="salinity (mac dinh, file dot6 cu) | ndwi | rain_chirps | ...")
     ap.add_argument("--feature-set", default=FEATURE_SET)
-    ap.add_argument("--expected-n", type=int, default=EXPECTED_N,
-                    help="so (diem, mua) chung ky vong (CV khoi, khong mua 2020); khac -> LOI")
+    ap.add_argument("--expected-n", type=int, default=None,
+                    help=f"so (diem, mua) chung ky vong; khac -> LOI. Mac dinh salinity {EXPECTED_N}, bien khac "
+                         "chi doi chieu cung tap giua moi luot")
     ap.add_argument("--exp-root", default=os.path.join(ROOT, "artifacts", "experiments"))
     ap.add_argument("--out-dir", default=os.path.join(ROOT, "KE_HOACH", "ket-qua"))
+    ap.add_argument("--frozen-manifest", nargs="+", default=FROZEN_MANIFESTS)
+    ap.add_argument("--allowed-tags", nargs="+", default=None, help="cho phep nhieu git_tag (bien Dot 7: (a) + (b))")
+    ap.add_argument("--tags-reason", default=TAGS_REASON)
     main(ap.parse_args())

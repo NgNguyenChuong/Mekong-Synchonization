@@ -289,3 +289,29 @@ def test_crs_hinh_cau_doi_vi_tri_dung_bac():
     e = Transformer.from_crs("EPSG:4326", "+proj=sinu +datum=WGS84", always_xy=True).transform(105.5, 10.0)
     s = Transformer.from_crs("EPSG:4326", ml.MODIS_SINU_PROJ4, always_xy=True).transform(105.5, 10.0)
     assert 12_000 < e[0] - s[0] < 16_000 and 4_000 < abs(e[1] - s[1]) < 8_000
+
+
+@pytest.mark.parametrize("region,want_region", [("mississippi", "mississippi"), ("dbscl", None)])
+def test_dap_an_diem_ghi_region_chi_o_vung_doi_chung(tmp_path, region, want_region):
+    """Runner doi chieu 'region' cua dap an: vung ghi khoa, dbscl khong them khoa (giu provenance cu)."""
+    import json
+
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    import build_met_labels as bm
+
+    pf = tmp_path / "pts.csv"
+    pf.write_text("x")
+    bnd = tmp_path / "b.geojson"
+    bnd.write_text("{}")
+    a = type("A", (), {"out_dir": str(tmp_path), "points": str(pf), "points_ref_sal": str(pf), "force": True,
+                       "boundary": str(bnd), "region": region})()
+    spec = {"col": "rain_chirps", "unit": "mm", "band": "b", "nan_seasons": ()}
+    t = {"key": "rain", "spec": spec, "values": {2019: np.ones((2, 2))}, "crs": "EPSG:4326",
+         "transform": from_origin(0, 2, 1, 1), "src_sha": {}}
+    pts = gpd.GeoDataFrame({"point_id": ["p1"], "block_id": ["b1"], "is_holdout": [False]},
+                           geometry=[Point(0.5, 1.5)], crs="EPSG:4326")
+    bm.write_points(a, t, pts, [2019], "x")
+    prov = json.load(open(tmp_path / "points_reference_rain_chirps.csv.provenance.json", encoding="utf-8"))
+    assert prov.get("region") == want_region

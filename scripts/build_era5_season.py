@@ -25,6 +25,7 @@ Dau ra (trong --out-dir, mac dinh <DATA_ROOT>/features/era5_season):
 Chay:  python scripts/build_era5_season.py [--raw-dir <DATA_ROOT>/raw] [--grids-dir data/grids]
            [--out-dir <DATA_ROOT>/features/era5_season] [--years 2014 2026] [--grids h3_res_5 ...]
            [--skip-existing] [--report KE_HOACH/ket-qua/dot4_era5_season.csv]
+       Vung doi chung: python scripts/build_era5_season.py --region nile
 """
 import argparse
 import glob
@@ -45,6 +46,7 @@ from era5_season import (COVER_COL, ERA5_SEASON_SPECS, FILL_COL, boundary_touch_
                          fill_nearest_1px, index_monthly_files, season_layers, season_months, season_table,
                          write_season_raster)
 from preprocessing import CANONICAL_BOUNDARY, file_sha256, write_provenance  # noqa: E402
+from region import add_region_arg  # noqa: E402
 
 VALUE_COLS = [s[1] for s in ERA5_SEASON_SPECS.values()]
 FILLED = "@filled"   # hau to cot tam cho ban lap trong by_season
@@ -176,4 +178,6 @@ if __name__ == "__main__":
     ap.add_argument("--grids", nargs="*", help="Ten luoi (khong .geojson); mac dinh moi luoi trong --grids-dir")
     ap.add_argument("--skip-existing", action="store_true", help="Bo qua luoi da co CSV + provenance")
     ap.add_argument("--report", help="Ghi bang tom tat theo luoi ra CSV")
+    add_region_arg(ap, {"raw_dir": "raw_dir", "grids_dir": "grids_dir", "boundary": "boundary",
+                        "out_dir": lambda p: f"{p['features_dir']}/era5_season"})
     main(ap.parse_args())

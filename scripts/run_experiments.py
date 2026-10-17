@@ -21,9 +21,16 @@ Bien muc tieu (--target, Dot 7; mac dinh salinity = hanh vi cu, ten lan chay va 
 chay them "__t-<target>", truyen --target xuong train.py, khoa 'target' (meta cu thieu khoa = salinity); provenance
 bang / dap an co 'target' khac --target -> LOI som. Bang theo bien o --tables-dir rieng
 (<DATA_ROOT>/features/unified_dot7/<target>), dap an <DATA_ROOT>/labels/dot7/points_reference_<target>.csv.
+--feature-set CUNG --target: bo dat ten tru cot cam theo bien (TARGET_FORBIDDEN) -> truyen --features da tru (train.py
+van tu choi danh sach tuong minh co cot cam); run_meta ghi features_requested + features_dropped_forbidden.
 Nhom test rong co chu dich (CHG-25 muc 4): provenance bang co khai bao 'holdout_season_nan' (target khop) -> truyen
 --allow-empty-test-groups xuong train.py + khoa 'empty_test_groups_declared'; bien Dot 7 ma bang thieu provenance -> LOI
 truoc khi chay luot nao.
+Giu rieng mot mua (--holdout-season s, chi --mode final; CHG-28): ten them "__ho-<s>", truyen --holdout-seasons s
+(+ --allow-holdout-season-override khi s != 2020), khoa 'holdout_season'; khai bao nhom rong tinh theo s.
+Vung doi chung (--region mississippi|nile; dbscl mac dinh khong doi): duong dan theo src/region.region_paths, bo dac
+trung doi_chung.txt (bo chinh cua vung, ten khong them "__fs-"), thu muc <cwd>/artifacts/experiments/<vung>/, run_meta
++ config ghi region/crs_metric; provenance bang/diem/khoi khac vung -> LOI; guard_frozen tren manifest ra.
 Tong hop -> artifacts/experiments/<prefix>_manifest.csv (gop don theo ten lan chay + mode, khong ghi de dong
 cu; KHONG in chi so sai so). run_meta ghi phien ban python/numpy/pandas/sklearn.
 
@@ -31,9 +38,11 @@ Chay:  venv/Scripts/python.exe scripts/run_experiments.py --prefix cv1 [--grids 
            [--models hist_gb linear idw] [--schemes 42 43 44] [--mode cv]
        Bien Dot 7: ... --prefix cv1 --target rain_chirps --tables-dir <DATA_ROOT>/features/unified_dot7/rain_chirps
            --points-ref <DATA_ROOT>/labels/dot7/points_reference_rain_chirps.csv
+       Giu rieng mua 2016: ... --prefix cv1 --mode final --grids h3_res_7 --models hist_gb --schemes 42 --holdout-season 2016
        Cham phu 60/90: ... --prefix phu6090 --label-set keep6090 --models hist_gb --points-ref-variant keep6090
            --points-subset-of-ref --points data/eval/aux_6090/eval_points_6090.geojson
            --points-ref <DATA_ROOT>/labels/points_reference_keep6090.csv
+       Vung doi chung: ... --region mississippi --prefix cv1 --target ndwi [--mode final]
 """
 import argparse
 import glob
@@ -49,16 +58,23 @@ import pandas as pd
 KEY_FIELDS = ("run", "grid", "model", "scheme", "label_set", "mode", "feature_set", "features_sha256",
               "git_commit", "git_dirty_src_scripts", "allow_dirty", "allow_untagged", "seeds", "table_sha256",
               "cv_folds_sha256", "points_ref_sha256", "grid_sha256", "blocks_sha256", "points_sha256",
-              "points_ref_variant", "points_subset_of_ref", "target", "empty_test_groups_declared")
+              "points_ref_variant", "points_subset_of_ref", "target", "empty_test_groups_declared",
+              "holdout_season", "region")
 # Gia tri mac dinh khi run_meta CU thieu khoa (lan chay truoc khi them khoa) - de khong chay lai do man.
-META_DEFAULTS = {"target": "salinity", "empty_test_groups_declared": []}
+META_DEFAULTS = {"target": "salinity", "empty_test_groups_declared": [], "holdout_season": None, "region": "dbscl"}
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
+from region import DEFAULT_REGION, add_region_arg, crs_metric, region_paths  # noqa: E402
+from training.features import drop_target_forbidden, read_feature_list  # noqa: E402
 from training.split import MAIN_HOLDOUT_SEASON, declared_empty_groups  # noqa: E402
 
 DATA = data_path()
+REGION_FEATURE_SET = "doi_chung"  # vung doi chung khong co cot thuy van/hybrid DBSCL
+FROZEN_MANIFESTS = [os.path.join(ROOT, "KE_HOACH", "ket-qua", f) for f in
+                    ("dot_dong_bang_do_man_manifest.csv", "dot7_dong_bang_histgb_manifest.csv",
+                     "dot7_dong_bang_rfmlp_manifest.csv")]
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -83,10 +99,11 @@ def git_state():
     return {"git_commit": commit, "git_tag": tag if rc == 0 else None, "git_dirty_src_scripts": bool(dirty)}
 
 
-def run_name(prefix, grid, model, scheme, label_set, feature_set=None, target=None):
+def run_name(prefix, grid, model, scheme, label_set, feature_set=None, target=None, holdout_season=None):
     return (f"{prefix}__{grid}__{model}__s{scheme}" + (f"__{label_set}" if label_set else "")
             + (f"__fs-{feature_set}" if feature_set else "")
-            + (f"__t-{target}" if target and target != "salinity" else ""))
+            + (f"__t-{target}" if target and target != "salinity" else "")
+            + (f"__ho-{holdout_season}" if holdout_season is not None else ""))
 
 
 def versions():
@@ -147,22 +164,31 @@ def provenance_of(path) -> dict:
         return json.load(f)
 
 
-def target_mismatch(path, target, default=None):
-    """Chuoi loi neu provenance cua `path` co 'target' (thieu -> default) khac `target`; None neu khop/khong ro."""
+def target_mismatch(path, target, default=None, key="target"):
+    """Chuoi loi neu provenance cua `path` co `key` (thieu -> default) khac `target`; None neu khop/khong ro."""
     info = provenance_of(path)
-    got = info.get("target", default) if info else None
+    got = info.get(key, default) if info else None
     if got is not None and got != target:
-        return f"{os.path.basename(path)}: target '{got}' khac --target '{target}'"
+        return f"{os.path.basename(path)}: {key} '{got}' khac --{key} '{target}'"
     return None
 
 
-def table_empty_groups(table, target) -> list:
+def table_empty_groups(table, target, holdout_seasons=(MAIN_HOLDOUT_SEASON,)) -> list:
     """Nhom test rong khai bao trong provenance bang (train.py mac dinh giu rieng MAIN_HOLDOUT_SEASON).
     Bien Dot 7 (target != salinity) ma bang thieu provenance, hoac khai bao sai dang -> ValueError."""
     prov = provenance_of(table)
     if not prov and target != "salinity":
         raise ValueError(f"{os.path.basename(table)}: thieu provenance (bang bien Dot 7 bat buoc co)")
-    return list(declared_empty_groups(prov, target, (MAIN_HOLDOUT_SEASON,)))
+    return list(declared_empty_groups(prov, target, holdout_seasons))
+
+
+def feature_set_lists(feat_file, target):
+    """(muc trong file, muc giu, muc bo vi cam theo bien): bo dat ten giao voi danh sach cho phep cua bien."""
+    req = read_feature_list(feat_file)
+    keep, dropped = drop_target_forbidden(req, target)
+    if not keep:
+        raise ValueError(f"{os.path.basename(feat_file)}: moi muc bi cam voi bien '{target}'")
+    return req, keep, dropped
 
 
 def is_done(meta_path, cfg_path, want: dict) -> bool:
@@ -182,10 +208,21 @@ def is_done(meta_path, cfg_path, want: dict) -> bool:
         pts = "oof_points.csv" if want.get("mode") == "cv" else "final_points.csv"
         if not os.path.exists(os.path.join(os.path.dirname(cfg_path), pts)):
             return False
-    return meta.get("returncode") == 0 and all(meta.get(k, META_DEFAULTS.get(k)) == want.get(k) for k in KEY_FIELDS)
+    return meta.get("returncode") == 0 and all(meta.get(k, META_DEFAULTS.get(k)) == want.get(k, META_DEFAULTS.get(k))
+                                               for k in KEY_FIELDS)
 
 
 def main(a):
+    if a.holdout_season is not None and a.mode != "final":
+        sys.exit("[LOI] --holdout-season chi dung voi --mode final.")
+    hs = (MAIN_HOLDOUT_SEASON if a.holdout_season is None else a.holdout_season,)
+    dbscl = a.region == DEFAULT_REGION
+    if not dbscl:
+        if a.target == "salinity":
+            sys.exit(f"[LOI] Vung {a.region} khong co nhan do man - dung --target (vd ndwi).")
+        p = region_paths(a.region)
+        a.tables_dir = a.tables_dir or f"{p['features_dir']}/unified_dot7/{a.target}"
+        a.points_ref = a.points_ref or f"{p['labels_dir']}/dot7/points_reference_{a.target}.csv"
     state = git_state()
     if not state["git_tag"] and not a.allow_untagged:
         sys.exit("HEAD chua co tag git - gan tag truoc lan chay that (hoac --allow-untagged de thu nghiem).")
@@ -205,13 +242,25 @@ def main(a):
     suffix = f"_{a.label_set}" if a.label_set else ""
     ref_sha = sha256(a.points_ref) if (a.points_ref and not a.no_point_eval) else None
     blocks_sha, points_sha = sha256(a.blocks), sha256(a.points)
-    feat_file, feat_sha = None, None
+    feat_file, feat_sha, feat_req, feat_keep, feat_dropped = None, None, None, None, []
     if a.feature_set:  # bo dac trung dat ten: configs/feature_sets/<ten>.txt (--features-file -> moi muc phai co)
         feat_file = os.path.join(ROOT, "configs", "feature_sets", f"{a.feature_set}.txt")
         if not os.path.exists(feat_file):
             sys.exit(f"Khong co bo dac trung {feat_file}")
         feat_sha = sha256(feat_file)
-    exp_root = os.path.join(a.cwd, "artifacts", "experiments")
+        try:
+            feat_req, feat_keep, feat_dropped = feature_set_lists(feat_file, a.target)
+        except ValueError as exc:
+            sys.exit(f"[LOI] {exc}")
+    exp_root = os.path.join(a.cwd, "artifacts", "experiments", *([] if dbscl else [a.region]))
+    if not dbscl:
+        from training.dot7_rules import guard_frozen
+
+        guard_frozen([exp_root, os.path.join(exp_root, f"{a.prefix}_manifest.csv")], a.frozen_manifest)
+        for path, default in ((a.points, DEFAULT_REGION), (a.blocks, DEFAULT_REGION), (a.points_ref, None)):
+            err = target_mismatch(path, a.region, default=default, key="region")  # dap an chua ghi region
+            if err:
+                sys.exit(f"[LOI] {err}")
     if ref_sha is not None:
         v = ref_variant_of(a.points_ref)
         if v is not None and v != a.points_ref_variant:
@@ -229,11 +278,11 @@ def main(a):
         table = os.path.join(a.tables_dir, f"{grid}_unified{suffix}.csv")
         if not os.path.exists(table):
             sys.exit(f"Khong co bang {table}")
-        err = target_mismatch(table, a.target)
+        err = target_mismatch(table, a.target) or target_mismatch(table, a.region, default=DEFAULT_REGION, key="region")
         if err:
             sys.exit(f"[LOI] {err}")
         try:
-            empty_by_grid[grid] = table_empty_groups(table, a.target)
+            empty_by_grid[grid] = table_empty_groups(table, a.target, hs)
         except ValueError as exc:
             sys.exit(f"[LOI] {grid}: {exc}")
     rows, ref_features, vers = [], {}, versions()
@@ -246,7 +295,9 @@ def main(a):
             folds = os.path.join(a.folds_dir, f"cv_folds_s{scheme}.csv")
             folds_sha = sha256(folds)
             for model in a.models:
-                name = run_name(a.prefix, grid, model, scheme, a.label_set, a.feature_set, a.target)
+                name = run_name(a.prefix, grid, model, scheme, a.label_set,
+                                None if (not dbscl and a.feature_set == REGION_FEATURE_SET) else a.feature_set,
+                                a.target, a.holdout_season)
                 out = os.path.join(exp_root, name, a.mode)
                 meta_path = os.path.join(out, "run_meta.json")
                 want = {"run": name, "grid": grid, "model": model, "scheme": scheme, "label_set": a.label_set or "chinh",
@@ -257,7 +308,9 @@ def main(a):
                         "points_ref_sha256": ref_sha, "grid_sha256": grid_sha, "blocks_sha256": blocks_sha,
                         "points_sha256": points_sha, "points_ref_variant": a.points_ref_variant,
                         "points_subset_of_ref": a.points_subset_of_ref, "target": a.target,
-                        "empty_test_groups_declared": empty_groups}
+                        "empty_test_groups_declared": empty_groups, "holdout_season": a.holdout_season}
+                if not dbscl:  # dbscl: khong them khoa -> run_meta/manifest giu nguyen byte
+                    want.update(region=a.region, crs_metric=crs_metric(a.region))
                 row = {"run": name, "grid": grid, "model": model, "scheme": scheme, "label_set": a.label_set or "chinh",
                        **want, "seeds": " ".join(map(str, a.seeds)), "git_tag": state["git_tag"],
                        "empty_test_groups_declared": " ".join(empty_groups)}
@@ -274,10 +327,16 @@ def main(a):
                 cmd = [sys.executable, os.path.join(ROOT, "src", "training", "train.py"), "--table", table,
                        "--mode", a.mode, "--grid", grid_path, "--blocks", a.blocks, "--cv-folds", folds,
                        "--model", model, "--seeds", *map(str, a.seeds), "--experiment-name", name]
-                if feat_file:
-                    cmd += ["--features-file", feat_file]
+                if feat_file:  # train.py tu choi danh sach tuong minh co cot cam -> truyen danh sach da tru
+                    cmd += ["--features", *feat_keep] if feat_dropped else ["--features-file", feat_file]
                 if a.target != "salinity":
                     cmd += ["--target", a.target]
+                if not dbscl:
+                    cmd += ["--region", a.region]
+                if a.holdout_season is not None:
+                    cmd += ["--holdout-seasons", str(a.holdout_season)]
+                    if a.holdout_season != MAIN_HOLDOUT_SEASON:
+                        cmd += ["--allow-holdout-season-override"]
                 if empty_groups:
                     cmd += ["--allow-empty-test-groups", *empty_groups]
                 if a.no_point_eval:
@@ -293,7 +352,8 @@ def main(a):
                 with open(os.path.join(out, "train_stdout.log"), "w", encoding="utf-8") as log:
                     rc = subprocess.run(cmd, cwd=a.cwd, stdout=log, stderr=subprocess.STDOUT,
                                         env=dict(os.environ, PYTHONIOENCODING="utf-8")).returncode
-                meta = {**row, **state, **want, "returncode": rc, "cmd": cmd, "started": started,
+                meta = {**row, **state, **want, "features_requested": feat_req,
+                        "features_dropped_forbidden": feat_dropped, "returncode": rc, "cmd": cmd, "started": started,
                         "finished": datetime.now().isoformat(timespec="seconds"), "versions": vers}
                 with open(meta_path, "w", encoding="utf-8") as f:
                     json.dump(meta, f, indent=2, ensure_ascii=False)
@@ -324,6 +384,8 @@ if __name__ == "__main__":
     ap.add_argument("--schemes", nargs="+", type=int, default=[42, 43, 44], help="cv_folds_s<n>.csv")
     ap.add_argument("--seeds", nargs="+", type=int, default=[42], help="seed mo hinh (HistGB tat dinh)")
     ap.add_argument("--mode", choices=["cv", "final"], default="cv")
+    ap.add_argument("--holdout-season", type=int, default=None,
+                    help="Giu rieng mot mua (chi --mode final); mac dinh thiet ke chinh 2020")
     ap.add_argument("--label-set", default="", help='"" = bo chinh; keepwater / keepmangrove / keep6090')
     ap.add_argument("--target", default="salinity",
                     help="Cot muc tieu (Dot 7: ndwi, rain_chirps, dsr_mcd18, t2m_era5, rh_era5); mac dinh salinity")
@@ -345,4 +407,10 @@ if __name__ == "__main__":
     ap.add_argument("--cwd", default=ROOT, help="Thu muc goc ghi artifacts/experiments")
     ap.add_argument("--allow-untagged", action="store_true")
     ap.add_argument("--allow-dirty", action="store_true")
+    ap.add_argument("--frozen-manifest", nargs="+", default=FROZEN_MANIFESTS,
+                    help="Manifest dong bang (vung doi chung: tu choi neu thu muc/manifest ra nam trong do)")
+    add_region_arg(ap, extra={"grids_dir": lambda p: p["grids_dir"], "folds_dir": lambda p: p["eval_dir"],
+                              "blocks": lambda p: f"{p['eval_dir']}/holdout_blocks.geojson",
+                              "points": lambda p: f"{p['eval_dir']}/eval_points.geojson",
+                              "tables_dir": None, "points_ref": None, "feature_set": REGION_FEATURE_SET})
     main(ap.parse_args())

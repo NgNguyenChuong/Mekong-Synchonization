@@ -9,6 +9,8 @@ NaN o dac trung mac dinh trong tap huan luyen ngoai danh sach cho phep (tch_wl_p
 ERA5 dung ban `_filled` (lap ven bien 1 pixel, CHG-11); co era5_fill_frac chi de phan tang.
 
 Chay:  venv/Scripts/python.exe scripts/build_unified_table.py [--grids h3_res_7 ...] [--sets "" keepwater ...]
+Vung doi chung (nhan NDWI bo chinh labels/dot7, KHONG thuy van/hybrid - cot vang mat):
+       venv/Scripts/python.exe scripts/build_unified_table.py --region mississippi
 """
 import argparse
 import glob
@@ -24,12 +26,14 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from preprocessing import CANONICAL_BOUNDARY, file_sha256, write_provenance  # noqa: E402
+from region import add_region_arg, crs_metric  # noqa: E402
 from training.features import DEFAULT_ALLOWED_FEATURES, find_leak_columns, resolve_feature_list  # noqa: E402
 from unified_table import (KEY_COLS, LABEL_SETS, QUALITY_COLS, TARGET_COL, TRAIN_COL,  # noqa: E402
-                           finite_or_nan, label_suffix, merge_sources, nan_report)
+                           drop_no_era5, finite_or_nan, label_suffix, merge_sources, nan_report)
 
 STATIC_FEATURES = ("dem_mean", "dist_main_river_km", "dist_any_water_km", "dist_coast_km")
 HYBRID_FEATURES = ("dist_mouth_river_km", "zos_mouth_p90", "sluice_frac")
+HYDRO_FEATURES = ("tch_wl_p20c",)
 LABEL_ONLY_COLS = ("salinity", "n_valid_px", "valid_frac", "train_ok", "train_ok_10pct", TRAIN_COL)
 # NaN DUOC PHEP trong dong huan luyen (CHG-22; da biet, HistGB xu ly NaN): cot -> tap mua (None = moi mua).
 #   tch_wl_p20c mua 2015: MRC thieu (CHG-12); dem_mean: o ven bien DEM coi la nuoc (pitfall 32).
@@ -55,6 +59,12 @@ DATA = data_path()
 
 
 def sources(a, grid, label_set):
+    if a.region != "dbscl":  # khong co nguon thuy van/hybrid DBSCL
+        return {
+            "labels": os.path.join(a.labels_dir, "dot7", f"{grid}_labels_season_ndwi.csv"),
+            "era5": os.path.join(a.features_dir, "era5_season", f"{grid}_era5_season_filled.csv"),
+            "static": os.path.join(a.features_dir, "static", f"{grid}_static.csv"),
+        }
     return {
         "labels": os.path.join(a.labels_dir, f"{grid}_labels_season{label_suffix(label_set)}.csv"),
         "era5": os.path.join(a.features_dir, "era5_season", f"{grid}_era5_season_filled.csv"),
@@ -77,9 +87,10 @@ def scope_centroid_csv(a, grid):
     g = gpd.read_file(grid_path)
     df = scope_centroids(a.scope, (g["cell_id"].astype(str).tolist(), None, g.geometry.tolist()))
     df.to_csv(out, index=False, float_format="%.3f")
-    write_provenance(out, CANONICAL_BOUNDARY, grid=os.path.basename(grid_path), grid_sha256=file_sha256(grid_path),
+    write_provenance(out, a.boundary, grid=os.path.basename(grid_path), grid_sha256=file_sha256(grid_path),
                      scope=a.scope, scope_sha256=file_sha256(a.scope),
-                     rule="tam TAM pixel scope == 1 trong o (pixel theo tam), EPSG:32648; cho IDW (An 2026-10-04)")
+                     rule=f"tam TAM pixel scope == 1 trong o (pixel theo tam), {crs_metric(a.region)}; cho IDW "
+                          "(An 2026-10-04)")
     return out
 
 
@@ -91,11 +102,19 @@ def build_one(a, grid, label_set):
         raise FileNotFoundError(f"{grid}/{label_set or 'chinh'}: thieu {missing}")
     rd = {k: pd.read_csv(p, dtype={"cell_id": str}) for k, p in src.items()}
     static = rd["static"].merge(rd["centroid"], on="cell_id", how="left", validate="one_to_one")
-    table = merge_sources(rd["labels"], rd["era5"], static, rd["hydro"], rd["hybrid"])
+    target = TARGET_COL if a.region == "dbscl" else "ndwi"
+    table = merge_sources(rd["labels"], rd["era5"], static, rd.get("hydro"), rd.get("hybrid"), target_col=target)
+    dropped = None
+    if a.drop_no_era5:  # o khong co ERA5 sau lap 1 pixel (CHG-11) -> khoi tap huan luyen; dong van o trong bang
+        dropped = dict(zip(("n_cells", "n_rows"), drop_no_era5(table)))
+        if a.region == "dbscl" and dropped["n_rows"]:
+            raise ValueError(f"{grid}: dbscl phai loai 0 dong, thuc te {dropped} (khong dung lai bang dong bang)")
     no_xy = table[TRAIN_COL].astype(bool) & table["scope_cx"].isna()
     if no_xy.any():
         raise ValueError(f"{grid}: {int(no_xy.sum())} dong huan luyen khong co tam phan dat (scope_n_px = 0)")
     feats, absent = resolve_feature_list(table.columns, DEFAULT_ALLOWED_FEATURES)
+    if a.region != "dbscl":  # dac trung thuy van/hybrid DBSCL vang mat co chu dich
+        absent = [c for c in absent if c not in (*HYDRO_FEATURES, *HYBRID_FEATURES)]
     if absent:
         raise ValueError(f"{grid}: dac trung mac dinh vang mat trong bang: {absent}")
     leaks = find_leak_columns(feats)
@@ -107,13 +126,16 @@ def build_one(a, grid, label_set):
     os.makedirs(a.out_dir, exist_ok=True)
     out = os.path.join(a.out_dir, f"{grid}_unified{label_suffix(label_set)}.csv")
     table.to_csv(out, index=False, float_format="%.6g")
-    write_provenance(out, CANONICAL_BOUNDARY, grid=grid, label_set=label_set or "chinh",
+    write_provenance(out, a.boundary, grid=grid, label_set=label_set or "chinh",
                      sources={k: {"path": p, "sha256": file_sha256(p)} for k, p in src.items()},
-                     key_cols=list(KEY_COLS), target=TARGET_COL,
+                     key_cols=list(KEY_COLS), target=target, region=a.region,
                      quality_cols=[c for c in QUALITY_COLS if c in table.columns],
-                     default_features=feats, rule="tuan 3 viec 3; ERA5 _filled (CHG-11); hybrid CHG-16")
+                     default_features=feats, rule="tuan 3 viec 3; ERA5 _filled (CHG-11); hybrid CHG-16",
+                     **({"dropped_no_era5": dropped} if dropped else {}))
     ok = table[TRAIN_COL].astype(bool)
     for group, cols in (("tinh", STATIC_FEATURES), ("hybrid", HYBRID_FEATURES)):
+        if group == "hybrid" and "hybrid" not in src:
+            continue
         n_all_nan = int(table.loc[ok, list(cols)].isna().all(axis=1).sum())
         if n_all_nan:
             raise ValueError(f"{grid}/{label_set or 'chinh'}: {n_all_nan} dong {TRAIN_COL} co MOI dac trung {group} NaN")
@@ -121,8 +143,8 @@ def build_one(a, grid, label_set):
     if bad_nan:  # vd ERA5 / thuy van thieu ca mua lot vao tap huan luyen
         raise ValueError(f"{grid}/{label_set or 'chinh'}: NaN ngoai danh sach cho phep trong dong {TRAIN_COL}: {bad_nan}")
     nr = nan_report(table, feats)
-    row = {"grid": grid, "label_set": label_set or "chinh", "rows": len(table), "cells": table["cell_id"].nunique(),
-           "rows_label": int(table[TARGET_COL].notna().sum()), "rows_train_ok": int(table["train_ok"].sum()),
+    row = {**({"rows_dropped_no_era5": dropped["n_rows"]} if dropped else {}), "grid": grid, "label_set": label_set or "chinh", "rows": len(table), "cells": table["cell_id"].nunique(),
+           "rows_label": int(table[target].notna().sum()), "rows_train_ok": int(table["train_ok"].sum()),
            "rows_train_ok_scope": int(ok.sum()),
            "rows_dropped_scope0": int(table["train_ok"].astype(bool).sum() - ok.sum()),
            "n_features": len(feats),
@@ -134,7 +156,7 @@ def build_one(a, grid, label_set):
 
 def check_same_features(tables: dict, grid: str):
     """Bo phu chi khac nhan (CHG-15): moi cot ngoai LABEL_ONLY_COLS phai giong het bo chinh (NaN cung cho)."""
-    if "" not in tables:
+    if "" not in tables or len(tables) == 1:
         return
     base = tables[""].drop(columns=list(LABEL_ONLY_COLS))
     for s, t in tables.items():
@@ -177,4 +199,11 @@ if __name__ == "__main__":
     ap.add_argument("--scope", default=f"{DATA}/features/scope_mask_v3.tif")
     ap.add_argument("--force-centroids", action="store_true", help="Tinh lai tam phan dat da cache")
     ap.add_argument("--report", default=os.path.join(ROOT, "KE_HOACH", "ket-qua", "dot4_bang_hop_nhat.csv"))
+    ap.add_argument("--boundary", default=CANONICAL_BOUNDARY)
+    ap.add_argument("--drop-no-era5", action="store_true",
+                    help="Loai o (o, mua) khong co ERA5 (cover+fill = 0) khoi train_ok_scope; dbscl: bat buoc 0 dong")
+    add_region_arg(ap, {"labels_dir": "labels_dir", "features_dir": "features_dir", "grids_dir": "grids_dir",
+                        "out_dir": lambda p: f"{p['features_dir']}/unified", "scope": "scope", "boundary": "boundary",
+                        "report": lambda p: os.path.join(p["report_dir"], "dot4_bang_hop_nhat.csv")},
+                   extra={"sets": [""]})
     main(ap.parse_args())

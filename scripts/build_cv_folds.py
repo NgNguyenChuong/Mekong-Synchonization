@@ -39,9 +39,10 @@ Dau ra:
   dot4_cv_folds_theo_luoi.csv (moi phuong an x luoi: o train/val moi fold, diem CV cham duoc theo phuong an C).
 
 Chay:  venv/Scripts/python.exe scripts/build_cv_folds.py [--seeds 42 43 44] [--max-objective 0.183] [--force]
-Tai lap quy tac cu (CHG-06): venv/Scripts/python.exe scripts/build_cv_folds.py --tols 0.10 0.15 ...
+Tai lap quy tac cu (CHG-06): venv/Scripts/python.exe scripts/build_cv_folds.py --tols 0.10 0.15 ...  (= --objective-mode rel)
 Kiem lai dieu kien cua phuong an DA LUU (sau khi doi mat na/diem; khong ghi fold):
        venv/Scripts/python.exe scripts/build_cv_folds.py --check-only
+Vung doi chung: venv/Scripts/python.exe scripts/build_cv_folds.py --region nile
 """
 import argparse
 import glob
@@ -59,6 +60,7 @@ import pandas as pd
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 from settings import data_path  # noqa: E402  (.env: DATA_ROOT)
+from region import add_region_arg  # noqa: E402
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -86,6 +88,7 @@ from training.split import block_cv_cell_summary  # noqa: E402
 CRITERIA = ("scope_km2", "coast_scope_km2")
 FOLD_COLS = ["block_id", "unit_id", "cv_fold", "land_km2", "scope_km2", "coast_scope_km2", "n_cv_points",
              "n_cv_coast_points"]
+REL_TOLS = (0.10, 0.15)
 DEFAULT_MAX_OBJECTIVE = 0.183  # CHG-14 (An chot 2026-10-04): = diem can bang s42 tren pham vi v2 (0,1829)
 REPORT_NAMES = ("dot4_cv_tap_phuong_an.csv", "dot4_cv_tap_ung_vien.csv", "dot4_cv_khoi.csv", "dot4_cv_gop_khoi.csv",
                 "dot4_cv_folds_theo_fold.csv", "dot4_cv_folds_theo_luoi.csv")
@@ -198,7 +201,7 @@ def block_table(blocks, points, scope_mask, dist_coast, coast_km):
     return t
 
 
-def write_folds(df, path, force, prov):
+def write_folds(df, path, force, prov, boundary=CANONICAL_BOUNDARY):
     """Ghi bang fold; da co file KHAC -> loi tru khi --force. Tra ve True neu da ghi."""
     if os.path.exists(path) and not force:
         old = pd.read_csv(path, dtype={"block_id": str, "unit_id": str})
@@ -212,7 +215,7 @@ def write_folds(df, path, force, prov):
         log(f"Giu nguyen {path} (khop phuong an tinh lai).")
         return False
     df.to_csv(path, index=False)
-    write_provenance(path, CANONICAL_BOUNDARY, **prov)
+    write_provenance(path, boundary, **prov)
     log(f"Ghi {path}")
     return True
 
@@ -439,7 +442,11 @@ def resolve_rule(a):
     """CHG-14: mac dinh nguong tuyet doi --max-objective 0,183; --tols (quy tac cu) chi khi KHONG co --max-objective."""
     if a.tols and a.max_objective is not None:
         raise SystemExit("[LOI] --tols (quy tac tuong doi cu) va --max-objective (CHG-14) loai tru nhau.")
-    if not a.tols and a.max_objective is None:
+    if getattr(a, "objective_mode", "abs") == "rel":  # CHG-06: <= 1,10x muc tieu tot nhat, thieu thi 1,15x (vung ma 0,183 khong hop)
+        if a.tols or a.max_objective is not None:
+            raise SystemExit("[LOI] --objective-mode rel loai tru voi --tols / --max-objective.")
+        a.tols = list(REL_TOLS)
+    elif not a.tols and a.max_objective is None:
         a.max_objective = DEFAULT_MAX_OBJECTIVE
     return a
 
@@ -521,10 +528,10 @@ def main(a):
                               "max_overlap tung cap; to hop thu tu tu dien")
                            + "); khoi giu rieng = -1",
                     rule_cells="touch (o cat ngang khoi)", shared_by_all_grids=True)
-        write_folds(bf, path, a.force, prov)
+        write_folds(bf, path, a.force, prov, a.boundary)
         if seed == a.seeds[0]:
             write_folds(bf, os.path.join(a.out_dir, "cv_folds.csv"), a.force,
-                        dict(prov, alias_of=os.path.basename(path)))
+                        dict(prov, alias_of=os.path.basename(path)), a.boundary)
         schemes[seed] = (path, bf)
         fs = fold_summary(bf, seed)
         fold_rows.append(fs)
@@ -558,7 +565,7 @@ def main(a):
             for out, fp in targets:
                 os.makedirs(os.path.dirname(out), exist_ok=True)
                 table.to_csv(out, index=False)
-                write_provenance(out, CANONICAL_BOUNDARY, grid=rel(gpath), grid_sha256=gsha, cv_folds=rel(fp),
+                write_provenance(out, a.boundary, grid=rel(gpath), grid_sha256=gsha, cv_folds=rel(fp),
                                  cv_folds_sha256=file_sha256(fp), blocks_sha256=blocks_sha,
                                  function="eval_design.cell_block_table")
             fold_of_block = folds.set_index("block_id")["cv_fold"].astype(int)
@@ -607,6 +614,8 @@ if __name__ == "__main__":
     ap.add_argument("--tols", type=float, nargs="+", default=None,
                     help="Quy tac CU (CHG-06, chi de tai lap): muc tieu <= (1 + tol) x tot nhat, thu lan luot "
                          "(vd 0.10 0.15); loai tru voi --max-objective")
+    ap.add_argument("--objective-mode", choices=("abs", "rel"), default="abs",
+                    help="abs (mac dinh): --max-objective tuyet doi; rel: muc tieu <= 1,10x (thieu thi 1,15x) tot nhat")
     ap.add_argument("--max-overlap", type=float, default=0.60,
                     help="Do trung toi da (ty le don vi giu fold sau ghep Hungarian) giua moi cap phuong an")
     ap.add_argument("--coast-tol", type=float, default=0.15,
@@ -616,5 +625,11 @@ if __name__ == "__main__":
     ap.add_argument("--check-only", action="store_true",
                     help="Chi kiem lai dieu kien J/I/D cua cac phuong an DA LUU tren mat na/diem hien tai; khong ghi "
                          "fold. Thoat 0 = dat het, 3 = co dieu kien vo")
+    ap.add_argument("--boundary", default=CANONICAL_BOUNDARY, help="Ranh gioi ghi vao provenance")
     ap.add_argument("--check-prefix", default="dot4_scope_v3", help="Tien to bang cua --check-only")
+    add_region_arg(ap, {"blocks": lambda p: os.path.join(p["eval_dir"], "holdout_blocks.geojson"),
+                        "points": lambda p: os.path.join(p["eval_dir"], "eval_points.geojson"),
+                        "grids_dir": "grids_dir", "out_dir": "eval_dir", "report_dir": "report_dir",
+                        "backup_dir": lambda p: os.path.join(p["eval_dir"], "deprecated_v2b"),
+                        "scope_mask": "scope", "dist_coast": "river", "boundary": "boundary"})
     main(ap.parse_args())

@@ -14,9 +14,42 @@ from shapely.geometry import box
 from shapely.prepared import prep
 
 
-def make_holdout_blocks(boundary: gpd.GeoDataFrame, block_km=50.0, holdout_frac=0.2, seed=42):
-    """Tra ve GeoDataFrame (EPSG:4326): block_id, land_km2, is_holdout, geometry."""
-    utm = boundary.estimate_utm_crs()
+def pick_holdout_blocks(weight, frac, seed, min_weight=0.0) -> np.ndarray:
+    """Chon khoi giu rieng: duyet khoi theo hoan vi rng(seed), them cho toi khi tong weight >= frac * tong.
+    Bo khoi weight <= 0 hoac < min_weight. Tra ve mang bool."""
+    weight = np.asarray(weight, float)
+    target = frac * weight.sum()
+    is_holdout = np.zeros(len(weight), dtype=bool)
+    acc = 0.0
+    for i in np.random.default_rng(seed).permutation(len(weight)):
+        if acc >= target:
+            break
+        if weight[i] <= 0 or weight[i] < min_weight:
+            continue
+        is_holdout[i] = True
+        acc += weight[i]
+    return is_holdout
+
+
+def select_holdout_by_scope(table: pd.DataFrame, frac=0.2, seed=42, min_scope_km2=150.0, ratio_range=None,
+                            max_tries=1000) -> dict:
+    """Quy tac R-H: pick_holdout_blocks theo scope_km2 (khoi < min_scope_km2 khong duoc giu rieng); tang seed tu
+    `seed` toi seed dau tien co ti so dai dien ven bien trong ratio_range = (lo, hi) (None: nhan ngay seed dau).
+    Ti so = (% scope ven bien trong giu rieng) / (% scope tong trong giu rieng). Chi dung hinh hoc/scope/bo,
+    khong dung nhan. table: scope_km2, coast_scope_km2. Tra ve {seed, tried, is_holdout, scope_share, coast_ratio}."""
+    sc, co = table["scope_km2"].to_numpy(float), table["coast_scope_km2"].to_numpy(float)
+    for k in range(max_tries):
+        h = pick_holdout_blocks(sc, frac, seed + k, min_scope_km2)
+        share = sc[h].sum() / sc.sum()
+        ratio = (co[h].sum() / co.sum()) / share if share > 0 and co.sum() > 0 else float("nan")
+        if ratio_range is None or ratio_range[0] <= ratio <= ratio_range[1]:
+            return {"seed": seed + k, "tried": k + 1, "is_holdout": h, "scope_share": share, "coast_ratio": ratio}
+    raise ValueError(f"Khong co seed nao trong {max_tries} lan thu (tu {seed}) cho ti so ven bien trong {ratio_range}.")
+
+
+def make_holdout_blocks(boundary: gpd.GeoDataFrame, block_km=50.0, holdout_frac=0.2, seed=42, utm=None):
+    """Tra ve GeoDataFrame (EPSG:4326): block_id, land_km2, is_holdout, geometry. utm = CRS met cua vung."""
+    utm = utm or boundary.estimate_utm_crs()
     land = boundary.to_crs(utm).geometry.union_all()
     size = block_km * 1000.0
     minx, miny, maxx, maxy = land.bounds
@@ -30,17 +63,7 @@ def make_holdout_blocks(boundary: gpd.GeoDataFrame, block_km=50.0, holdout_frac=
                 ids.append(f"blk_{ix}_{iy}")
 
     land_km2 = np.array([b.intersection(land).area / 1e6 for b in blocks])
-    target = holdout_frac * land_km2.sum()
-    order = np.random.default_rng(seed).permutation(len(blocks))
-    is_holdout = np.zeros(len(blocks), dtype=bool)
-    acc = 0.0
-    for i in order:
-        if acc >= target:
-            break
-        if land_km2[i] <= 0:
-            continue
-        is_holdout[i] = True
-        acc += land_km2[i]
+    is_holdout = pick_holdout_blocks(land_km2, holdout_frac, seed)
 
     gdf = gpd.GeoDataFrame(
         {"block_id": ids, "land_km2": np.round(land_km2, 3), "is_holdout": is_holdout},
@@ -85,13 +108,13 @@ def training_mask(grid: gpd.GeoDataFrame, blocks: gpd.GeoDataFrame):
 # -----------------------------------------------------------------------------------------------
 # Thiet ke danh gia tren ranh gioi v2 (An duyet 2026-10-03): GIU khoi giu rieng, diem tren mat na dat.
 # -----------------------------------------------------------------------------------------------
-def refresh_blocks(blocks: gpd.GeoDataFrame, boundary: gpd.GeoDataFrame, block_km=50.0):
+def refresh_blocks(blocks: gpd.GeoDataFrame, boundary: gpd.GeoDataFrame, block_km=50.0, utm=None):
     """Giu nguyen block_id / is_holdout; tinh lai land_km2 = dien tich (khoi giao ranh gioi moi).
 
     Khoi cung luoi (neo boi so canh) ma ranh gioi moi cham toi nhung chua co trong file duoc THEM voi
     is_holdout = False (khong doi tap giu rieng). Tra ve (blocks_moi EPSG:4326, danh sach id them).
     """
-    utm = boundary.estimate_utm_crs()
+    utm = utm or boundary.estimate_utm_crs()
     land = boundary.to_crs(utm).geometry.union_all()
     old = blocks.to_crs(utm).copy()
     size = block_km * 1000.0
@@ -229,6 +252,14 @@ def exact_block_frame(blocks: gpd.GeoDataFrame, utm=None, block_km=50.0) -> gpd.
     exact = [box(i * size, j * size, (i + 1) * size, (j + 1) * size) if not np.isnan(i) else g
              for i, j, g in zip(ij[0], ij[1], out.geometry)]
     return out.set_geometry(gpd.GeoSeries(exact, index=out.index, crs=utm))
+
+
+def dense_blocks_4326(blocks: gpd.GeoDataFrame, utm, block_km=50.0, step_m=500.0) -> gpd.GeoDataFrame:
+    """Khoi o vuong UTM CHINH XAC (tu block_id), chia nho canh `step_m` roi moi chieu sang EPSG:4326.
+    Canh 4 dinh trong 4326 lech toi hang tram m so voi canh UTM khi xa kinh tuyen truc (rang buoc training_mask
+    roi ho o huan luyen giao khoi giu rieng); canh chia nho bam sat canh UTM."""
+    ex = exact_block_frame(blocks, utm=utm, block_km=block_km)
+    return ex.set_geometry(ex.geometry.segmentize(step_m)).to_crs(4326)
 
 
 def assign_cv_folds(blocks: gpd.GeoDataFrame, n_folds=5, seed=42, n_trials=5000) -> pd.DataFrame:

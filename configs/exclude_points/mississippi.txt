@@ -1,0 +1,3 @@
+# CHG-41: diem CV trong o khong co ERA5-Land o it nhat mot luoi (loai khoi tap diem chung moi luoi/bien)
+pt_03727
+pt_15303

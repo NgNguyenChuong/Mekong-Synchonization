@@ -277,3 +277,231 @@ def test_dot7_runner_dap_an_target_lech_dung_som(setup):
     p = _run(tmp, "--allow-untagged", "--allow-dirty", "--target", "rain_chirps")
     assert p.returncode != 0 and "target" in (p.stdout + p.stderr)
     assert not (tmp / "artifacts" / "experiments" / "t__h3_res_5__linear__s42__t-rain_chirps").exists()
+
+
+def test_feature_set_tru_cot_cam_theo_bien():
+    """khong_diem (b) = file tru TARGET_FORBIDDEN cua bien; do man / ndwi khong bo muc nao."""
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import run_experiments as rx
+
+    ff = os.path.join(ROOT, "configs", "feature_sets", "khong_diem.txt")
+    temps = ["temp_c", "temp_max_c", "temp_min_c", "rh_percent"]
+    for t, drop in (("salinity", []), ("ndwi", []), ("rain_chirps", ["rain_mm"]), ("dsr_mcd18", ["solar"]),
+                    ("t2m_era5", temps), ("rh_era5", temps)):
+        req, keep, dropped = rx.feature_set_lists(ff, t)
+        assert dropped == drop and keep == [e for e in req if e not in drop] and len(req) == 11
+
+
+def test_b_mua_bang_khong_diem_cong_3():
+    """(c) b_mua = (b) + tch_wl_p20c, zos_mua_mean, sluice_flag; dem cot that sau khi giai tien to landcover."""
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import run_experiments as rx
+    from training.features import find_leak_columns, find_target_leak_columns, resolve_feature_list
+
+    fs = os.path.join(ROOT, "configs", "feature_sets")
+    lc = [f"landcover_class_{c}" for c in ("Trees", "Shrubland", "Grassland", "Cropland", "Built_up", "Bareland",
+                                            "Water", "Wetland", "Mangroves")]
+    new, old = ["tch_wl_p20c", "zos_mua_mean", "sluice_flag"], ["dist_mouth_river_km", "zos_mouth_p90", "sluice_frac"]
+    cols = ["rain_mm", "solar", "temp_c", "temp_max_c", "temp_min_c", "rh_percent", "dem_mean", "dist_main_river_km",
+            "dist_any_water_km", "dist_coast_km", *lc, *old, *new]
+    for t, n in (("salinity", 22), ("ndwi", 22), ("rain_chirps", 21), ("dsr_mcd18", 21), ("t2m_era5", 18),
+                 ("rh_era5", 18)):
+        kb = resolve_feature_list(cols, rx.feature_set_lists(os.path.join(fs, "khong_diem.txt"), t)[1])[0]
+        kc = resolve_feature_list(cols, rx.feature_set_lists(os.path.join(fs, "b_mua.txt"), t)[1])[0]
+        assert len(kc) == n == len(kb) + 3 and set(kc) - set(kb) == set(new) and not set(old) & set(kc), t
+        assert not find_leak_columns(new) and not find_target_leak_columns(new, t)
+
+
+@need_real
+def test_runner_feature_set_cung_target_tru_cot_cam(setup):
+    """--feature-set khong_diem --target rain_chirps: truoc day train.py loi (rain_mm cam); nay truyen --features da
+    tru, config khong co rain_mm (18 dac trung), run_meta ghi features_requested / features_dropped_forbidden."""
+    tmp = setup
+    rng = np.random.default_rng(7)
+    t = pd.read_csv(tmp / "tables" / "h3_res_5_unified.csv")
+    t["rain_chirps"] = t["rain_mm"] + rng.normal(0, 0.1, len(t))
+    t.to_csv(tmp / "tables" / "h3_res_5_unified.csv", index=False)
+    with open(tmp / "tables" / "h3_res_5_unified.csv.provenance.json", "w", encoding="utf-8") as f:
+        json.dump({"target": "rain_chirps", "label_set": "chinh"}, f)
+    ref = pd.read_csv(tmp / "ref.csv")[["point_id", "season"]]
+    ref["ref_rain_chirps"], ref["src_px_valid"] = rng.uniform(0, 1, len(ref)), True
+    ref.to_csv(tmp / "ref.csv", index=False)
+    with open(tmp / "ref.csv.provenance.json", "w", encoding="utf-8") as f:
+        json.dump({"target": "rain_chirps", "variant": "main", "ref_rule_kind": "pixel"}, f)
+    p = _run(tmp, "--allow-untagged", "--allow-dirty", "--feature-set", "khong_diem", "--models", "linear",
+             "--target", "rain_chirps")
+    assert p.returncode == 0, p.stdout + p.stderr
+    out = tmp / "artifacts" / "experiments" / "t__h3_res_5__linear__s42__fs-khong_diem__t-rain_chirps" / "cv"
+    cfg = json.loads((out / "config.json").read_text(encoding="utf-8"))
+    assert "rain_mm" not in cfg["features"] and len(cfg["features"]) == 18
+    meta = json.loads((out / "run_meta.json").read_text(encoding="utf-8"))
+    assert meta["features_dropped_forbidden"] == ["rain_mm"] and "rain_mm" in meta["features_requested"]
+    assert "--features-file" not in meta["cmd"] and "rain_mm" not in meta["cmd"]
+    assert meta["feature_set"] == "khong_diem" and len(meta["features_sha256"]) == 64
+
+
+# ------------------------------------------------------------------ CHG-28: giu rieng tung mua (--holdout-season)
+def test_holdout_season_ten_va_nhom_rong_theo_mua(tmp_path):
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import run_experiments as rx
+
+    assert (rx.run_name("cv1", "h3_res_7", "hist_gb", 42, "", "khong_diem", "dsr_mcd18", 2016)
+            == "cv1__h3_res_7__hist_gb__s42__fs-khong_diem__t-dsr_mcd18__ho-2016")
+    assert rx.run_name("cv1", "h3_res_7", "hist_gb", 42, "", None, "salinity", 2020) == "cv1__h3_res_7__hist_gb__s42__ho-2020"
+    tb = tmp_path / "t.csv"
+    tb.write_text("x\n")
+    (tmp_path / "t.csv.provenance.json").write_text(json.dumps({"target": "dsr_mcd18", "holdout_season_nan": {
+        "target": "dsr_mcd18", "seasons": [2020], "reason": "gia"}}))
+    assert rx.table_empty_groups(str(tb), "dsr_mcd18") == ["thoi_gian", "ca_hai"]
+    assert rx.table_empty_groups(str(tb), "dsr_mcd18", (2016,)) == []    # truoc day van khai bao rong -> train.py ma 2
+
+
+def test_holdout_season_chi_voi_mode_final(tmp_path):
+    (tmp_path / "ref.csv").write_text("point_id,season,ref_salinity,n_valid_3x3\n")
+    for mode in ([], ["--mode", "cv"]):
+        rc, out = _runner_light(tmp_path, "--prefix", "cv1", "--holdout-season", "2016", *mode)
+        assert rc != 0 and "chi dung voi --mode final" in out, out
+
+
+@need_real
+def test_holdout_season_bang_nan_2020_khong_vao_huan_luyen(setup):
+    """Bang kieu buc xa: nhan 2020 NaN + train_ok_scope sai + khai bao holdout_season_nan [2020].
+    Giu rieng 2019 -> co override, khong khai bao nhom rong, tap huan luyen chi mua 2018/2021 (2020 NaN bi bo);
+    giu rieng 2020 -> khong co override, van khai bao nhom rong nhu cu."""
+    tmp = setup
+    rng = np.random.default_rng(9)
+    t = pd.read_csv(tmp / "tables" / "h3_res_5_unified.csv")
+    t["dsr_mcd18"] = t["solar"] + rng.normal(0, 0.1, len(t))
+    t.loc[t["season"] == 2020, "dsr_mcd18"] = np.nan
+    t.loc[t["season"] == 2020, "train_ok_scope"] = False
+    t.to_csv(tmp / "tables" / "h3_res_5_unified.csv", index=False)
+    decl = {"target": "dsr_mcd18", "seasons": [2020], "reason": "gia"}
+    with open(tmp / "tables" / "h3_res_5_unified.csv.provenance.json", "w", encoding="utf-8") as f:
+        json.dump({"target": "dsr_mcd18", "label_set": "chinh", "holdout_season_nan": decl}, f)
+    ref = pd.read_csv(tmp / "ref.csv")[["point_id", "season"]]
+    ref["ref_dsr_mcd18"] = np.where(ref["season"] == 2020, np.nan, rng.uniform(0, 1, len(ref)))
+    ref["src_px_valid"] = ref["season"] != 2020
+    ref.to_csv(tmp / "ref.csv", index=False)
+    with open(tmp / "ref.csv.provenance.json", "w", encoding="utf-8") as f:
+        json.dump({"target": "dsr_mcd18", "variant": "main", "ref_rule_kind": "pixel"}, f)
+    exp = tmp / "artifacts" / "experiments"
+    for s in (2019, 2020):
+        p = _run(tmp, "--allow-untagged", "--allow-dirty", "--feature-set", "khong_diem", "--models", "linear",
+                 "--target", "dsr_mcd18", "--mode", "final", "--holdout-season", str(s))
+        assert p.returncode == 0, p.stdout + p.stderr
+        out = exp / f"t__h3_res_5__linear__s42__fs-khong_diem__t-dsr_mcd18__ho-{s}" / "final"
+        meta = json.loads((out / "run_meta.json").read_text(encoding="utf-8"))
+        i = meta["cmd"].index("--holdout-seasons")
+        assert meta["cmd"][i + 1] == str(s) and meta["holdout_season"] == s
+        assert ("--allow-holdout-season-override" in meta["cmd"]) == (s != 2020)
+        assert ("--allow-empty-test-groups" in meta["cmd"]) == (s == 2020)
+        log = (out / "train_stdout.log").read_text(encoding="utf-8")
+        assert ("mua [2018, 2021]" if s == 2019 else "mua [2018, 2019, 2021]") in log
+        if s == 2019:
+            fp = pd.read_csv(out / "final_points.csv")
+            tg = fp[fp["test_group"] == "thoi_gian"]
+            assert len(tg) and set(tg["season"]) == {2019} and np.isfinite(fp["err"]).all()
+
+
+# ------------------------------------------------------------------ Dot 8: vung doi chung (--region)
+def _region_setup(tmp, region="mississippi", grids=("h3_res_5", "s2_level_9")):
+    """Cay <DOI_CHUNG_OUT>/<vung>/ gia: 2 luoi DBSCL (hinh hoc khong quan trong), bang ndwi chi dac trung doi_chung."""
+    from static_features import WORLDCOVER_NAMES
+
+    rng = np.random.default_rng(11)
+    out = tmp / "out" / region
+    for sub in ("grids", "eval", "features/unified_dot7/ndwi", "labels/dot7"):
+        (out / sub).mkdir(parents=True)
+    shutil.copy(FOLDS, out / "eval" / "cv_folds_s42.csv")
+    shutil.copy(os.path.join(ROOT, "data", "eval", "holdout_blocks.geojson"), out / "eval" / "holdout_blocks.geojson")
+    (out / "eval" / "holdout_blocks.geojson.provenance.json").write_text(json.dumps({"region": region}))
+    shutil.copy(POINTS, out / "eval" / "eval_points.geojson")
+    (out / "eval" / "eval_points.geojson.provenance.json").write_text(json.dumps({"region": region}))
+    feats = ["rain_mm", "solar", "temp_c", "temp_max_c", "temp_min_c", "rh_percent", "dem_mean", "dist_main_river_km",
+             "dist_any_water_km", "dist_coast_km"] + [f"landcover_class_{n}" for n in WORLDCOVER_NAMES.values()]
+    for grid in grids:
+        src = os.path.join(ROOT, "data", "grids", f"{grid}.geojson")
+        shutil.copy(src, out / "grids" / f"{grid}.geojson")
+        cells = gpd.read_file(src)["cell_id"].astype(str).tolist()
+        t = pd.DataFrame([(c, s) for c in cells for s in range(2018, 2022)], columns=["cell_id", "season"])
+        for f in feats:
+            t[f] = rng.uniform(0, 1, len(t))
+        t["ndwi"] = 0.3 - 0.2 * t["dem_mean"] + rng.normal(0, 0.01, len(t))
+        t["train_ok"] = t["train_ok_scope"] = True
+        p = out / "features" / "unified_dot7" / "ndwi" / f"{grid}_unified.csv"
+        t.to_csv(p, index=False)
+        p.with_name(p.name + ".provenance.json").write_text(json.dumps(
+            {"target": "ndwi", "label_set": "chinh", "region": region}))
+    pts = gpd.read_file(POINTS)
+    ref = pd.DataFrame([(q, s) for q in pts["point_id"] for s in range(2018, 2022)], columns=["point_id", "season"])
+    ref["n_valid_3x3"], ref["ref_ndwi"] = 9, rng.uniform(0, 0.3, len(ref))
+    rp = out / "labels" / "dot7" / "points_reference_ndwi.csv"
+    ref.to_csv(rp, index=False)
+    rp.with_name(rp.name + ".provenance.json").write_text(json.dumps({"target": "ndwi", "variant": "main"}))
+    fm = tmp / "KE_HOACH" / "ket-qua" / "dong_bang.csv"   # goc repo cua manifest = tmp
+    fm.parent.mkdir(parents=True)
+    pd.DataFrame({"file": ["artifacts/experiments/t_manifest.csv"]}).to_csv(fm, index=False)
+    return out, fm, len(feats)
+
+
+def _run_region(tmp, fm, *extra):
+    cmd = [sys.executable, RUNNER, "--region", "mississippi", "--prefix", "t", "--models", "linear", "--schemes", "42",
+           "--target", "ndwi", "--cwd", str(tmp), "--frozen-manifest", str(fm), "--allow-untagged", "--allow-dirty",
+           *extra]
+    return subprocess.run(cmd, cwd=tmp, capture_output=True, text=True, timeout=900,
+                          env=dict(os.environ, PYTHONIOENCODING="utf-8", DOI_CHUNG_OUT=str(tmp / "out")))
+
+
+@need_real
+def test_region_doi_chung_thu_muc_rieng_meta_va_bo_dac_trung(tmp_path):
+    out, fm, n_feats = _region_setup(tmp_path)
+    p = _run_region(tmp_path, fm)
+    assert p.returncode == 0, p.stdout + p.stderr
+    exp = tmp_path / "artifacts" / "experiments"
+    assert not list(exp.glob("t_*")), "vung doi chung khong duoc ghi vao thu muc DBSCL"
+    man = pd.read_csv(exp / "mississippi" / "t_manifest.csv")
+    assert list(man["status"]) == ["xong", "xong"] and set(man["region"]) == {"mississippi"}
+    run = exp / "mississippi" / "t__h3_res_5__linear__s42__t-ndwi" / "cv"   # khong them __fs-doi_chung
+    meta = json.loads((run / "run_meta.json").read_text(encoding="utf-8"))
+    assert meta["region"] == "mississippi" and meta["crs_metric"] == "EPSG:32615"
+    assert meta["feature_set"] == "doi_chung" and len(meta["features_sha256"]) == 64
+    assert meta["cmd"][meta["cmd"].index("--region") + 1] == "mississippi"
+    assert meta["cmd"][meta["cmd"].index("--table") + 1].replace("\\", "/").startswith(str(out).replace("\\", "/"))
+    for k in ("table_sha256", "cv_folds_sha256", "points_ref_sha256", "grid_sha256", "points_sha256"):
+        assert len(meta[k]) == 64
+    cfg = json.loads((run / "config.json").read_text(encoding="utf-8"))
+    assert cfg["region"] == "mississippi" and cfg["crs_metric"] == "EPSG:32615"
+    assert len(cfg["features"]) == n_feats and not cfg["features_missing"]
+    assert (run / "oof_points.csv").exists()
+    # chay lai: bo qua (khoa region khop)
+    p = _run_region(tmp_path, fm)
+    assert p.returncode == 0 and set(pd.read_csv(exp / "mississippi" / "t_manifest.csv")["status"]) == {"bo_qua_da_xong"}
+
+
+@need_real
+def test_region_tu_choi_bang_khac_vung_va_manifest_dong_bang(tmp_path):
+    out, fm, _ = _region_setup(tmp_path, grids=("h3_res_5",))
+    pd.DataFrame({"file": ["artifacts/experiments/mississippi/t_manifest.csv"]}).to_csv(fm, index=False)
+    p = _run_region(tmp_path, fm)
+    assert p.returncode == 2 and "dong bang" in p.stdout + p.stderr, p.stdout + p.stderr
+    pd.DataFrame({"file": ["khac.csv"]}).to_csv(fm, index=False)
+    prov = out / "features" / "unified_dot7" / "ndwi" / "h3_res_5_unified.csv.provenance.json"
+    prov.write_text(json.dumps({"target": "ndwi", "label_set": "chinh"}))   # thieu region = dbscl
+    p = _run_region(tmp_path, fm)
+    assert p.returncode != 0 and "region 'dbscl' khac --region 'mississippi'" in p.stdout + p.stderr
+    p = _run_region(tmp_path, fm, "--target", "salinity")
+    assert p.returncode != 0 and "khong co nhan do man" in p.stdout + p.stderr
+    assert not (tmp_path / "artifacts" / "experiments" / "mississippi" / "t_manifest.csv").exists()
+
+
+def test_doi_chung_txt_khong_cot_thuy_van_va_ndwi_khong_bo_gi():
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import run_experiments as rx
+    from build_unified_table import HYBRID_FEATURES, HYDRO_FEATURES
+
+    f = os.path.join(ROOT, "configs", "feature_sets", "doi_chung.txt")
+    req, keep, dropped = rx.feature_set_lists(f, "ndwi")
+    assert not set(req) & {*HYDRO_FEATURES, *HYBRID_FEATURES} and "landcover_class_*" in req
+    assert dropped == [] and keep == req
+    _, _, dropped_r = rx.feature_set_lists(f, "rain_chirps")
+    assert dropped_r == ["rain_mm"]   # cot cam theo bien van ap

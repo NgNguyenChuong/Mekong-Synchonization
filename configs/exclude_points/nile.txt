@@ -1,0 +1,1 @@
+# CHG-41: Nile khong co diem nao trong o thieu ERA5-Land

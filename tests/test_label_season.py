@@ -478,6 +478,7 @@ def test_script_ndwi_khong_doi_duong_do_man(tmp_path):
     prov = json.load(open(out_n / "points_reference_ndwi.csv.provenance.json", encoding="utf-8"))
     assert prov["target"] == "ndwi" and prov["variant"] == "main" and prov["ref_rule_kind"] == "3x3"
     assert prov["value_band"] == "NDWIchen" and "EC1:5" not in prov["unit"]
+    assert "region" not in prov  # dbscl: provenance dap an giu nhu cu
     tprov = json.load(open(out_n / "toy_labels_season_ndwi.csv.provenance.json", encoding="utf-8"))
     assert tprov["target"] == "ndwi"
     assert "target" not in json.load(open(out / "toy_labels_season.csv.provenance.json", encoding="utf-8"))

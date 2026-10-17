@@ -190,3 +190,87 @@ def test_target_table_khoa_lech_hoac_trung_bao_loi():
         target_table(base, pd.concat([lab, lab.iloc[:1]]), "ndwi")
     with pytest.raises(ValueError, match="muc tieu"):
         target_table(base, lab.rename(columns={"ndwi": "x"}), "ndwi")
+
+
+# ---------------------------------------------------------------- --drop-no-era5 (CHG-41 de xuat)
+
+
+def _load_build():
+    import importlib.util
+
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    spec = importlib.util.spec_from_file_location("build_unified_table",
+                                                  os.path.join(root, "scripts", "build_unified_table.py"))
+    bu = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bu)
+    return bu
+
+
+def _fake_dir(tmp_path, region):
+    """4 o x 2 mua; o c3, c4 khong co ERA5 ca mua (NaN, cover = fill = 0)."""
+    cells, seasons = ["c1", "c2", "c3", "c4"], [2019, 2020]
+    keys = pd.DataFrame([(c, s) for c in cells for s in seasons], columns=["cell_id", "season"])
+    labels = keys.assign(ndwi=0.1, salinity=1.0, n_valid_px=100.0, valid_frac=0.5, train_ok=True, train_ok_10pct=True)
+    nocov = keys["cell_id"].isin(["c3", "c4"])
+    era5 = keys.assign(rain_mm=np.where(nocov, np.nan, 5.0), solar=np.where(nocov, np.nan, 1.0), temp_c=20.0,
+                       temp_max_c=25.0, temp_min_c=15.0, rh_percent=70.0,
+                       era5_cover_frac=np.where(nocov, 0.0, 1.0), era5_fill_frac=0.0)
+    era5.loc[nocov, ["temp_c", "temp_max_c", "temp_min_c", "rh_percent"]] = np.nan
+    static = pd.DataFrame({"cell_id": cells, "dem_mean": 1.0, "dist_main_river_km": 1.0, "dist_any_water_km": 1.0,
+                           "dist_coast_km": 1.0, "landcover_class_10": 1.0, "scope_frac": 0.5})
+    cen = pd.DataFrame({"cell_id": cells, "scope_cx": 1.0, "scope_cy": 1.0, "scope_n_px": 5})
+    for sub in ("labels/dot7", "features/era5_season", "features/static"):
+        os.makedirs(tmp_path / sub, exist_ok=True)
+    labels.to_csv(tmp_path / "labels/dot7/g_labels_season_ndwi.csv", index=False)
+    labels.to_csv(tmp_path / "labels/g_labels_season.csv", index=False)
+    era5.to_csv(tmp_path / "features/era5_season/g_era5_season_filled.csv", index=False)
+    static.to_csv(tmp_path / "features/static/g_static.csv", index=False)
+    cen.to_csv(tmp_path / "features/static/g_scope_centroid.csv", index=False)
+    (tmp_path / "boundary.geojson").write_text("{}")
+    import argparse
+
+    return argparse.Namespace(region=region, labels_dir=str(tmp_path / "labels"), features_dir=str(tmp_path / "features"),
+                              out_dir=str(tmp_path / "out"), grids_dir=str(tmp_path), scope="x", force_centroids=False,
+                              boundary=str(tmp_path / "boundary.geojson"), drop_no_era5=False)
+
+
+def _ms(bu):
+    """Nguon kieu vung doi chung cho moi region (bang gia khong co thuy van/hybrid)."""
+    return lambda a, g, s: {"labels": os.path.join(a.labels_dir, "dot7", f"{g}_labels_season_ndwi.csv"),
+                            "era5": os.path.join(a.features_dir, "era5_season", f"{g}_era5_season_filled.csv"),
+                            "static": os.path.join(a.features_dir, "static", f"{g}_static.csv")}
+
+
+def test_drop_no_era5_loai_khoi_tap_huan_luyen_giu_dong_va_ghi_provenance(tmp_path):
+    import json
+
+    bu = _load_build()
+    a = _fake_dir(tmp_path, "mississippi")
+    # mac dinh TAT: hanh vi cu - guard CHG-22 bao loi ERA5 thieu trong dong huan luyen
+    with pytest.raises(ValueError, match="NaN ngoai danh sach"):
+        bu.build_one(a, "g", "")
+    a.drop_no_era5 = True
+    row, table = bu.build_one(a, "g", "")
+    assert len(table) == 8  # dong van con
+    assert table.loc[table["cell_id"].isin(["c3", "c4"]), TRAIN_COL].eq(False).all()
+    assert table.loc[table["cell_id"].isin(["c1", "c2"]), TRAIN_COL].all()
+    assert table["train_ok"].all() and row["rows_dropped_no_era5"] == 4 and row["rows_train_ok_scope"] == 4
+    prov = json.load(open(os.path.join(a.out_dir, "g_unified.csv.provenance.json"), encoding="utf-8"))
+    assert prov["dropped_no_era5"] == {"n_cells": 2, "n_rows": 4}
+
+
+def test_drop_no_era5_dbscl_phai_loai_0_dong(tmp_path):
+    bu = _load_build()
+    a = _fake_dir(tmp_path, "dbscl")
+    a.drop_no_era5 = True
+    bu.sources = _ms(bu)
+    with pytest.raises(ValueError, match="dbscl phai loai 0 dong"):
+        bu.build_one(a, "g", "")
+
+
+def test_drop_no_era5_cover_nan_la_loi():
+    from unified_table import drop_no_era5
+
+    t = pd.DataFrame({"cell_id": ["a"], TRAIN_COL: [True], "era5_cover_frac": [np.nan], "era5_fill_frac": [0.0]})
+    with pytest.raises(ValueError, match="NaN"):
+        drop_no_era5(t)

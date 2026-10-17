@@ -11,9 +11,11 @@ Delta = MAE(a) - MAE(b) (cung chieu delta_hat cua analyze_cv_family.py); script 
 Dot 7 (--target khac salinity): Delta_min muc min lay tu ket qua analyze_cv_family cua bien (bat buoc co); nguong 2
 chi la ket luan khi muc min duoc kiem dinh (CHG-25 + cong), con lai mo_ta. Kiem luot + chan file dong bang nhu
 analyze_cv_family. --holm-scope doc file analyze_cv_family cung pham vi (muc_kiem_dinh khac cong -> hau to
-__holm_muc_kiem_dinh cho ca file doc va file ghi).
+__holm_muc_kiem_dinh cho ca file doc va file ghi). --model rf|mlp: luot cua mo hinh do, Delta_min muc min tu file
+analyze_cv_family cung mo hinh, file doc/ghi hau to __<model>.
 
-Chay:  venv/Scripts/python.exe scripts/analyze_block_size.py [--target ndwi] [--holm-scope cong|muc_kiem_dinh] [--no-table]
+Chay:  venv/Scripts/python.exe scripts/analyze_block_size.py [--target ndwi] [--model hist_gb|rf|mlp]
+           [--holm-scope cong|muc_kiem_dinh] [--no-table]
 """
 import argparse
 import os
@@ -30,9 +32,10 @@ if sys.platform == "win32":
 import analyze_cv_family as acf  # noqa: E402
 from analyze_cv_family import GRIDS  # noqa: E402
 from run_experiments import run_name  # noqa: E402
-from training.dot7_rules import (HOLM_SCOPES, TESTED_TIERS, all_scoped_names, file_sha256, guard_frozen,  # noqa: E402
-                                 holm_provenance, load_gate, provenance_path, scoped_name, scopes_differ,
-                                 write_csv_atomic, write_provenance)
+from training.dot7_rules import (HOLM_SCOPES, TESTED_TIERS, all_scoped_names, file_sha256, gate_required,  # noqa: E402
+                                 guard_frozen, holm_provenance, load_gate, main_family, model_provenance,
+                                 provenance_path, run_model, scoped_name, scopes_differ, write_csv_atomic,
+                                 write_provenance)
 
 MAE_RISE_MAX = 0.05
 DELTA_MIN_FINE = 0.0309  # do man (dS/m), tu ban dong bang
@@ -49,9 +52,9 @@ def out_names(target):
     return f"dot7_{target}_khoi100_mae.csv", f"dot7_{target}_khoi100_cap_min.csv"
 
 
-def read_err(exp, prefix, grid, scheme, target="salinity", infos=None) -> pd.Series:
+def read_err(exp, prefix, grid, scheme, target="salinity", infos=None, model="hist_gb") -> pd.Series:
     """Sai so OOF theo (point_id, season) cua mot lan chay; doc tung lan (it bo nho)."""
-    name = run_name(prefix, grid, "hist_gb", scheme, "", None, target)
+    name = run_name(prefix, grid, run_model(model), scheme, "", None, target)
     run_dir = os.path.join(exp, name, "cv")
     info = acf.check_run(run_dir, name, target, "cv")
     if infos is not None and name not in {i["run"] for i in infos}:
@@ -73,7 +76,8 @@ def runs(a, infos=None):
     for design, seeds in DESIGNS:
         for g in GRIDS:
             for s in seeds:
-                yield design, g, s, (lambda d=design, g=g, s=s: read_err(a.exp_root, prefix[d], g, s, a.target, infos))
+                yield design, g, s, (lambda d=design, g=g, s=s: read_err(a.exp_root, prefix[d], g, s, a.target, infos,
+                                                                         a.model))
 
 
 def common_keys(a, infos=None) -> pd.MultiIndex:
@@ -94,7 +98,9 @@ def mae_table(a, keys) -> pd.DataFrame:
 
 
 def load_target_gate(a):
-    return load_gate(a.gate, a.target, required=a.target != "salinity") if a.target != "salinity" else None
+    if a.target == "salinity" and a.model == "hist_gb":
+        return None
+    return load_gate(a.gate, a.target, required=gate_required(a.target, a.model), model=a.model)
 
 
 def fine_rule(a, ref_path, gate):
@@ -105,12 +111,12 @@ def fine_rule(a, ref_path, gate):
         k = pd.read_csv(ref_path)
         if "target" in k.columns and (k["target"] != a.target).any():
             acf.loi(f"{ref_path}: co dong target khac '{a.target}'")
-        k = k[k["family"] == "F1_chinh"]
+        k = k[k["family"] == main_family(a.model)]
         if "kiem_dinh" in k.columns and "muc" in k.columns:  # file CV phai cung quy tac muc min
             kd = set(k.loc[k["muc"] == FINE_LEVEL, "kiem_dinh"].astype(bool))
             if kd and kd != {tested}:
                 acf.loi(f"{ref_path}: kiem_dinh muc min {sorted(kd)} khac quy tac hien tai ({tested})")
-    if a.target == "salinity":
+    if a.target == "salinity" and a.model == "hist_gb":
         return DELTA_MIN_FINE, tested, k
     if k is None:
         acf.loi(f"thieu ket qua analyze_cv_family {ref_path} (can Delta_min muc min cua {a.target})")
@@ -123,23 +129,25 @@ def fine_rule(a, ref_path, gate):
 def main(a):
     if a.target not in TESTED_TIERS:
         acf.loi(f"--target '{a.target}' khong co trong TESTED_TIERS")
-    a.gate = a.gate or os.path.join(a.out_dir, acf.GATE_FILE)
-    cand = [p for n in out_names(a.target) for p in all_scoped_names(os.path.join(a.out_dir, n))]
+    a.gate = a.gate or os.path.join(a.out_dir, acf.gate_name(a.model))
+    cand = [p for n in out_names(a.target) for p in all_scoped_names(os.path.join(a.out_dir, n), a.model)]
     guard_frozen(cand + [provenance_path(p) for p in cand], a.frozen_manifest)
     try:
         gate = load_target_gate(a)
     except ValueError as exc:
         acf.loi(str(exc))
     differ = scopes_differ(a.target, gate)
-    out_mae, out_cap = (os.path.join(a.out_dir, scoped_name(n, a.holm_scope, differ)) for n in out_names(a.target))
-    ref = os.path.join(a.ref_dir or a.out_dir, scoped_name(acf.out_name(a.target, a.prefix50), a.holm_scope, differ))
+    out_mae, out_cap = (os.path.join(a.out_dir, scoped_name(n, a.holm_scope, differ, a.model))
+                        for n in out_names(a.target))
+    ref = os.path.join(a.ref_dir or a.out_dir,
+                       scoped_name(acf.out_name(a.target, a.prefix50), a.holm_scope, differ, a.model))
     try:
         dmin, fine_tested, k = fine_rule(a, ref, gate)
     except ValueError as exc:
         acf.loi(str(exc))
     infos = []
     keys, n_all = common_keys(a, infos)
-    same = acf.check_consistent(infos)
+    same = acf.check_consistent(infos, a.allowed_tags)
     print(f"(diem, mua) chung: {len(keys)} / {n_all}")
     m = mae_table(a, keys)
     piv = m.pivot_table(index="grid", columns=["design", "seed"], values="MAE")
@@ -181,7 +189,8 @@ def main(a):
     for t, p in ((t1, out_mae), (t2, out_cap)):
         write_csv_atomic(t, p)
         write_provenance(p, **hp, **ref_info, git_tag=same["git_tag"], points_ref_sha256=same["points_ref_sha256"],
-                         n_luot=len(infos))
+                         n_luot=len(infos), **model_provenance(a.model),
+                         **acf.tag_info(same, a.allowed_tags, a.tags_reason))
 
     if not a.no_table:
         with pd.option_context("display.width", 220, "display.max_columns", 30):
@@ -197,7 +206,7 @@ def main(a):
                   else "-> giu '4 khung tuong duong o muc min'")
     if not fine_tested:
         print(f"NGUONG 2 - muc min KHONG kiem dinh cho {a.target} (CHG-25 / cong) -> chi mo_ta")
-    print(f"Ghi: {out_mae}, {out_cap} | git_tag {same['git_tag']} | holm {a.holm_scope}")
+    print(f"Ghi: {out_mae}, {out_cap} | model {a.model} | git_tag {same['git_tag']} | holm {a.holm_scope}")
 
 
 def build_parser():
@@ -207,9 +216,9 @@ def build_parser():
     ap.add_argument("--target", default="salinity")
     ap.add_argument("--out-dir", default=acf.RESULTS)
     ap.add_argument("--ref-dir", default=None, help="thu muc ket qua analyze_cv_family (mac dinh = --out-dir)")
-    ap.add_argument("--gate", default=None, help=f"bang cong (mac dinh <out-dir>/{acf.GATE_FILE})")
+    ap.add_argument("--gate", default=None, help=f"bang cong (mac dinh <out-dir>/{acf.GATE_FILE}; rf/mlp: dot7_cong_kiem_dinh__<model>.csv)")
     ap.add_argument("--exp-root", default=acf.EXP_ROOT)
-    ap.add_argument("--frozen-manifest", default=acf.FROZEN_MANIFEST)
+    acf.add_common_args(ap)
     ap.add_argument("--holm-scope", choices=HOLM_SCOPES, default="cong")
     ap.add_argument("--no-table", action="store_true", help="khong in bang so ra stdout")
     return ap
