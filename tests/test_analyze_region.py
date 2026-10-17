@@ -75,10 +75,10 @@ def _final(grid, model):
     return df
 
 
-def build(exp, region=REG):
+def build(exp, region=REG, models=base.MODELS):
     meta = {"region": region}
     for g in AREA_MS:
-        for m in base.MODELS:
+        for m in models:
             for s in (42, 43, 44):
                 d = base._write_run(exp, run_name("cv1", g, m, s, "", None, T), "cv", T, meta, {"region": region})
                 _oof(g, m, s).to_csv(d / "oof_points.csv", index=False)
@@ -291,9 +291,54 @@ def test_khong_loai_diem_thi_du_diem(world, tmp_path):
     assert _prov(out / acf.out_name(T, "cv1"))["n_diem_loai"] == 0
 
 
+def test_vung_khong_co_ho_phu_linear_idw(world, runs, tmp_path):
+    """Vung chi chay HistGB: ho phu linear/idw khong xuat hien du luot linear/idw co san; thieu luot do van chay duoc."""
+    for out in runs.values():
+        fam = set(pd.read_csv(out / acf.out_name(T, "cv1"))["family"])
+        assert not fam & {"phu_linear", "phu_idw"} and "F1_chinh" in fam
+    exp = tmp_path / "exp"
+    build(exp, models=("hist_gb", "season_mean"))
+    w = {**world, "exp": exp}
+    out = tmp_path / "o"
+    _run(alr, _args(w, out, "dbscl12", extra=["--targets", T]))
+    _run(acf, _args(w, out, "dbscl12", extra=["--target", T]))
+    r = pd.read_csv(out / acf.out_name(T, "cv1"))
+    assert set(r["family"]) == {"F1_chinh", "do_nhay_chi_s42", "do_nhay_chi_s43", "do_nhay_chi_s44"}
+
+
 # ---------------------------------------------------------
 # Ledger
 # ---------------------------------------------------------
+def test_ledger_vung_co_cot_ti_le_va_provenance(world, runs, tmp_path, monkeypatch):
+    res = tmp_path / "res"
+    res.mkdir()
+    for f in runs["dbscl12"].iterdir():
+        (res / f.name).write_bytes(f.read_bytes())
+    ar = _area(REG, AREA_MS)
+    ar[["framework", "resolution"]] = [list(bcl.grid_area_key(g)) for g in AREA_MS]
+    ar.to_csv(tmp_path / "area.csv", index=False)
+    monkeypatch.setattr(bcl, "TARGETS", [T])
+    monkeypatch.setattr(sys, "argv", ["x", "--region", REG, "--res-dir", str(res), "--area-table",
+                                      str(tmp_path / "area.csv")])
+    bcl.main()
+    led = pd.read_csv(res / "comparison_ledger.csv")
+    over = led[led["ratio_gt_1_2"]]
+    assert list(zip(over["grid_a"], over["grid_b"])) == [("s2_level_12", "square_utm_2441m")]
+    assert (led["ratio_gt_1_2"] == (led["area_ratio"] > 1.2)).all()
+    pv = _prov(res / "comparison_ledger.csv")
+    assert pv["region"] == REG and pv["pairs_mode"] == "dbscl12" and pv["n_rows"] == len(led)
+    assert len(pv["git"]["commit"]) == 40 and isinstance(pv["git"]["dirty"], bool)
+    kd = str(res / f"dot7_{T}_cv1_kiem_dinh_khoi.csv").replace("\\", "/")
+    assert pv["inputs"][kd] == acf.file_sha256(kd) and len(pv["inputs"]) == 3  # kd, cap, bang dien tich
+
+
+def test_ledger_dbscl_khong_them_cot_ti_le():
+    kd = pd.DataFrame([base_kd()])
+    r = bcl.ledger_for_target("ndwi", kd, pd.DataFrame(columns=["grid_a", "grid_b", "label"]), None,
+                              {"h3_res_5": 1.0, "latlon_0.1552deg": 1.0})
+    assert "ratio_gt_1_2" not in r[0]
+
+
 def test_ledger_kiem_region(tmp_path):
     p = tmp_path / "kd.csv"
     pd.DataFrame({"x": [1]}).to_csv(p, index=False)

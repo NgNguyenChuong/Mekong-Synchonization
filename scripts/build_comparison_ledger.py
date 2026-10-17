@@ -1,11 +1,14 @@
 """Comparison Ledger: mot dong cho moi cap khung cung muc x 6 bien (ho F1_chinh), chi tong hop file da mo.
 --region mississippi|nile: doc KE_HOACH/ket-qua/doi_chung/<vung>/, bo salinity; provenance dau vao phai cung region.
 
+Vung: them cot ratio_gt_1_2 (area_ratio > 1,2) va ghi comparison_ledger.csv.provenance.json (sha dau vao, region, git).
+
 Chay: venv/Scripts/python.exe scripts/build_comparison_ledger.py --res-dir KE_HOACH/ket-qua [--region mississippi]
 """
 import argparse
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -13,8 +16,11 @@ import pandas as pd
 
 from md_util import md_table
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "src"))
+from analyze_cv_family import MAX_RATIO  # noqa: E402
 from region import DEFAULT_REGION, REGIONS, region_paths  # noqa: E402
+from training.dot7_rules import file_sha256, write_provenance  # noqa: E402
 
 TARGETS = ["salinity", "dsr_mcd18", "ndwi", "rain_chirps", "rh_era5", "t2m_era5"]
 REGION_LABEL = {"dbscl": "MekongDelta", "mississippi": "Mississippi", "nile": "Nile"}
@@ -46,8 +52,9 @@ def decide(label, label_cap):
     return "Inconclusive"
 
 
-def ledger_for_target(var, kd, cap, inter, area, region_label="MekongDelta"):
-    """kd: kiem_dinh_khoi; cap: bang final (cmp_id|grid_a,grid_b -> label); inter: tuong tac RF; area: grid->km2."""
+def ledger_for_target(var, kd, cap, inter, area, region_label="MekongDelta", flag_ratio=False):
+    """kd: kiem_dinh_khoi; cap: bang final (cmp_id|grid_a,grid_b -> label); inter: tuong tac RF; area: grid->km2.
+    flag_ratio: them cot ratio_gt_1_2 (chi cho vung; DBSCL giu cot cu)."""
     kd = kd[kd.family == "F1_chinh"]
     cap_by_pair = {frozenset((r.grid_a, r.grid_b)): r for r in cap.itertuples()}
     int_by_pair = {frozenset((r.grid_a, r.grid_b)): r for r in inter.itertuples()} if inter is not None else {}
@@ -65,6 +72,7 @@ def ledger_for_target(var, kd, cap, inter, area, region_label="MekongDelta"):
         rows.append(dict(
             region=region_label, variable=var, grid_a=r.grid_a, grid_b=r.grid_b,
             level=LEVEL[int(r.delta_ref_level)], area_a_km2=a, area_b_km2=b, area_ratio=r.area_ratio,
+            **({"ratio_gt_1_2": bool(r.area_ratio > MAX_RATIO * (1 + 1e-12))} if flag_ratio else {}),
             eligible=eligible, ineligible_reason=reason, G=r.G, n_point_seasons=r.n_common_point_seasons,
             delta_hat=r.delta_hat, delta_ref=r.delta_ref, delta_rel=r.delta_hat / r.delta_ref,
             delta_min_thr=r.delta_min_thr,
@@ -93,8 +101,17 @@ def summary_md(df):
     return "\n".join(out) + "\n"
 
 
-def read_checked(path, region, seen):
-    """CSV + kiem provenance (neu co): region (thieu = dbscl) == --region; gom pairs_mode vao `seen`."""
+def git_state():
+    """Commit HEAD + cay lam viec co sua file da theo doi hay khong."""
+    def git(*args):
+        return subprocess.run(["git", "-C", ROOT, *args], capture_output=True, text=True, check=True).stdout.strip()
+    return {"commit": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain", "--untracked-files=no"))}
+
+
+def read_checked(path, region, seen, inputs=None):
+    """CSV + kiem provenance (neu co): region (thieu = dbscl) == --region; gom pairs_mode vao `seen`, sha vao `inputs`."""
+    if inputs is not None:
+        inputs[str(path).replace("\\", "/")] = file_sha256(path)
     pv = Path(f"{path}.provenance.json")
     if pv.exists():
         info = json.loads(pv.read_text(encoding="utf-8"))
@@ -116,34 +133,40 @@ def main():
     a = ap.parse_args()
     dbscl = a.region == DEFAULT_REGION
     res = Path(a.res_dir or ("KE_HOACH/ket-qua" if dbscl else f"KE_HOACH/ket-qua/doi_chung/{a.region}"))
-    ar = pd.read_csv(a.area_table or (res / "dot4_doi_chieu_dien_tich.csv" if dbscl else
-                                      f"{region_paths(a.region)['report_dir']}/dot4_doi_chieu_dien_tich.csv"))
+    area_path = a.area_table or (res / "dot4_doi_chieu_dien_tich.csv" if dbscl else
+                                 f"{region_paths(a.region)['report_dir']}/dot4_doi_chieu_dien_tich.csv")
+    ar = pd.read_csv(area_path)
     area = {}
     for g in GRIDS:
         f, rs = grid_area_key(g)
         area[g] = float(ar[(ar.framework == f) & (ar.resolution == rs)].mean_area_km2.iloc[0])
     targets = TARGETS if dbscl else [t for t in TARGETS if t != "salinity"]  # vung doi chung khong co nhan do man
-    rows, seen = [], set()
+    rows, seen, inputs = [], set(), {}
     for t in targets:
         if t == "salinity":
-            kd = read_checked(res / "dot5_cv1_kiem_dinh_khoi.csv", a.region, seen)
-            cap = read_checked(res / "dot5_final_so_cap_voi_cv.csv", a.region, seen)
+            kd = read_checked(res / "dot5_cv1_kiem_dinh_khoi.csv", a.region, seen, inputs)
+            cap = read_checked(res / "dot5_final_so_cap_voi_cv.csv", a.region, seen, inputs)
         else:
-            kd = read_checked(res / f"dot7_{t}_cv1_kiem_dinh_khoi.csv", a.region, seen)
-            cap = read_checked(res / f"dot7_{t}_cv1_final_cap.csv", a.region, seen)
+            kd = read_checked(res / f"dot7_{t}_cv1_kiem_dinh_khoi.csv", a.region, seen, inputs)
+            cap = read_checked(res / f"dot7_{t}_cv1_final_cap.csv", a.region, seen, inputs)
         p = res / f"dot7_{t}_tuong_tac_mo_hinh__rf.csv"
-        inter = read_checked(p, a.region, seen) if p.exists() else None
-        rows += ledger_for_target(t, kd, cap, inter, area, REGION_LABEL[a.region])
+        inter = read_checked(p, a.region, seen, inputs) if p.exists() else None
+        rows += ledger_for_target(t, kd, cap, inter, area, REGION_LABEL[a.region], flag_ratio=not dbscl)
     if len(seen) > 1:
         raise SystemExit(f"LOI: cac bang dau vao khac pairs_mode {sorted(seen)}")
     df = pd.DataFrame(rows)
     df.to_csv(res / "comparison_ledger.csv", index=False)
+    if not dbscl:  # DBSCL: giu nguyen (khong sidecar)
+        write_provenance(res / "comparison_ledger.csv", region=a.region, pairs_mode=sorted(seen)[0] if seen else None,
+                         inputs={**inputs, str(area_path).replace("\\", "/"): file_sha256(area_path)},
+                         git=git_state(), n_rows=len(df))
     n_cap = df.groupby("variable").size().max()
     md = ["# Comparison Ledger", "", f"{len(df)} cap (ho F1_chinh, {len(targets)} bien x {n_cap} cap, HistGB, cv1). "
           "decision: Equivalent=tuong_duong; Different=cho_giu_rieng va tai lap o final; "
           "Inconclusive=chua_phan_dinh hoac co y nghia CV nhung khong tai lap; Descriptive=mo_ta.", "",
-          md_table(df[["variable", "grid_a", "grid_b", "level", "area_ratio", "eligible", "ineligible_reason", "G", "delta_rel",
-              "p_holm", "decision", "holdout_confirmed", "rf_interaction_p_holm"]]),
+          md_table(df[["variable", "grid_a", "grid_b", "level", "area_ratio", *(["ratio_gt_1_2"] if not dbscl else []),
+                       "eligible", "ineligible_reason", "G", "delta_rel",
+                       "p_holm", "decision", "holdout_confirmed", "rf_interaction_p_holm"]]),
           summary_md(df)]
     (res / "comparison_ledger.md").write_text("\n".join(md), encoding="utf-8")
     print(summary_md(df))

@@ -367,8 +367,8 @@ def main(a):
     s2_pairs = side_pairs(at, main_pairs)
     infos, results = [], {s: [] for s, _ in outs}
     main_fam = main_family(a.model)
-    fams = ((("hist_gb", main_fam), ("linear", "phu_linear"), ("idw", "phu_idw")) if a.model == "hist_gb"
-            else ((run_model(a.model), main_fam),))
+    phu = (("linear", "phu_linear"), ("idw", "phu_idw")) if a.region == DEFAULT_REGION else ()  # vung: chi chay HistGB
+    fams = ((("hist_gb", main_fam), *phu) if a.model == "hist_gb" else ((run_model(a.model), main_fam),))
     for model, fam in fams:
         err = load_errors(a.exp_root, a.prefix, model, a.schemes, target=a.target, infos=infos, region=a.region,
                           exclude=a.exclude)
