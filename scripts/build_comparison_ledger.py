@@ -119,7 +119,10 @@ def git_state():
     """Commit HEAD + cay lam viec co sua file da theo doi hay khong."""
     def git(*args):
         return subprocess.run(["git", "-C", ROOT, *args], capture_output=True, text=True, check=True).stdout.strip()
-    return {"commit": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain", "--untracked-files=no"))}
+    try:
+        return {"commit": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain", "--untracked-files=no"))}
+    except (subprocess.CalledProcessError, OSError):  # ma giai nen tu goi Zenodo: khong co .git
+        return {"commit": None, "dirty": None}
 
 
 def read_checked(path, region, seen, inputs=None, feature_set=None):
