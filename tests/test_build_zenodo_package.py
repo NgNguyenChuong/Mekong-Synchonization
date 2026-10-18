@@ -70,3 +70,10 @@ def test_license_code_mit_va_data_khong_placeholder(tmp_path, monkeypatch):
     import pytest
     with pytest.raises(SystemExit):
         bz.write_extras(str(tmp_path / "o2"), str(lic))
+
+
+def test_ke_hoach_khong_co_boundary_nile_nhung_giu_dbscl():
+    dests = {i.dest for i in bz.build_plan()}
+    assert "grids/dbscl/boundary.geojson" in dests and "grids/mississippi/boundary.geojson" in dests
+    assert "grids/nile/boundary.geojson" not in dests
+    assert any(d.startswith("grids/nile/") for d in dests)

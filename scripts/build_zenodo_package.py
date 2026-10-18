@@ -28,6 +28,7 @@ if sys.platform == "win32":
 
 REGIONS = ("dbscl", "mississippi", "nile")
 DOT7_VARS = ("dsr_mcd18", "ndwi", "rain_chirps", "rh_era5", "t2m_era5")
+NO_BOUNDARY = ("nile",)  # FAO GAUL: giay phep phi thuong mai, khong cap lai duoc -> khong dua file ranh gioi vao goi
 MRC_PREFIXES = ("tch_", "tram_")  # chuoi muc nuoc MRC (Tan Chau, 6 tram): khong phan phoi lai dan xuat
 CC_BY_URL = "https://creativecommons.org/licenses/by/4.0/legalcode.txt"
 CODE_LICENSE_URL = {"Apache-2.0": "https://www.apache.org/licenses/LICENSE-2.0.txt"}
@@ -55,7 +56,7 @@ RESTORE_TEXT = ("Some or all of the associated data and related items of informa
                 "conclusions, and recommendations are those of the author[s] and do not necessarily reflect any "
                 "determinations, views, or policies of the RESTORE Council.")
 FETCH_SCRIPTS = ("fetch_doi_chung.py", "gee_fetch.py", "fetch_mrc_timeseries.py", "fetch_mrc_water_level.py")
-CODE_PATHS = ["src", "scripts", "configs", "tests", "component", "main.py", "pytest.ini", "requirements.txt", "README.md", ".env.example"]
+CODE_PATHS = ["src", "scripts", "configs", "tests", "component", "main.py", "pytest.ini", "requirements.txt", "README.md", ".env.example", "LICENSE"]
 
 
 @dataclasses.dataclass
@@ -142,7 +143,8 @@ def build_plan(repo=ROOT):
         P = region_paths(r)
         sal = "salinity" if r == "dbscl" else "ndwi"
         _glob(items, P["grids_dir"], ["*.geojson"], f"grids/{r}", r, origin="generate_all_grids.py")
-        items.append(Item(P["boundary"].replace("\\", "/"), f"grids/{r}/boundary.geojson", r, origin="build_boundary_v2.py / fetch_doi_chung.py"))
+        if r not in NO_BOUNDARY:
+            items.append(Item(P["boundary"].replace("\\", "/"), f"grids/{r}/boundary.geojson", r, origin="build_boundary_v2.py / fetch_doi_chung.py"))
         for sub in ("cell_blocks", "khoi100"):
             _glob(items, os.path.join(P["eval_dir"], sub), ["*.csv"], f"eval/{r}/{sub}", r, origin="build_cv_folds.py")
         _glob(items, P["eval_dir"], ["eval_points.geojson", "holdout_blocks.geojson", "cv_folds*.csv"], f"eval/{r}", r, origin="build_eval_design.py")
@@ -295,7 +297,7 @@ Run from the unpacked `code/` tree after creating `.env` from `.env.example` (DA
 | Input | Script | Notes |
 | --- | --- | --- |
 | ERA5-Land, CHIRPS v3, MCD18A1, Landsat 8 C2 L2, Copernicus DEM, WorldCover, JRC GSW (Mekong Delta) | `gee_fetch.py` | Google Earth Engine; needs an EE project. |
-| Same layers for Mississippi (Louisiana) and Nile Delta, NOAA CO-OPS, USGS NWIS, CRMS | `fetch_doi_chung.py` | boundaries: TIGER/2018 (LA), FAO GAUL 2015 (Egypt) via GEE. |
+| Same layers for Mississippi (Louisiana) and Nile Delta, NOAA CO-OPS, USGS NWIS, CRMS | `fetch_doi_chung.py` | boundaries: TIGER/2018 (LA), FAO GAUL 2015 (Egypt) via GEE; the Nile boundary file is NOT in this record (GAUL licence): `--region nile --sources boundary`. |
 | MRC water levels (Tan Chau + 5 stations) | `fetch_mrc_timeseries.py`, `fetch_mrc_water_level.py` | Obtain under MRC terms; NOT in this record. Needed only to rebuild `tch_*`/`tram_*` columns. |
 | OSM waterways, HydroRIVERS | see `SOURCES.csv` | Geofabrik extracts change over time; the sha256 of the files used is listed where recorded. |
 | Wang et al. 2025 labels | https://zenodo.org/records/15653696 | CC-BY; used for 2014-2023, 2024-2026 re-created with the same GEE recipe. |
@@ -442,13 +444,13 @@ def run(out, ref="HEAD", license_file=None, dry_run=False, force=False, license_
     return rows
 
 
-README_TMPL = """# Mekong Delta soil-salinity grid-framework comparison: derived data, features and code (DRAFT)
+README_TMPL = """# Mekong Delta soil-salinity grid-framework comparison: derived data, features and code
 
 Derived data for the study comparing spatial grid frameworks (H3, S2, lat/lon, UTM squares; 13 configurations) for predicting
 dry-season soil salinity in the Vietnamese Mekong Delta, with two control regions (Mississippi Delta, Nile Delta).
 Unit of analysis: (grid cell, dry season), dry season of year Y = 1 Nov (Y-1) to 29 Apr (Y), Landsat 8 OLI years 2014-2026.
 
-**Draft package, not uploaded. Version/DOI to be assigned at upload.**
+**Record status: embargoed until acceptance; DOI reserved.** Release candidate tag `v1.0-rc1`.
 
 ## What is and is not in this record
 
@@ -470,7 +472,7 @@ released as computed. `zos_*` columns (CMEMS sea level) and all other columns ar
 ```
 README.md  LICENSE_DATA  LICENSE_CODE  MANIFEST.csv   (path, bytes, sha256, origin script, region, variable)
 code/            git archive of the repository at {{COMMIT}} (see code/COMMIT.txt)
-grids/<region>/  13 grid GeoJSON + study boundary + `dot4_doi_chieu_dien_tich.csv` (cell-area table per grid; `file` column = source path, normalised);
+grids/<region>/  13 grid GeoJSON + study boundary (not for Nile, see Licences) + `dot4_doi_chieu_dien_tich.csv` (cell-area table per grid; `file` column = source path, normalised);
                  Delta also `dot4_scope_v3_dien_tich.csv` (land-cover area lost per class when the scope mask is applied, not a grid-area table)
 eval/<region>/   eval_points, holdout_blocks, cv_folds (seeds 42/43/44), cell_blocks (+ khoi100 for the Delta)
 labels/<region>/ per-cell season labels: salinity (Delta only, labels/dbscl/salinity) and 5 labels in dot7/ (ndwi, dsr_mcd18, rain_chirps, rh_era5, t2m_era5)
@@ -521,7 +523,7 @@ This draft is a snapshot of the working repository; a refactored publication tre
 ## Licences and sources
 
 - Data created here (grids, eval design, labels, features, results, figures): CC-BY-4.0 (`LICENSE_DATA`).
-- Code: `LICENSE_CODE` [PLACEHOLDER: MIT or Apache-2.0 - to be chosen].
+- Code: MIT (`LICENSE_CODE`; also `LICENSE` inside `code/`).
 - Salinity labels 2014-2023 re-aggregated from Wang et al. (2025), Commun. Earth Environ. 6, 503; data: Zenodo https://doi.org/10.5281/zenodo.15653696 (CC-BY); formula of Nguyen et al. (2020). Labels 2024-2026 re-created with the same recipe from Landsat 8 (NDWIchen, Salinity = EC1:5 dS/m).
 - Landsat 8 Collection 2 Level 2 (USGS), via Google Earth Engine (`LANDSAT/LC08/C02/T1_L2`); Landsat 9 is not used.
 - ERA5-Land (Copernicus Climate Change Service; Munoz-Sabater et al. 2021, Earth Syst. Sci. Data 13, 4349).
@@ -532,15 +534,28 @@ This draft is a snapshot of the working repository; a refactored publication tre
 - JRC Global Surface Water v1.4 (Pekel et al. 2016, Nature 540, 418-422).
 - CMEMS global ocean physics reanalysis, sea surface height `zos` (`cmems_mod_glo_phy_my_0.083deg_P1D-m`).
 - OpenStreetMap waterways (c) OpenStreetMap contributors, ODbL 1.0, via Geofabrik; released river-distance features are derived values, the OSM extracts are not redistributed.
-  Contains information from OpenStreetMap, (c) OpenStreetMap contributors. Open question for the authors: whether the ODbL share-alike clause applies to
-  these derived features (and thus to the record) has not been decided; do not treat the CC-BY-4.0 label of the features as final until resolved.
+  Contains information from OpenStreetMap, (c) OpenStreetMap contributors. See Limitations.
 - HydroRIVERS v1.0 (Lehner & Grill 2013, Hydrol. Process. 27, 2171-2186): cross-check only, not a feature.
-- Coastline: Sayre et al. (2019). Boundaries: geoBoundaries gbOpen (Mekong Delta), TIGER/2018 States (Louisiana), FAO GAUL 2015 (Nile Delta).
+- Coastline: Sayre et al. (2019).
+- Mekong Delta boundary `grids/dbscl/boundary.geojson`: geoBoundaries gbOpen (Runfola et al. 2020), Viet Nam ADM1 (licence Public Domain, source Wikimedia Commons);
+  neighbouring-country ADM0 (KHM, THA, LAO; ODbL, source OpenStreetMap) are used only to trim the boundary at the land frontier (`scripts/build_boundary_v2.py`).
+- Louisiana boundary: US Census Bureau TIGER/2018 States (public domain), `grids/mississippi/boundary.geojson`.
+- Nile Delta: extent derived from FAO GAUL 2015 level-1 (FAO/GAUL/2015/level1 via Google Earth Engine), (c) FAO; the boundary file is not redistributed under
+  the GAUL licence (non-commercial, no sublicensing); reproduce with `fetch_doi_chung.py --region nile --sources boundary`.
+  Source: FAO GAUL 2015, (c) FAO. The Nile grids, points and labels are derived from that extent and are released; they carry this attribution.
 - NOAA CO-OPS tide gauges and USGS NWIS gauges (US Government public data), `stations/noaa_usgs_mississippi/`.
 - CRMS: Coastal Protection and Restoration Authority (CPRA) of Louisiana. 2026. Coastwide Reference Monitoring System. Coastal Information
   Management System (CIMS) database. https://cims.coastal.la.gov. Accessed 15 October 2026. Public domain; preliminary data, no warranty;
   RESTORE disclaimer in `stations/crms/RESTORE_disclaimer.txt`; filtered extract (see `stations/crms/CRMS_SOURCE.json` for the original zip sha256).
 - MRC (Mekong River Commission) water levels: **not redistributed**; see `fetch_scripts/fetch_mrc_timeseries.py`.
+
+## Limitations
+
+- OpenStreetMap-derived river-distance features: whether the ODbL share-alike clause applies to these derived values (and hence to the feature tables)
+  has not been settled; the CC-BY-4.0 label of those features is provisional.
+- Whether the ODbL neighbour ADM0 used to trim the Mekong Delta boundary makes that file an ODbL derivative has not been settled.
+- The Nile boundary is not in this record (see Licences and sources); Nile grids depend on it only through the extent used to build them.
+- MRC-derived columns are absent from the feature tables (see above).
 """
 
 
